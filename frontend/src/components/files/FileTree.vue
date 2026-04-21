@@ -126,6 +126,14 @@ async function handleDelete(fe: FlatEntry) {
   }
 }
 
+/** URL to nginx's direct-download endpoint for this file.
+ *  Scoped by HTTP Basic auth to the authenticated user's own workspace.
+ *  Works at any size — streams directly from disk, bypassing NATS. */
+function downloadUrl(filePath: string): string {
+  const segs = filePath.split('/').map(encodeURIComponent)
+  return `/download/${segs.join('/')}`
+}
+
 function refresh() {
   dirChildren.value.clear()
   expandedDirs.value.clear()
@@ -173,6 +181,15 @@ function refresh() {
         <span v-else class="expand-icon">&nbsp;</span>
         <span class="icon">{{ getFileIcon(fe.entry.name, fe.entry.type) }}</span>
         <span class="name">{{ fe.entry.name }}</span>
+        <a
+          v-if="fe.entry.type === 'file'"
+          class="download-btn"
+          :href="downloadUrl(fe.path)"
+          :download="fe.entry.name"
+          @click.stop
+          title="Download (works for any size)"
+          aria-label="Download"
+        >&#x2B07;</a>
         <button class="delete-btn" @click.stop="handleDelete(fe)" title="Delete">&times;</button>
       </div>
 
@@ -220,13 +237,16 @@ function refresh() {
 .expand-icon { width: 14px; font-size: 0.7em; color: var(--text-muted); flex-shrink: 0; }
 .icon { flex-shrink: 0; font-size: 0.9em; }
 .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.delete-btn {
+.delete-btn, .download-btn {
   opacity: 0; width: 20px; height: 20px; background: transparent;
   border: none; color: var(--text-muted); border-radius: 3px;
   display: flex; align-items: center; justify-content: center;
+  font-size: 0.75em; text-decoration: none;
 }
-.entry-row:hover .delete-btn { opacity: 1; }
+.entry-row:hover .delete-btn,
+.entry-row:hover .download-btn { opacity: 1; }
 .delete-btn:hover { color: var(--danger); background: var(--bg-hover); }
+.download-btn:hover { color: var(--accent); background: var(--bg-hover); }
 
 .spinner {
   display: inline-block; width: 8px; height: 8px;

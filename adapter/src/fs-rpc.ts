@@ -23,6 +23,29 @@ const BINARY_EXTS = new Set([
   "ttf", "otf", "woff", "woff2", "eot",
 ]);
 
+/** Names that must never appear in list_files or be readable via the API.
+ * Covers secrets and host-leakage surfaces. Matched by full basename only;
+ * .env-prefixed variants are handled with a prefix check. */
+const HIDDEN_NAMES = new Set([
+  ".env",
+  ".ssh",
+  ".aws",
+  ".netrc",
+  ".credentials",
+  ".npmrc",
+  ".pypirc",
+  ".docker",
+  ".executor",
+  ".git",
+]);
+
+function isHidden(name: string): boolean {
+  if (HIDDEN_NAMES.has(name)) return true;
+  // Any .env.* (e.g. .env.local, .env.production)
+  if (name.startsWith(".env.")) return true;
+  return false;
+}
+
 const MIME_BY_EXT: Record<string, string> = {
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
   webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml",
@@ -60,7 +83,7 @@ export class FileManager {
     const entries = await fs.readdir(abs, { withFileTypes: true });
     const out = [];
     for (const e of entries) {
-      if (e.name.startsWith(".executor") || e.name === ".git") continue;
+      if (isHidden(e.name)) continue;
       const entryPath = path.join(relPath, e.name);
       const full = path.join(abs, e.name);
       try {
@@ -80,10 +103,27 @@ export class FileManager {
   }
 
   async readFile(relPath: string, opts: { encoding?: "utf8" | "base64" } = {}): Promise<unknown> {
+    // Refuse to read secrets even if the path is known.
+    const segs = relPath.split("/").filter(Boolean);
+    if (segs.some((s) => isHidden(s))) {
+      throw new Error(`read_file: access denied for hidden/secret path: ${relPath}`);
+    }
     const abs = this.resolve(relPath);
     const ext = (relPath.split(".").pop() ?? "").toLowerCase();
     const mime = mimeForExt(ext);
     const wantBase64 = opts.encoding === "base64" || BINARY_EXTS.has(ext);
+
+    // Guard against oversized reads: NATS caps payload at ~128 MB, and base64
+    // adds 33%. Refuse early with a clear message instead of a cryptic NATS error.
+    const st = await fs.stat(abs);
+    const wireSize = wantBase64 ? st.size * 1.34 : st.size;
+    const WIRE_LIMIT = 100 * 1024 * 1024; // leaves headroom under 128 MB
+    if (wireSize > WIRE_LIMIT) {
+      throw new Error(
+        `file too large for in-browser transport: ${(st.size / 1024 / 1024).toFixed(1)} MB. ` +
+          `Files above ~90 MB need 'docker cp' from the host to download.`,
+      );
+    }
 
     if (wantBase64) {
       const buf = await fs.readFile(abs);

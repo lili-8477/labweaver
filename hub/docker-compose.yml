@@ -39,6 +39,10 @@ services:
       - ../frontend/dist:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./htpasswd:/etc/nginx/htpasswd:ro
+      # Read-only access for the /download/ endpoint. Per-user scoped via
+      # $remote_user in the location block; `.env` etc. are mode 0600 so
+      # nginx (unprivileged) can't even read them as a secondary safety net.
+      - ./workspaces:/downloads:ro
     depends_on:
       nats:
         condition: service_healthy

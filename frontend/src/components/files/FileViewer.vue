@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useFileStore } from '@/stores/files'
+import { renderMarkdown } from '@/utils/markdown'
 
 const files = useFileStore()
 const editorEl = ref<HTMLElement | null>(null)
@@ -23,6 +24,18 @@ const isPdf = computed(() => {
     files.openFile.path.toLowerCase().endsWith('.pdf')
 })
 
+const isMarkdown = computed(() => {
+  if (!files.openFile) return false
+  const ext = files.openFile.path.split('.').pop()?.toLowerCase()
+  return ext === 'md' || ext === 'markdown' || ext === 'mdx'
+})
+
+/** Markdown defaults to rendered view; toggle with the Edit/Preview button. */
+const mdMode = ref<'rendered' | 'editing'>('rendered')
+const renderedHtml = computed(() =>
+  isMarkdown.value && files.openFile ? renderMarkdown(files.openFile.content) : '',
+)
+
 const isEditable = computed(() => !isBinary.value && !isImage.value && !isPdf.value)
 const modified = ref(false)
 
@@ -35,10 +48,33 @@ const dataUri = computed(() => {
   return `data:${mimeType};charset=utf-8,${encodeURIComponent(content)}`
 })
 
-/** Trigger a download of the current file as the browser would. */
+/** URL to nginx's direct-download endpoint — scoped by HTTP Basic auth to the
+ *  authenticated user's own workspace. Works for any size, bypassing NATS. */
+const directDownloadUrl = computed(() => {
+  if (!files.openFile) return ''
+  const segs = files.openFile.path.split('/').map(encodeURIComponent)
+  return `/download/${segs.join('/')}`
+})
+
+/** Trigger a download of the current file. Prefers the nginx endpoint
+ *  (streams directly from disk — works at any size, doesn't hold the
+ *  file in browser memory). Falls back to a blob of the in-memory content
+ *  when served off-hub (e.g. dev mode on a plain NATS WebSocket). */
 function download() {
   if (!files.openFile) return
-  const { path, content, encoding, mimeType } = files.openFile
+  const filename = files.openFile.path.split('/').pop() || 'download'
+  // Hosted behind nginx (http/https origin) → use direct streaming URL.
+  if (window.location.protocol.startsWith('http')) {
+    const a = document.createElement('a')
+    a.href = directDownloadUrl.value
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    return
+  }
+  // Fallback for dev/offline: blob from the in-memory content.
+  const { content, encoding, mimeType } = files.openFile
   let blob: Blob
   if (encoding === 'base64') {
     const bytes = Uint8Array.from(atob(content), c => c.charCodeAt(0))
@@ -49,7 +85,7 @@ function download() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = path.split('/').pop() || 'download'
+  a.download = filename
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
@@ -65,7 +101,9 @@ function humanSize(bytes: number | undefined): string {
 }
 
 async function initEditor() {
+  // Markdown starts in rendered mode; only mount Monaco when user switches to Edit.
   if (!editorEl.value || !isEditable.value || !files.openFile) return
+  if (isMarkdown.value && mdMode.value === 'rendered') return
 
   monacoModule = await import('monaco-editor')
 
@@ -126,10 +164,26 @@ watch(() => files.openFile, () => {
     (editor as import('monaco-editor').editor.IStandaloneCodeEditor).dispose()
     editor = null
   }
+  modified.value = false
+  // Reset md to rendered view whenever a new file opens.
+  mdMode.value = 'rendered'
   if (isEditable.value) {
     setTimeout(initEditor, 50)
   }
 })
+
+/** Toggle between rendered markdown and the Monaco editor (mount lazily). */
+function toggleMdMode() {
+  if (!isMarkdown.value) return
+  mdMode.value = mdMode.value === 'rendered' ? 'editing' : 'rendered'
+  if (editor) {
+    (editor as import('monaco-editor').editor.IStandaloneCodeEditor).dispose()
+    editor = null
+  }
+  if (mdMode.value === 'editing') {
+    setTimeout(initEditor, 50)
+  }
+}
 
 onUnmounted(() => {
   if (editor) {
@@ -146,6 +200,14 @@ onUnmounted(() => {
         <span v-if="files.openFile.size != null" class="file-size">{{ humanSize(files.openFile.size) }}</span>
         <span v-if="modified" class="modified-badge">Modified</span>
         <div class="viewer-actions">
+          <button
+            v-if="isMarkdown"
+            class="btn-toggle"
+            @click="toggleMdMode"
+            :title="mdMode === 'rendered' ? 'Switch to raw markdown' : 'Switch to rendered preview'"
+          >
+            {{ mdMode === 'rendered' ? 'Edit' : 'Preview' }}
+          </button>
           <button v-if="isEditable" class="btn-save" @click="save" :disabled="!modified">
             Save
           </button>
@@ -172,7 +234,14 @@ onUnmounted(() => {
           <button class="btn-download large" @click="download">Download</button>
         </div>
 
-        <!-- Code editor -->
+        <!-- Markdown rendered view — switchable with the Edit button. -->
+        <div
+          v-else-if="isMarkdown && mdMode === 'rendered'"
+          class="markdown-rendered markdown-body"
+          v-html="renderedHtml"
+        />
+
+        <!-- Code editor (also used when markdown is in Edit mode) -->
         <div v-else ref="editorEl" class="editor-container"></div>
       </div>
     </div>
@@ -216,6 +285,11 @@ onUnmounted(() => {
 }
 .btn-download:hover { background: var(--bg-hover); }
 .btn-download.large { padding: 8px 20px; background: var(--accent); color: #fff; border: none; }
+.btn-toggle {
+  padding: 4px 12px; background: var(--bg-tertiary); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.85em;
+}
+.btn-toggle:hover { background: var(--bg-hover); }
 .btn-close {
   width: 30px; height: 30px; background: transparent; border: none;
   color: var(--text-secondary); font-size: 1.2em; border-radius: 4px;
@@ -252,4 +326,12 @@ onUnmounted(() => {
 }
 .binary-icon { font-size: 3em; }
 .binary-name { font-family: var(--font-mono); font-size: 0.9em; color: var(--text-secondary); }
+
+.markdown-rendered {
+  height: 100%;
+  overflow: auto;
+  padding: 32px 48px;
+  max-width: none;
+}
+.markdown-rendered.markdown-body { max-width: 80ch; margin: 0 auto; }
 </style>

@@ -40,7 +40,7 @@ docker run -d \
     -e "WORKSPACE_ROOT=/workspace" \
     -e "DEFAULT_PROJECT=/workspace" \
     -e "HOME=/home/node" \
-    -v "${WORKSPACE}/projects:/workspace/local_projects" \
+    -v "${WORKSPACE}/local_projects:/workspace/local_projects" \
     -v "${WORKSPACE}/.pantheon/chats:/workspace/.pantheon/chats" \
     -v "${WORKSPACE}/.env:/workspace/.env:ro" \
     -v "${WORKSPACE}/.pantheon/skills:/home/node/.claude/skills" \

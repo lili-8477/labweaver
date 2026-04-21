@@ -91,7 +91,7 @@ mkdir -p "${WORKSPACE}/.pantheon/skills" \
          "${WORKSPACE}/.pantheon/agents" \
          "${WORKSPACE}/.pantheon/chats" \
          "${WORKSPACE}/.pantheon/claude-projects" \
-         "${WORKSPACE}/projects"
+         "${WORKSPACE}/local_projects"
 
 # Seed a minimal Claude Code settings file so the CLI has sensible defaults.
 if [[ ! -f "${WORKSPACE}/.pantheon/settings.json" ]]; then
@@ -144,9 +144,10 @@ echo "  service_id: ${SERVICE_ID}"
 # --- 4. Spin the container ---------------------------------------------------
 echo "[4/4] Starting container"
 MOUNTS=(
-    # User's private projects — name disambiguated from shared/projects so the
-    # file tree shows "local_projects" vs "shared/projects" without confusion.
-    -v "${WORKSPACE}/projects:/workspace/local_projects"
+    # User's private projects — host and container use the same name so
+    # the nginx /download/ endpoint (which serves directly from the host dir)
+    # maps the UI path 1:1 without special rewrites.
+    -v "${WORKSPACE}/local_projects:/workspace/local_projects"
     -v "${WORKSPACE}/.pantheon/chats:/workspace/.pantheon/chats"
     -v "${WORKSPACE}/.env:/workspace/.env:ro"
     -v "${WORKSPACE}/.pantheon/skills:/home/node/.claude/skills"
