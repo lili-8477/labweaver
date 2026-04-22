@@ -7,16 +7,16 @@ const FIX = fileURLToPath(new URL("./fixtures/", import.meta.url));
 
 describe("parseJsonlLine", () => {
   it("parses a user entry", () => {
-    const e = parseJsonlLine('{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"hi"}}');
+    const e = parseJsonlLine('{"type":"user","uuid":"11111111-1111-1111-1111-111111111111","sessionId":"22222222-2222-2222-2222-222222222222","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"hi"}}');
     expect(e).not.toBeNull();
     expect(e!.type).toBe("user");
-    expect(e!.uuid).toBe("u1");
-    expect(e!.sessionId).toBe("s1");
+    expect(e!.uuid).toBe("11111111-1111-1111-1111-111111111111");
+    expect(e!.sessionId).toBe("22222222-2222-2222-2222-222222222222");
     expect(e!.isSidechain).toBe(false);
   });
 
   it("parses an assistant entry with usage", () => {
-    const e = parseJsonlLine('{"type":"assistant","uuid":"u2","sessionId":"s1","timestamp":"2026-01-01T00:00:01Z","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":7,"cache_creation_input_tokens":3}}}');
+    const e = parseJsonlLine('{"type":"assistant","uuid":"33333333-3333-3333-3333-333333333333","sessionId":"22222222-2222-2222-2222-222222222222","timestamp":"2026-01-01T00:00:01Z","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":7,"cache_creation_input_tokens":3}}}');
     expect(e!.type).toBe("assistant");
     expect(e!.model).toBe("claude-sonnet-4-6");
     expect(e!.usage).toEqual({ input: 10, output: 5, cache_read: 7, cache_write: 3 });
@@ -43,13 +43,22 @@ describe("parseJsonlLine", () => {
   });
 
   it("ignores unknown extra fields (forward-compat)", () => {
-    const e = parseJsonlLine('{"type":"user","uuid":"u","sessionId":"s","timestamp":"2026-01-01T00:00:00Z","future_field":"x","message":{"role":"user","content":"hi"}}');
+    const e = parseJsonlLine('{"type":"user","uuid":"44444444-4444-4444-4444-444444444444","sessionId":"55555555-5555-5555-5555-555555555555","timestamp":"2026-01-01T00:00:00Z","future_field":"x","message":{"role":"user","content":"hi"}}');
     expect(e).not.toBeNull();
   });
 
   it("reads isSidechain", () => {
-    const e = parseJsonlLine('{"type":"user","uuid":"u","sessionId":"s","timestamp":"2026-01-01T00:00:00Z","isSidechain":true,"message":{}}');
+    const e = parseJsonlLine('{"type":"user","uuid":"66666666-6666-6666-6666-666666666666","sessionId":"77777777-7777-7777-7777-777777777777","timestamp":"2026-01-01T00:00:00Z","isSidechain":true,"message":{}}');
     expect(e!.isSidechain).toBe(true);
+  });
+
+  it("skips entries whose uuid or sessionId is not a valid UUID", () => {
+    // Non-UUID uuid
+    expect(parseJsonlLine('{"type":"user","uuid":"not-a-uuid","sessionId":"11111111-1111-1111-1111-111111111111","timestamp":"2026-01-01T00:00:00Z","message":{}}')).toBeNull();
+    // Non-UUID sessionId
+    expect(parseJsonlLine('{"type":"user","uuid":"11111111-1111-1111-1111-111111111111","sessionId":"also-bad","timestamp":"2026-01-01T00:00:00Z","message":{}}')).toBeNull();
+    // Right shape, wrong chars (non-hex)
+    expect(parseJsonlLine('{"type":"user","uuid":"zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz","sessionId":"11111111-1111-1111-1111-111111111111","timestamp":"2026-01-01T00:00:00Z","message":{}}')).toBeNull();
   });
 });
 

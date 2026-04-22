@@ -17,11 +17,19 @@ export interface ParsedEntry {
 
 const INTERESTING = new Set(["user", "assistant"]);
 
+// Canonical UUID v1-v5 format: 8-4-4-4-12 lowercase/uppercase hex. We reject
+// non-UUID ids at the parser because `sessions.session_id` and
+// `token_usage_log.entry_uuid` are declared UUID in the schema — letting a
+// malformed id reach commitPass would roll back the whole transaction, leave
+// the file offset unchanged, and wedge the file forever.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Parse a single JSONL line. Returns null for: blank lines, malformed JSON,
- * entries whose `type` is not `user`/`assistant`, and entries missing any of
- * `uuid`/`sessionId`/`timestamp`. Never throws. Pure — callers are responsible
- * for any rate-limited logging of skip reasons (see spec §7.3).
+ * entries whose `type` is not `user`/`assistant`, entries missing any of
+ * `uuid`/`sessionId`/`timestamp`, and entries whose `uuid` or `sessionId` is
+ * not a valid UUID. Never throws. Pure — callers are responsible for any
+ * rate-limited logging of skip reasons (see spec §7.3).
  */
 export function parseJsonlLine(line: string): ParsedEntry | null {
   const trimmed = line.trim();
@@ -40,6 +48,7 @@ export function parseJsonlLine(line: string): ParsedEntry | null {
   if (typeof uuid !== "string" || typeof sessionId !== "string" || typeof timestamp !== "string") {
     return null;
   }
+  if (!UUID_RE.test(uuid) || !UUID_RE.test(sessionId)) return null;
   const isSidechain = obj.isSidechain === true;
   let model: string | null = null;
   let usage: TokenUsage | null = null;
