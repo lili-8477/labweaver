@@ -58,8 +58,13 @@ describe("rotation", () => {
 
     await processFile({ pool, watchRoot: root, fullPath: full, maxPassBytes: 8 * 1024 * 1024 });
 
+    // After rotation the old token row is gone (FK cascade on sessions
+    // DELETE) and the session row reflects only the new content.
     const r = await pool.query("SELECT count(*)::int AS c FROM token_usage_log WHERE session_id=$1", [SID]);
-    expect(r.rows[0].c).toBe(2);
+    expect(r.rows[0].c).toBe(1);
+    const s = await pool.query("SELECT message_count, token_usage FROM sessions WHERE session_id=$1", [SID]);
+    expect(s.rows[0].message_count).toBe(1);
+    expect(s.rows[0].token_usage).toEqual({ input: 1, output: 1, cache_read: 0, cache_write: 0 });
 
     await rm(root, { recursive: true, force: true });
   });
@@ -84,9 +89,13 @@ describe("rotation", () => {
     await writeFile(full, assistant(UUID(12)));
     await processFile({ pool, watchRoot: root, fullPath: full, maxPassBytes: 8 * 1024 * 1024 });
 
+    // After truncation the two original token rows are cascaded away and
+    // the session aggregates reflect only the post-truncation content.
     const r = await pool.query("SELECT count(*)::int AS c FROM token_usage_log WHERE session_id=$1", [SID]);
-    // 2 originals (unique) + 1 new = 3
-    expect(r.rows[0].c).toBe(3);
+    expect(r.rows[0].c).toBe(1);
+    const s = await pool.query("SELECT message_count, token_usage FROM sessions WHERE session_id=$1", [SID]);
+    expect(s.rows[0].message_count).toBe(1);
+    expect(s.rows[0].token_usage).toEqual({ input: 1, output: 1, cache_read: 0, cache_write: 0 });
 
     await rm(root, { recursive: true, force: true });
   });

@@ -36,10 +36,19 @@ export async function processFile(opts: ProcessFileOptions): Promise<void> {
   const prior = await readOffset(pool, username, fullPath);
   const inode = Number(stat.ino);
   let startOffset = 0;
+  // A "reset" is any pass where the stored offset can't be trusted — inode
+  // changed (rotation) or the file shrank (truncation). The first chunk of
+  // such a pass must DELETE existing session aggregates so the replay
+  // doesn't double-count against stale values.
+  let isResetPass = false;
   if (prior) {
     const sameInode = prior.inode === null || prior.inode === inode;
     const notShrunk = Number(stat.size) >= prior.byteOffset;
-    if (sameInode && notShrunk) startOffset = prior.byteOffset;
+    if (sameInode && notShrunk) {
+      startOffset = prior.byteOffset;
+    } else {
+      isResetPass = true;
+    }
   }
 
   const endOffset = Number(stat.size);
@@ -59,11 +68,21 @@ export async function processFile(opts: ProcessFileOptions): Promise<void> {
       displayProjectPath,
     });
 
+    // Only the FIRST chunk of a reset pass clears stale aggregates. Later
+    // chunks within the same pass are appending fresh content on top of rows
+    // this very transaction chain has already written.
+    const resetSessionIds = isResetPass
+      ? projection.sessionUpserts.map((s) => s.session_id)
+      : [];
+
     await commitPass(pool, {
       sessionUpserts: projection.sessionUpserts,
       tokenRows: projection.tokenRows,
       offset: { username, jsonlPath: fullPath, byteOffset: committedEnd, inode },
+      resetSessionIds,
     });
+
+    isResetPass = false;
 
     if (committedEnd <= chunkStart) break; // no complete lines in this slice
     chunkStart = committedEnd;

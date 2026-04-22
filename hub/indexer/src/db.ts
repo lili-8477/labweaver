@@ -12,6 +12,13 @@ export interface CommitPassInput {
   sessionUpserts: SessionUpsert[];
   tokenRows: TokenUsageRow[];
   offset: OffsetWrite;
+  /**
+   * Session ids to DELETE before the upserts run. Used on the first chunk of
+   * a reset pass (inode change or truncation) so stale aggregates from the
+   * file's previous incarnation don't double-count. FK cascade on
+   * token_usage_log.session_id cleans up the associated log rows.
+   */
+  resetSessionIds?: string[];
 }
 
 const UPSERT_SESSION_SQL = `
@@ -62,6 +69,12 @@ export async function commitPass(pool: Pool, input: CommitPassInput): Promise<vo
   const c = await pool.connect();
   try {
     await c.query("BEGIN");
+    if (input.resetSessionIds && input.resetSessionIds.length > 0) {
+      await c.query(
+        "DELETE FROM sessions WHERE session_id = ANY($1::uuid[])",
+        [input.resetSessionIds],
+      );
+    }
     for (const s of input.sessionUpserts) {
       await upsertSession(c, s);
     }
