@@ -58,11 +58,11 @@ describe("parseJsonlBuffer", () => {
     const buf = await readFile(FIX + "simple-session.jsonl", "utf8");
     const entries = parseJsonlBuffer(buf);
     expect(entries).toHaveLength(3);
-    expect(entries[0].type).toBe("user");
-    expect(entries[1].type).toBe("assistant");
-    expect(entries[1].usage!.input).toBe(10);
-    expect(entries[2].usage!.cache_read).toBe(100);
-    expect(entries[2].usage!.cache_write).toBe(50);
+    expect(entries[0]!.type).toBe("user");
+    expect(entries[1]!.type).toBe("assistant");
+    expect(entries[1]!.usage!.input).toBe(10);
+    expect(entries[2]!.usage!.cache_read).toBe(100);
+    expect(entries[2]!.usage!.cache_write).toBe(50);
   });
 
   it("skips malformed lines and recovers", async () => {
@@ -70,8 +70,8 @@ describe("parseJsonlBuffer", () => {
     const entries = parseJsonlBuffer(buf);
     // valid line 1 + valid line 3 = 2; line 2 is invalid, line 4 is truncated.
     expect(entries).toHaveLength(2);
-    expect(entries[0].uuid).toBe("99999999-9999-9999-9999-999999999999");
-    expect(entries[1].uuid).toBe("aaaaaaaa-0000-0000-0000-000000000001");
+    expect(entries[0]!.uuid).toBe("99999999-9999-9999-9999-999999999999");
+    expect(entries[1]!.uuid).toBe("aaaaaaaa-0000-0000-0000-000000000001");
   });
 
   it("marks subagent entries", async () => {

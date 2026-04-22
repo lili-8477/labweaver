@@ -17,6 +17,12 @@ export interface ParsedEntry {
 
 const INTERESTING = new Set(["user", "assistant"]);
 
+/**
+ * Parse a single JSONL line. Returns null for: blank lines, malformed JSON,
+ * entries whose `type` is not `user`/`assistant`, and entries missing any of
+ * `uuid`/`sessionId`/`timestamp`. Never throws. Pure — callers are responsible
+ * for any rate-limited logging of skip reasons (see spec §7.3).
+ */
 export function parseJsonlLine(line: string): ParsedEntry | null {
   const trimmed = line.trim();
   if (trimmed === "") return null;
