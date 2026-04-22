@@ -1,0 +1,4 @@
+{"type":"user","uuid":"99999999-9999-9999-9999-999999999999","sessionId":"dddddddd-dddd-dddd-dddd-dddddddddddd","timestamp":"2026-04-22T13:00:00.000Z","message":{"role":"user","content":"one"}}
+{not valid json at all
+{"type":"user","uuid":"aaaaaaaa-0000-0000-0000-000000000001","sessionId":"dddddddd-dddd-dddd-dddd-dddddddddddd","timestamp":"2026-04-22T13:00:01.000Z","message":{"role":"user","content":"three"}}
+{"type":"user","uuid":"aaaaaaaa-0000-0000-0000-00000000
