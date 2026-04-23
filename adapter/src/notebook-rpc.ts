@@ -87,14 +87,28 @@ export class NotebookManager {
   }
 
   private async readFile(relPath: string): Promise<NotebookFile> {
-    const raw = await fs.readFile(this.resolve(relPath), "utf8");
+    const abs = this.resolve(relPath);
+    const raw = await fs.readFile(abs, "utf8");
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch {
       throw new Error(`not a valid .ipynb (JSON parse failed): ${relPath}`);
     }
-    return normalizeNotebook(parsed as Record<string, unknown>);
+    const normalized = normalizeNotebook(parsed as Record<string, unknown>);
+    // Legacy .ipynb files saved in nbformat <4.5 lack cell ids. normalizeCell
+    // fabricates ids on every read — but if we don't persist them, the next
+    // read fabricates DIFFERENT ids and any frontend reference to the prior
+    // read's id fails with "cell not found". Detect missing-ids and write the
+    // upgraded notebook back so ids stabilise across reads.
+    const rawCells = ((parsed as Record<string, unknown>).cells as
+      Array<Record<string, unknown>>) ?? [];
+    const hadMissingIds = rawCells.some((c) => !c.id);
+    if (hadMissingIds) {
+      normalized.nbformat_minor = Math.max(normalized.nbformat_minor, 5);
+      await fs.writeFile(abs, JSON.stringify(normalized, null, 1), "utf8");
+    }
+    return normalized;
   }
 
   private async writeFile(relPath: string, nb: NotebookFile): Promise<void> {
