@@ -68,6 +68,32 @@ class Bridge:
         thread = threading.Thread(target=self._iopub_loop, daemon=True)
         thread.start()
         self._iopub_thread = thread
+        # Single dedicated shell-channel reader (dispatches execute_reply
+        # msgs to cell_ids via self.pending). Bind to the current kc so
+        # the loop naturally exits on restart when kc is rebound.
+        shell_thread = threading.Thread(target=self._shell_loop, daemon=True)
+        shell_thread.start()
+
+    def _shell_loop(self) -> None:
+        kc = self.kc
+        while kc is self.kc and kc is not None:
+            try:
+                reply = kc.get_shell_msg(timeout=0.5)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                emit({"op": "error", "error": f"shell read failed: {e}"})
+                return
+            content = reply.get("content") or {}
+            reply_parent = (reply.get("parent_header") or {}).get("msg_id")
+            cell_id = self.pending.pop(reply_parent, "")
+            emit({
+                "op": "execute_reply",
+                "cell_id": cell_id,
+                "status": content.get("status", "ok"),
+                "execution_count": content.get("execution_count"),
+                "error": content.get("ename"),
+            })
 
     def _iopub_loop(self) -> None:
         kc = self.kc
@@ -102,27 +128,10 @@ class Bridge:
         assert self.kc is not None
         msg_id = self.kc.execute(code, store_history=True)
         self.pending[msg_id] = cell_id
-
-        def wait_reply() -> None:
-            try:
-                reply = self.kc.get_shell_msg(timeout=None) if self.kc else None
-            except Exception as e:
-                emit({"op": "execute_reply", "cell_id": cell_id,
-                      "status": "error", "error": str(e)})
-                return
-            if reply is None:
-                return
-            content = reply.get("content") or {}
-            reply_parent = (reply.get("parent_header") or {}).get("msg_id")
-            emit({
-                "op": "execute_reply",
-                "cell_id": self.pending.pop(reply_parent, cell_id),
-                "status": content.get("status", "ok"),
-                "execution_count": content.get("execution_count"),
-                "error": content.get("ename"),
-            })
-
-        threading.Thread(target=wait_reply, daemon=True).start()
+        # Shell reader runs as a single dedicated thread (see
+        # _start_shell_reader); we don't spawn one thread per execute,
+        # which previously accumulated blocked-forever threads racing
+        # for get_shell_msg on the shared shell channel.
 
     def interrupt(self) -> None:
         if self.km:
