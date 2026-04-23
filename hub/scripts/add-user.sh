@@ -207,10 +207,20 @@ for spec in "${DATA_MOUNTS[@]+"${DATA_MOUNTS[@]}"}"; do
     MOUNTS+=(-v "${host}:${tgt}")
 done
 
+# GPU passthrough: pass --gpus all when nvidia-container-toolkit is present
+# on the host. Without the toolkit `--gpus all` fails hard, so we detect.
+# Override with GPU=0 to force-disable.
+GPU_FLAGS=()
+if [[ "${GPU:-auto}" != "0" ]] && command -v nvidia-ctk >/dev/null 2>&1; then
+    GPU_FLAGS=(--gpus all)
+    echo "  [gpu] --gpus all (detected nvidia-container-toolkit)"
+fi
+
 docker run -d \
     --name "${CONTAINER}" \
     --network "${NETWORK}" \
     --restart unless-stopped \
+    "${GPU_FLAGS[@]}" \
     -e "ID_HASH=${ID_HASH}" \
     -e "NATS_SERVERS=nats://${NATS_HOST}:4222" \
     -e "NATS_USER=agent" \
