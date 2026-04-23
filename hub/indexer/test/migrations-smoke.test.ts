@@ -20,11 +20,11 @@ afterAll(async () => {
 }, 30_000);
 
 describe("real migrations apply cleanly", () => {
-  it("applies 0001, 0002, 0003 against a fresh PG", async () => {
+  it("applies 0001, 0002, 0003, 0004 against a fresh PG", async () => {
     await runMigrations({ pool, migrationsDir: MIGRATIONS_DIR, lockKey: 0x62696f666c77n });
 
     const v = await pool.query("SELECT version FROM schema_migrations ORDER BY version");
-    expect(v.rows.map((r) => r.version)).toEqual([1, 2, 3]);
+    expect(v.rows.map((r) => r.version)).toEqual([1, 2, 3, 4]);
 
     const tables = await pool.query(
       "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename",
@@ -33,6 +33,7 @@ describe("real migrations apply cleanly", () => {
     expect(names).toContain("sessions");
     expect(names).toContain("token_usage_log");
     expect(names).toContain("file_offsets");
+    expect(names).toContain("chats");
     expect(names).toContain("schema_migrations");
 
     // Verify FK constraint on token_usage_log.session_id exists.
@@ -41,5 +42,14 @@ describe("real migrations apply cleanly", () => {
       WHERE contype='f' AND conrelid = 'token_usage_log'::regclass
     `);
     expect(fk.rowCount).toBeGreaterThan(0);
+
+    const idx = await pool.query(`
+      SELECT indexname FROM pg_indexes
+      WHERE schemaname='public' AND tablename='chats'
+      ORDER BY indexname
+    `);
+    const idxNames = idx.rows.map((r) => r.indexname);
+    expect(idxNames).toContain("chats_username_last_used_idx");
+    expect(idxNames).toContain("chats_session_id_idx");
   });
 });
