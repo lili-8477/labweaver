@@ -103,6 +103,11 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
 fi
 
 ensure_hub_env
+# Load POSTGRES_PASSWORD from hub/.env into the shell scope so the docker run
+# -e "PG_URL=..." substitution below sees it.
+set -a
+. "${ENV_FILE}"
+set +a
 echo "=== Adding user: ${USERNAME} ==="
 
 # --- 1. Workspace + config scaffolding --------------------------------------
@@ -211,6 +216,9 @@ docker run -d \
     -e "NATS_USER=agent" \
     -e "WORKSPACE_ROOT=/workspace" \
     -e "DEFAULT_PROJECT=/workspace" \
+    -e "PG_URL=postgres://bioflow:${POSTGRES_PASSWORD}@claude-bioflow-postgres:5432/bioflow" \
+    -e "USERNAME=${USERNAME}" \
+    -e "SIDECAR_IMPORT_ON_BOOT=1" \
     -e "HOME=/home/node" \
     "${MOUNTS[@]}" \
     -w /workspace \
