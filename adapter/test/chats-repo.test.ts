@@ -164,4 +164,19 @@ describe("ChatsRepo", () => {
     expect(renamed!.name).toBe("My pretty name");
     expect(generic!.name).toBe("AI-derived title here");
   });
+
+  it("list falls back to session.first_user_text when no ai-title exists", async () => {
+    const repo = new ChatsRepo(pool, "alice");
+    const chatId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const sessionId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+    await repo.create(chatId, "New chat");
+    await repo.setSessionUuid(chatId, sessionId);
+    await pool.query(
+      `INSERT INTO sessions (session_id, username, encoded_project_dir, first_user_text)
+       VALUES ($1, 'alice', '-w', 'hello from the user')`,
+      [sessionId],
+    );
+    const list = await repo.list();
+    expect(list.find((c) => c.id === chatId)!.name).toBe("hello from the user");
+  });
 });

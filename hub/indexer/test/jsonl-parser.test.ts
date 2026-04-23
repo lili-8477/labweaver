@@ -74,6 +74,21 @@ describe("parseJsonlLine", () => {
     expect(parseJsonlLine('{"type":"ai-title","sessionId":"not-a-uuid","aiTitle":"x"}')).toBeNull();
     expect(parseJsonlLine('{"type":"ai-title","sessionId":"88888888-8888-8888-8888-888888888888","aiTitle":""}')).toBeNull();
   });
+
+  it("extracts first text block from a user entry into userText", () => {
+    const e = parseJsonlLine('{"type":"user","uuid":"11111111-1111-1111-1111-111111111111","sessionId":"22222222-2222-2222-2222-222222222222","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":[{"type":"text","text":"what qc threshold"}]}}');
+    expect(e!.userText).toBe("what qc threshold");
+  });
+
+  it("returns null userText for a tool_result-only user entry", () => {
+    const e = parseJsonlLine('{"type":"user","uuid":"11111111-1111-1111-1111-111111111111","sessionId":"22222222-2222-2222-2222-222222222222","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"x"}]}}');
+    expect(e!.userText).toBeNull();
+  });
+
+  it("extracts userText when content is a plain string", () => {
+    const e = parseJsonlLine('{"type":"user","uuid":"11111111-1111-1111-1111-111111111111","sessionId":"22222222-2222-2222-2222-222222222222","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"hello there"}}');
+    expect(e!.userText).toBe("hello there");
+  });
 });
 
 describe("parseJsonlBuffer", () => {

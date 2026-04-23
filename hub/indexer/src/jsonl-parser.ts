@@ -14,6 +14,7 @@ export interface ParsedEntry {
   model: string | null;
   usage: TokenUsage | null;
   title: string | null;    // populated only when type === "title"
+  userText: string | null; // populated only for type === "user" with a text block
 }
 
 const INTERESTING = new Set(["user", "assistant", "ai-title"]);
@@ -60,6 +61,7 @@ export function parseJsonlLine(line: string): ParsedEntry | null {
       model: null,
       usage: null,
       title: aiTitle,
+      userText: null,
     };
   }
 
@@ -71,6 +73,26 @@ export function parseJsonlLine(line: string): ParsedEntry | null {
   }
   if (!UUID_RE.test(uuid) || !UUID_RE.test(sessionId)) return null;
   const isSidechain = obj.isSidechain === true;
+  let userText: string | null = null;
+  if (type === "user") {
+    const msg = obj.message as Record<string, unknown> | undefined;
+    const content = msg?.content;
+    if (typeof content === "string") {
+      userText = content.length > 0 ? content : null;
+    } else if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block && typeof block === "object") {
+          const b = block as Record<string, unknown>;
+          // Only `text` blocks count as typed user text. `tool_result`
+          // blocks arrive under type:"user" but are synthetic.
+          if (b.type === "text" && typeof b.text === "string" && b.text.length > 0) {
+            userText = b.text;
+            break;
+          }
+        }
+      }
+    }
+  }
   let model: string | null = null;
   let usage: TokenUsage | null = null;
   if (type === "assistant") {
@@ -88,7 +110,7 @@ export function parseJsonlLine(line: string): ParsedEntry | null {
       }
     }
   }
-  return { type: type as ParsedEntry["type"], uuid, sessionId, timestamp, isSidechain, model, usage, title: null };
+  return { type: type as ParsedEntry["type"], uuid, sessionId, timestamp, isSidechain, model, usage, title: null, userText };
 }
 
 export function parseJsonlBuffer(buf: string): ParsedEntry[] {

@@ -24,8 +24,9 @@ export interface CommitPassInput {
 const UPSERT_SESSION_SQL = `
 INSERT INTO sessions (
   session_id, username, encoded_project_dir, project_display, model,
-  message_count, token_usage, first_active, last_active, is_sidechain, title
-) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
+  message_count, token_usage, first_active, last_active, is_sidechain, title,
+  first_user_text
+) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
 ON CONFLICT (session_id) DO UPDATE SET
   username            = EXCLUDED.username,
   encoded_project_dir = EXCLUDED.encoded_project_dir,
@@ -42,10 +43,11 @@ ON CONFLICT (session_id) DO UPDATE SET
       'cache_write', COALESCE((sessions.token_usage->>'cache_write')::int, 0)
                    + COALESCE((EXCLUDED.token_usage->>'cache_write')::int, 0)
   ),
-  first_active = COALESCE(sessions.first_active, EXCLUDED.first_active),
-  last_active  = GREATEST(sessions.last_active, EXCLUDED.last_active),
-  is_sidechain = sessions.is_sidechain OR EXCLUDED.is_sidechain,
-  title        = COALESCE(EXCLUDED.title, sessions.title)
+  first_active    = COALESCE(sessions.first_active, EXCLUDED.first_active),
+  last_active     = GREATEST(sessions.last_active, EXCLUDED.last_active),
+  is_sidechain    = sessions.is_sidechain OR EXCLUDED.is_sidechain,
+  title           = COALESCE(EXCLUDED.title, sessions.title),
+  first_user_text = COALESCE(sessions.first_user_text, EXCLUDED.first_user_text)
 `;
 
 const INSERT_TOKEN_SQL = `
@@ -105,6 +107,7 @@ async function upsertSession(c: PoolClient, s: SessionUpsert): Promise<void> {
     s.last_active,
     s.is_sidechain,
     s.title_candidate,
+    s.first_user_text_candidate,
   ]);
 }
 

@@ -12,6 +12,7 @@ export interface SessionUpsert {
   last_active: string;
   is_sidechain: boolean;
   title_candidate: string | null;
+  first_user_text_candidate: string | null;
 }
 
 export interface TokenUsageRow {
@@ -68,6 +69,8 @@ export function projectEntries(entries: ParsedEntry[], meta: ProjectMeta): Proje
     let isSidechain = false;
     let model: string | null = null;
     let titleCandidate: string | null = null;
+    let firstUserText: string | null = null;
+    let firstUserTextTs: string | null = null;
     let messageCount = 0;
     const delta = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
 
@@ -77,6 +80,12 @@ export function projectEntries(entries: ParsedEntry[], meta: ProjectMeta): Proje
         continue;
       }
       messageCount++;
+      if (e.type === "user" && e.userText) {
+        if (firstUserTextTs === null || e.timestamp < firstUserTextTs) {
+          firstUserText = e.userText;
+          firstUserTextTs = e.timestamp;
+        }
+      }
       if (e.timestamp < firstTs) firstTs = e.timestamp;
       if (e.timestamp > lastTs) lastTs = e.timestamp;
       if (e.isSidechain) isSidechain = true;
@@ -114,8 +123,15 @@ export function projectEntries(entries: ParsedEntry[], meta: ProjectMeta): Proje
       last_active: lastTs,
       is_sidechain: isSidechain,
       title_candidate: titleCandidate,
+      first_user_text_candidate: firstUserText ? truncateForTitle(firstUserText) : null,
     });
   }
 
   return { sessionUpserts, tokenRows };
+}
+
+function truncateForTitle(s: string): string {
+  // Keep display-friendly; 60 chars matches the chat-sidebar 50+ellipsis rule.
+  const trimmed = s.trim().replace(/\s+/g, " ");
+  return trimmed.length > 60 ? trimmed.slice(0, 60) : trimmed;
 }

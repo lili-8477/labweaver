@@ -11,6 +11,7 @@ const BASE: ParsedEntry = {
   model: null,
   usage: null,
   title: null,
+  userText: null,
 };
 
 const META = {
@@ -112,5 +113,21 @@ describe("projectEntries", () => {
     const entries: ParsedEntry[] = [{ ...BASE, uuid: "bb000000-0000-0000-0000-000000000001" }];
     const r = projectEntries(entries, META);
     expect(r.sessionUpserts[0]!.title_candidate).toBeNull();
+  });
+
+  it("picks the chronologically first user text as first_user_text_candidate", () => {
+    const entries: ParsedEntry[] = [
+      { ...BASE, uuid: "bb000000-0000-0000-0000-000000000002", timestamp: "2026-04-22T10:00:05.000Z", userText: "second turn" },
+      { ...BASE, uuid: "aa000000-0000-0000-0000-000000000001", timestamp: "2026-04-22T10:00:00.000Z", userText: "first turn" },
+    ];
+    const r = projectEntries(entries, META);
+    expect(r.sessionUpserts[0]!.first_user_text_candidate).toBe("first turn");
+  });
+
+  it("truncates first_user_text_candidate to 60 chars", () => {
+    const long = "x".repeat(200);
+    const entries: ParsedEntry[] = [{ ...BASE, userText: long }];
+    const r = projectEntries(entries, META);
+    expect(r.sessionUpserts[0]!.first_user_text_candidate!.length).toBe(60);
   });
 });

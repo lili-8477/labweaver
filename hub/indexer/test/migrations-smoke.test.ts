@@ -20,11 +20,11 @@ afterAll(async () => {
 }, 30_000);
 
 describe("real migrations apply cleanly", () => {
-  it("applies 0001, 0002, 0003, 0004 against a fresh PG", async () => {
+  it("applies 0001, 0002, 0003, 0004, 0005 against a fresh PG", async () => {
     await runMigrations({ pool, migrationsDir: MIGRATIONS_DIR, lockKey: 0x62696f666c77n });
 
     const v = await pool.query("SELECT version FROM schema_migrations ORDER BY version");
-    expect(v.rows.map((r) => r.version)).toEqual([1, 2, 3, 4]);
+    expect(v.rows.map((r) => r.version)).toEqual([1, 2, 3, 4, 5]);
 
     const tables = await pool.query(
       "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename",
