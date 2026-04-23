@@ -17,6 +17,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'execute'): void
   (e: 'execute-advance'): void
+  (e: 'interrupt'): void
   (e: 'update', source: string): void
   (e: 'delete'): void
   (e: 'select'): void
@@ -243,13 +244,18 @@ function onMarkdownDblClick() {
 
     <!-- Actions -->
     <div class="cell-actions">
+      <!-- Run / Stop toggle: shows ■ (interrupt) while the cell is
+           executing so the user has a per-cell way to stop a long job
+           without hunting for the kernel-interrupt button in the toolbar.
+           Interrupt is kernel-wide (Jupyter runs one cell at a time), so
+           clicking ■ here interrupts whatever cell is currently running. -->
       <button
         v-if="isCode"
         class="action-btn run"
-        @click.stop="emit('execute')"
-        :disabled="executing"
-        title="Run (Ctrl+Enter) · Shift+Enter to advance"
-      >▶</button>
+        :class="{ stop: executing }"
+        @click.stop="executing ? emit('interrupt') : emit('execute')"
+        :title="executing ? 'Interrupt kernel (stops this cell)' : 'Run (Ctrl+Enter) · Shift+Enter to advance'"
+      >{{ executing ? '■' : '▶' }}</button>
       <button
         v-if="isMarkdown && markdownEditing"
         class="action-btn run"
@@ -385,5 +391,7 @@ function onMarkdownDblClick() {
 .action-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 .action-btn.run { color: var(--success); }
 .action-btn.run:hover { color: var(--success); }
+.action-btn.run.stop { color: var(--warning); }
+.action-btn.run.stop:hover { color: var(--danger); background: var(--bg-hover); }
 .action-btn.delete:hover { color: var(--danger); }
 </style>

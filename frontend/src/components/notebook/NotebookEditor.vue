@@ -197,6 +197,7 @@ watch(
                 :markdown-editing="nb.editingMarkdownCells.has(cell.id)"
                 @execute="nb.executeCell(cell.id)"
                 @execute-advance="nb.runAndAdvance(cell.id)"
+                @interrupt="nb.interruptKernel()"
                 @update="(src: string) => nb.updateCell(cell.id, src)"
                 @delete="nb.deleteCell(cell.id)"
                 @select="nb.selectedCellId = cell.id"
