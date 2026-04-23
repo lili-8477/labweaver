@@ -9,6 +9,7 @@ WORKSPACES_DIR="${HUB_DIR}/workspaces"
 SHARED_DIR="${WORKSPACES_DIR}/shared"
 NETWORK="claude-bioflow_bioflow-net"
 NATS_HOST="claude-bioflow-nats"
+ENV_FILE="${HUB_DIR}/.env"
 
 IMAGE="${IMAGE:-claude-bioflow:dev}"
 USERNAME="${1:-}"
@@ -22,6 +23,15 @@ CONTAINER="claude-bioflow-${USERNAME}"
 WORKSPACE="${WORKSPACES_DIR}/${USERNAME}"
 
 [[ -d "$WORKSPACE" ]] || { echo "No workspace at ${WORKSPACE}"; exit 1; }
+
+if [[ ! -f "$ENV_FILE" ]]; then
+    echo "Missing ${ENV_FILE}; run add-user.sh once (or create the file) to generate POSTGRES_PASSWORD."
+    exit 1
+fi
+# Load POSTGRES_PASSWORD so the docker run -e "PG_URL=..." substitution sees it.
+set -a
+. "${ENV_FILE}"
+set +a
 
 if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
     docker stop "${CONTAINER}" >/dev/null
@@ -39,6 +49,9 @@ docker run -d \
     -e "NATS_USER=agent" \
     -e "WORKSPACE_ROOT=/workspace" \
     -e "DEFAULT_PROJECT=/workspace" \
+    -e "PG_URL=postgres://bioflow:${POSTGRES_PASSWORD}@claude-bioflow-postgres:5432/bioflow" \
+    -e "USERNAME=${USERNAME}" \
+    -e "SIDECAR_IMPORT_ON_BOOT=1" \
     -e "HOME=/home/node" \
     -v "${WORKSPACE}/local_projects:/workspace/local_projects" \
     -v "${WORKSPACE}/.pantheon/chats:/workspace/.pantheon/chats" \
