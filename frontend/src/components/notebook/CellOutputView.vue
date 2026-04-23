@@ -198,10 +198,20 @@ pre {
   margin: 0;
   line-height: 1.45;
 }
-.cell-output.scroll-mode pre,
-.cell-output.scroll-mode .html-output {
-  max-height: 320px;
+/* Scroll-mode bounds the ENTIRE output body (not individual pre/html
+ * elements) so cells with many outputs — multiple prints, image + text,
+ * tqdm progress bars, stderr warnings stacked on top of stdout — stay
+ * capped. Individual pre still wraps via white-space: pre-wrap above. */
+.cell-output.scroll-mode .output-body {
+  max-height: 480px;
   overflow-y: auto;
+}
+/* Also cap matplotlib / display image height so giant figures don't
+ * dominate even outside scroll-mode. The user can still click to open
+ * full-size via the browser if needed. */
+.cell-output.scroll-mode .output-image {
+  max-height: 440px;
+  width: auto;
 }
 
 .stream-output.stderr { color: var(--danger); }
