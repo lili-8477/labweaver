@@ -50,6 +50,13 @@ RUN groupadd --gid "${GID}" node \
                 /home/node/.claude/agents \
                 /home/node/.claude/projects \
     && chown -R node:node /home/node/.claude /opt/adapter \
+    # The base image's Python venv is owned by root, but the adapter runs as
+    # `node` and the agent needs to `pip install` into it at runtime (torch,
+    # scSurvival, jupyter, etc). Without this chown every user hits a
+    # "Permission denied: /venv/lib/python3.12/site-packages/..." failure on
+    # their first install and loses hours to a polling loop waiting for a
+    # package that will never appear.
+    && chown -R node:node /venv \
     && chmod +x /opt/adapter/kernel-bridge.py
 
 USER node
