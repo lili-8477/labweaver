@@ -61,14 +61,3 @@ export interface ChatInfo {
   running?: boolean;
   project_name?: string;
 }
-
-export interface ChatSidecar {
-  id: string;
-  name: string;
-  created_at: string;
-  last_activity_at: string;
-  project_name?: string;
-  active_agent?: string;
-  /** Real Claude Code session UUID (SDK generates its own, ignoring chat_id). */
-  session_uuid?: string;
-}
