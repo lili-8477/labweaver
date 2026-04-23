@@ -50,14 +50,12 @@ RUN groupadd --gid "${GID}" node \
                 /home/node/.claude/agents \
                 /home/node/.claude/projects \
     && chown -R node:node /home/node/.claude /opt/adapter \
-    # The base image's Python venv is owned by root, but the adapter runs as
-    # `node` and the agent needs to `pip install` into it at runtime (torch,
-    # scSurvival, jupyter, etc). Without this chown every user hits a
-    # "Permission denied: /venv/lib/python3.12/site-packages/..." failure on
-    # their first install and loses hours to a polling loop waiting for a
-    # package that will never appear.
-    && chown -R node:node /venv \
     && chmod +x /opt/adapter/kernel-bridge.py
+# NOTE: `/venv` is inherited from the base image owned by root. We intentionally
+# do NOT chown it here — doing so rewrites ~10k file inode bits and forces a
+# fresh ~3 GB layer at build time. Instead, add-user.sh / recreate-user.sh run
+# `docker exec -u root <name> chown -R node:node /venv` once per container, so
+# the ownership lives in the container's own overlay (fast, no image bloat).
 
 USER node
 WORKDIR /workspace

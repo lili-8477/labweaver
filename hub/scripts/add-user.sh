@@ -231,6 +231,13 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
     exit 1
 fi
 
+# Chown the inherited /venv to node so runtime pip installs (torch,
+# scSurvival, jupyter, etc) actually land. Runs once per container,
+# takes ~10s, lives in the container's own overlay — NOT in the image.
+docker exec -u root "${CONTAINER}" chown -R node:node /venv 2>/dev/null \
+    && echo "  chown /venv -> node:node OK" \
+    || echo "  chown /venv skipped (already owned, or container not ready)"
+
 cat <<SUMMARY
 
 === User '${USERNAME}' created ===

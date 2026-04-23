@@ -67,4 +67,13 @@ docker run -d \
     -w /workspace \
     "${IMAGE}"
 
+# The base image's /venv is owned by root:root so runtime `pip install`
+# (torch, scSurvival, etc) fails with "Permission denied". Fix it once
+# per container — lives in the container's overlay, takes ~10s, and does
+# NOT bloat the shared image layer. Best-effort; don't fail the recreate
+# if it hiccups.
+docker exec -u root "${CONTAINER}" chown -R node:node /venv 2>/dev/null \
+    && echo "  chown /venv -> node:node OK" \
+    || echo "  chown /venv skipped (already owned, or container not ready)"
+
 echo "Recreated ${CONTAINER} with image ${IMAGE}."
