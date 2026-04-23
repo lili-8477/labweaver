@@ -18,14 +18,28 @@ const scrollMode = ref(false)
 // ─── Output helpers ─────────────────────────────────────────────────
 
 function getOutputText(output: CellOutput): string {
+  let text = ''
   if (output.text) {
-    return Array.isArray(output.text) ? output.text.join('') : output.text
-  }
-  if (output.data?.['text/plain']) {
+    text = Array.isArray(output.text) ? output.text.join('') : output.text
+  } else if (output.data?.['text/plain']) {
     const v = output.data['text/plain']
-    return Array.isArray(v) ? v.join('') : String(v)
+    text = Array.isArray(v) ? v.join('') : String(v)
   }
-  return ''
+  // Terminal-style carriage-return handling. Tools like tqdm (console
+  // variant) emit progress frames as "\r0%...\r10%...\r20%...\n" — in a
+  // real terminal each \r rewrites the current line. In a <pre> those
+  // frames stack into noise. Keep only the text after the last \r on
+  // each line, which matches "last write wins" on a CR-capable TTY.
+  if (text.includes('\r')) {
+    text = text
+      .split('\n')
+      .map((line) => {
+        const idx = line.lastIndexOf('\r')
+        return idx === -1 ? line : line.slice(idx + 1)
+      })
+      .join('\n')
+  }
+  return text
 }
 
 function getHtmlOutput(output: CellOutput): string | null {
