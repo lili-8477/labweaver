@@ -70,7 +70,10 @@ describe("NotebookManager", () => {
   });
 
   it("manage_kernel returns a dead kernel stub for status", async () => {
-    const res = (await nm.manageKernel("status")) as { success: boolean; status: string };
+    const res = (await nm.manageKernel("x.ipynb", "status")) as {
+      success: boolean;
+      status: string;
+    };
     expect(res.success).toBe(true);
     expect(res.status).toBe("dead");
   });

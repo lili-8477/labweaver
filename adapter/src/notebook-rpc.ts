@@ -2,10 +2,16 @@
 // for execute_cell. The kernel runs as a Python child process; IOPub
 // messages are republished to NATS so the frontend can stream live output.
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { KernelBridge, IOPubEvent } from "./kernel.js";
+
+/**
+ * Factory for per-notebook kernels. Receives the stable sessionId the
+ * manager wants the kernel to use so IOPub subjects stay routable.
+ */
+export type KernelFactory = (sessionId: string) => KernelBridge;
 
 interface NotebookCell {
   id: string;
@@ -84,11 +90,23 @@ function blankNotebook(language: string): NotebookFile {
 }
 
 export class NotebookManager {
-  /** Kernel is optional — the simple (file-only) build passes undefined. */
-  constructor(private root: string, private kernel?: KernelBridge) {}
+  /**
+   * `kernelFactory` is optional — the simple (file-only) build passes
+   * undefined. When provided, each distinct notebook path gets its own
+   * `KernelBridge`, isolating the Python namespace (and variable
+   * inspector) per notebook.
+   */
+  constructor(
+    private root: string,
+    private kernelFactory?: KernelFactory,
+    private kernelSessionPrefix = "k",
+  ) {}
 
   /** Bump version each in-memory mutation so the frontend can detect staleness. */
   private versions = new Map<string, number>();
+
+  /** One kernel per notebook, keyed by the resolved absolute path. */
+  private kernels = new Map<string, KernelBridge>();
 
   private resolve(relPath: string): string {
     const normalized = path.normalize(relPath).replace(/^(\.\.[/\\])+/, "");
@@ -142,8 +160,42 @@ export class NotebookManager {
       cell_count: nb.cells.length,
       notebook: nb,
     };
-    if (this.kernel) base.kernel_session_id = this.kernel.sessionId;
+    if (this.kernelFactory) base.kernel_session_id = this.sessionIdFor(relPath);
     return base;
+  }
+
+  /**
+   * Deterministic session id for a notebook path. Must not depend on the
+   * kernel existing yet — we return this from `read_notebook` so the
+   * frontend can pre-subscribe to the IOPub stream.
+   */
+  private sessionIdFor(relPath: string): string {
+    const key = this.resolve(relPath);
+    const h = createHash("sha1").update(key).digest("hex").slice(0, 12);
+    return `${this.kernelSessionPrefix}_${h}`;
+  }
+
+  /** Look up an existing kernel for this notebook, no auto-spawn. */
+  private getKernel(relPath: string): KernelBridge | undefined {
+    return this.kernels.get(this.resolve(relPath));
+  }
+
+  /** Lazily create a kernel for this notebook on first use. */
+  private getOrCreateKernel(relPath: string): KernelBridge | undefined {
+    if (!this.kernelFactory) return undefined;
+    const key = this.resolve(relPath);
+    let k = this.kernels.get(key);
+    if (!k) {
+      k = this.kernelFactory(this.sessionIdFor(relPath));
+      this.kernels.set(key, k);
+    }
+    return k;
+  }
+
+  /** Shut every per-notebook kernel down. Used on adapter teardown. */
+  shutdownAll(): void {
+    for (const k of this.kernels.values()) k.shutdown();
+    this.kernels.clear();
   }
 
   /** Infer kernelspec name from notebook metadata, defaulting to python3. */
@@ -245,7 +297,8 @@ export class NotebookManager {
   }
 
   async executeCell(relPath: string, cellId: string): Promise<unknown> {
-    if (!this.kernel) {
+    const kernel = this.getOrCreateKernel(relPath);
+    if (!kernel) {
       return {
         success: false,
         error: "execute_cell not supported: kernel bridge not configured",
@@ -255,10 +308,10 @@ export class NotebookManager {
     const cell = nb.cells.find((c) => c.id === cellId);
     if (!cell) throw new Error(`cell not found: ${cellId}`);
     if (cell.cell_type !== "code") {
-      return { success: true, execution_count: null, kernel_session_id: this.kernel.sessionId };
+      return { success: true, execution_count: null, kernel_session_id: kernel.sessionId };
     }
     const kernelspec = this.kernelspecOf(nb);
-    const reply = await this.kernel.execute(cellId, cell.source, kernelspec);
+    const reply = await kernel.execute(cellId, cell.source, kernelspec);
     // Persist execution_count back into the cell so reloads keep it.
     cell.execution_count = reply.execution_count;
     await this.writeFile(relPath, nb);
@@ -267,20 +320,31 @@ export class NotebookManager {
       status: reply.status,
       execution_count: reply.execution_count,
       error: reply.error,
-      kernel_session_id: this.kernel.sessionId,
+      kernel_session_id: kernel.sessionId,
     };
   }
 
-  async manageKernel(action: string): Promise<unknown> {
-    if (!this.kernel) {
+  async manageKernel(relPath: string, action: string): Promise<unknown> {
+    if (!this.kernelFactory) {
       if (action === "status")
         return { success: true, status: "dead", kernel_status: "dead", kernel_session_id: null };
       if (action === "variables") return { success: true, variables: {} };
       return { success: false, error: "kernel bridge not configured" };
     }
-    const sessionId = this.kernel.sessionId;
+
+    const sessionId = this.sessionIdFor(relPath);
+    const existing = this.getKernel(relPath);
+
     if (action === "status") {
-      const snap = this.kernel.getSnapshot();
+      if (!existing) {
+        return {
+          success: true,
+          status: "dead",
+          kernel_status: "dead",
+          kernel_session_id: sessionId,
+        };
+      }
+      const snap = existing.getSnapshot();
       const rssMB = await readRssMB(snap.pid);
       // Emit both field names: `kernel_status` is what the frontend reads;
       // `status` is kept for any older/other consumer.
@@ -299,21 +363,32 @@ export class NotebookManager {
       };
     }
     if (action === "interrupt") {
-      this.kernel.interrupt();
+      existing?.interrupt();
       return { success: true, kernel_session_id: sessionId };
     }
     if (action === "restart") {
-      this.kernel.restart();
+      // Create the kernel on restart if it doesn't exist — matches the
+      // previous single-kernel behaviour where `restart` after a cull
+      // would respawn.
+      const k = this.getOrCreateKernel(relPath)!;
+      k.restart();
       return { success: true, kernel_session_id: sessionId };
     }
     if (action === "shutdown") {
-      this.kernel.shutdown();
+      if (existing) {
+        existing.shutdown();
+        this.kernels.delete(this.resolve(relPath));
+      }
       return { success: true, kernel_session_id: sessionId };
     }
     if (action === "variables") {
+      // If no kernel has ever run for this notebook, there are no variables.
+      // Don't auto-spawn — the cost is a kernel start (~1-2s) per switch.
+      if (!existing) {
+        return { success: true, variables: {}, kernel_session_id: sessionId };
+      }
       // Run a small introspection snippet in the kernel and parse its
-      // stdout (JSON). We pay ~10-50ms per call for a running kernel;
-      // fresh kernels need a kernel-start first (~1-2s).
+      // stdout (JSON). We pay ~10-50ms per call for a running kernel.
       const code =
         "import json as _j, types as _t\n" +
         "_SKIP = {'In','Out','get_ipython','exit','quit','open'}\n" +
@@ -336,7 +411,7 @@ export class NotebookManager {
         "    _o[_k] = {'type': _tn, 'repr': _r, 'shape': _shape}\n" +
         "print(_j.dumps(_o))\n";
       try {
-        const { stdout } = await this.kernel.executeAndCollect(
+        const { stdout } = await existing.executeAndCollect(
           "__vars_introspect__",
           code,
         );
@@ -391,7 +466,7 @@ export class NotebookManager {
       case "execute_cell":
         return this.executeCell(p, args.cell_id as string);
       case "manage_kernel":
-        return this.manageKernel((args.action as string) ?? "status");
+        return this.manageKernel(p, (args.action as string) ?? "status");
       default:
         throw new Error(`notebook: unknown method ${method}`);
     }

@@ -36,24 +36,29 @@ export class RpcRouter {
   private chats: ChatsRepo;
   private files: FileManager;
   private notebooks: NotebookManager;
-  private kernel: KernelBridge;
   private mutexes = new ChatMutexRegistry();
   private aborts = new AbortRegistry();
 
   constructor(private deps: RpcDeps) {
     this.chats = deps.chats;
     this.files = new FileManager(deps.workspaceRoot);
-    // Kernel session_id = first 16 hex of service_id — stable per adapter.
-    const kernelSessionId = `k_${deps.serviceId.slice(0, 16)}`;
-    this.kernel = new KernelBridge({
-      bridgePath: deps.kernelBridgePath,
-      sessionId: kernelSessionId,
-      onIopub: (sessionId, ev) => this.publishIopub(sessionId, ev),
-      cullIdleMs: deps.kernelIdleCullMs,
-      cullCheckIntervalMs: deps.kernelCullCheckIntervalMs,
-      onCulled: (sessionId, reason) => this.publishCulled(sessionId, reason),
-    });
-    this.notebooks = new NotebookManager(deps.workspaceRoot, this.kernel);
+    // Kernel session_id = `<prefix>_<hash-of-notebook-path>`. One kernel
+    // per notebook so their variable namespaces don't bleed together.
+    const kernelSessionPrefix = `k_${deps.serviceId.slice(0, 16)}`;
+    const kernelFactory = (sessionId: string): KernelBridge =>
+      new KernelBridge({
+        bridgePath: deps.kernelBridgePath,
+        sessionId,
+        onIopub: (sid, ev) => this.publishIopub(sid, ev),
+        cullIdleMs: deps.kernelIdleCullMs,
+        cullCheckIntervalMs: deps.kernelCullCheckIntervalMs,
+        onCulled: (sid, reason) => this.publishCulled(sid, reason),
+      });
+    this.notebooks = new NotebookManager(
+      deps.workspaceRoot,
+      kernelFactory,
+      kernelSessionPrefix,
+    );
   }
 
   private settingsPath(): string {
@@ -110,7 +115,7 @@ export class RpcRouter {
 
   abortAll(): void {
     this.aborts.abortAll();
-    this.kernel.shutdown();
+    this.notebooks.shutdownAll();
   }
 
   async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
