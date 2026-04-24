@@ -67,6 +67,10 @@ RUN groupadd --gid "${GID}" node \
 # `docker exec -u root <name> chown -R node:node /venv` once per container, so
 # the ownership lives in the container's own overlay (fast, no image bloat).
 
+# Pre-create /workspace as node — otherwise `WORKDIR /workspace` below
+# auto-creates it as root, and scanpy's `sc.pl.*(save=...)` (which does
+# `makedirs('figures')` in the CWD) fails with EACCES.
+RUN mkdir -p /workspace && chown node:node /workspace
 USER node
 WORKDIR /workspace
 ENV HOME=/home/node \
