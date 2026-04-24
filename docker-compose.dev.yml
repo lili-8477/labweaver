@@ -35,6 +35,10 @@ services:
       PG_URL: "postgres://bioflow:${POSTGRES_PASSWORD}@postgres:5432/bioflow"
       USERNAME: "devuser"
       SIDECAR_IMPORT_ON_BOOT: "1"
+      # Auto-shutdown kernels idle (no in-flight cell) longer than this.
+      # Next execute re-spawns lazily. 0 disables culling.
+      KERNEL_IDLE_CULL_MS: "14400000"
+      KERNEL_CULL_CHECK_INTERVAL_MS: "60000"
     env_file:
       - path: ./hub/workspaces/devuser/.env
         required: false

@@ -53,6 +53,23 @@ function normalizeNotebook(raw: Record<string, unknown>): NotebookFile {
   };
 }
 
+/**
+ * Best-effort resident-set-size read from /proc/<pid>/status (Linux only).
+ * Returns null if the file is unreadable or the pid is missing — callers
+ * should treat null as "unknown", not "zero".
+ */
+async function readRssMB(pid: number | null): Promise<number | null> {
+  if (pid == null) return null;
+  try {
+    const raw = await fs.readFile(`/proc/${pid}/status`, "utf8");
+    const m = raw.match(/^VmRSS:\s+(\d+)\s+kB/m);
+    if (!m || !m[1]) return null;
+    return Math.round(parseInt(m[1], 10) / 1024);
+  } catch {
+    return null;
+  }
+}
+
 function blankNotebook(language: string): NotebookFile {
   const kernelspec =
     language === "r"
@@ -263,13 +280,22 @@ export class NotebookManager {
     }
     const sessionId = this.kernel.sessionId;
     if (action === "status") {
+      const snap = this.kernel.getSnapshot();
+      const rssMB = await readRssMB(snap.pid);
       // Emit both field names: `kernel_status` is what the frontend reads;
       // `status` is kept for any older/other consumer.
       return {
         success: true,
-        status: this.kernel.status,
-        kernel_status: this.kernel.status,
+        status: snap.status,
+        kernel_status: snap.status,
         kernel_session_id: sessionId,
+        running: snap.running,
+        pid: snap.pid,
+        started_at: snap.startedAt,
+        last_activity_at: snap.lastActivityAt,
+        idle_ms: snap.idleMs,
+        in_flight: snap.inFlight,
+        rss_mb: rssMB,
       };
     }
     if (action === "interrupt") {

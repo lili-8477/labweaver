@@ -11,6 +11,9 @@
 //   HOME              default "/home/node"
 //   PG_URL            REQUIRED (Phase 2) — postgres connection string
 //   USERNAME          REQUIRED (Phase 2) — tenant key for all chat queries
+//   KERNEL_IDLE_CULL_MS           default 0 (disabled); when >0, cull a kernel
+//                                 idle for this many ms (no in-flight executes)
+//   KERNEL_CULL_CHECK_INTERVAL_MS default 60000; how often to check
 
 import { createHash } from "node:crypto";
 import { Pool } from "pg";
@@ -70,6 +73,11 @@ async function main(): Promise<void> {
     publishRaw: (subject, envelope) => bus.publishRaw(subject, envelope),
     streamSubject: (streamId) => bus.subjectFor(streamId),
     kernelBridgePath: process.env.KERNEL_BRIDGE_PATH ?? "/opt/adapter/kernel-bridge.py",
+    kernelIdleCullMs: parsePositiveInt(process.env.KERNEL_IDLE_CULL_MS, 0),
+    kernelCullCheckIntervalMs: parsePositiveInt(
+      process.env.KERNEL_CULL_CHECK_INTERVAL_MS,
+      60_000,
+    ),
   });
 
   await bus.serve((method, params) => router.dispatch(method, params));
@@ -94,6 +102,12 @@ function requireEnv(name: string): string {
     process.exit(2);
   }
   return v;
+}
+
+function parsePositiveInt(v: string | undefined, fallback: number): number {
+  if (!v) return fallback;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
 async function waitForPg(pool: Pool, maxSec: number): Promise<void> {

@@ -26,6 +26,10 @@ export interface RpcDeps {
   streamSubject: (streamId: string) => string;
   /** Path to the Python kernel bridge script. */
   kernelBridgePath: string;
+  /** Idle-cull threshold (ms). 0 disables automatic culling. */
+  kernelIdleCullMs?: number;
+  /** How often to check for cull (ms). Defaults to 60_000. */
+  kernelCullCheckIntervalMs?: number;
 }
 
 export class RpcRouter {
@@ -45,6 +49,9 @@ export class RpcRouter {
       bridgePath: deps.kernelBridgePath,
       sessionId: kernelSessionId,
       onIopub: (sessionId, ev) => this.publishIopub(sessionId, ev),
+      cullIdleMs: deps.kernelIdleCullMs,
+      cullCheckIntervalMs: deps.kernelCullCheckIntervalMs,
+      onCulled: (sessionId, reason) => this.publishCulled(sessionId, reason),
     });
     this.notebooks = new NotebookManager(deps.workspaceRoot, this.kernel);
   }
@@ -65,6 +72,26 @@ export class RpcRouter {
 
   private async writeSettings(obj: Record<string, unknown>): Promise<void> {
     await fs.writeFile(this.settingsPath(), JSON.stringify(obj, null, 2) + "\n", "utf8");
+  }
+
+  private publishCulled(
+    sessionId: string,
+    reason: { idleMs: number; thresholdMs: number },
+  ): void {
+    // Publish a synthetic iopub-style status message so any frontend listening
+    // on notebook_iopub_<sessionId> learns the kernel was culled. Next
+    // executeCell will respawn lazily.
+    const subject = this.deps.streamSubject(`notebook_iopub_${sessionId}`);
+    this.deps.publishRaw(subject, {
+      type: "notebook",
+      session_id: this.deps.serviceId,
+      timestamp: Date.now() / 1000,
+      data: {
+        msg_type: "status",
+        content: { execution_state: "dead", cull_reason: reason },
+      },
+      metadata: { cell_id: undefined },
+    });
   }
 
   private publishIopub(sessionId: string, ev: IOPubEvent): void {
