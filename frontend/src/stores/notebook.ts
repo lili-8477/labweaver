@@ -540,10 +540,35 @@ export const useNotebookStore = defineStore('notebook', () => {
         'manage_kernel',
         { notebook_path: filePath.value, action: 'variables' },
         'notebook',
-      )) as { success: boolean; variables?: Record<string, VariableInfo> }
+      )) as {
+        success: boolean
+        variables?: Record<
+          string,
+          {
+            name?: string
+            type?: string
+            // claude-bioflow adapter shape
+            repr?: string
+            shape?: string | null
+            // pantheon backend shape
+            size?: string
+            value?: string
+          }
+        >
+      }
       captureKernelSessionId(result)
       if (result?.success !== false && result?.variables) {
-        variables.value = result.variables
+        const out: Record<string, VariableInfo> = {}
+        for (const [key, info] of Object.entries(result.variables)) {
+          const name = info.name || key
+          out[name] = {
+            name,
+            type: info.type ?? '',
+            size: info.size ?? info.shape ?? undefined,
+            value: info.value ?? info.repr,
+          }
+        }
+        variables.value = out
       }
     } catch (e) {
       console.warn('loadVariables failed:', e)
