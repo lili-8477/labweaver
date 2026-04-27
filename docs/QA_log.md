@@ -75,3 +75,28 @@ Mechanics:
 - Imported files are plain markdown — not skills. For skill-style routing, use `.claude/skills/` instead.
 
 Bioflow application: bind-mount `shared/CLAUDE.md` into each container at e.g. `/workspace/.bioflow/shared.md`, seed each user's `CLAUDE.md` with `@/workspace/.bioflow/shared.md` as the first line, and shared edits will flow live to every workspace while user files own local overrides.
+
+---
+
+## 2026-04-27 — Why didn't `nginx -s reload` pick up my edited nginx.conf?
+
+**Q:** I edited `hub/nginx.conf` on the host, ran `docker exec ... nginx -s reload`, and the new `location /upload/` block didn't take effect — uploads still hit the catch-all and returned 405. The host file clearly had my changes. What was going on?
+
+**A:** Linux bind-mounts of *single files* (not directories) bind to the **inode**, not the path. Many editors — including Claude Code's Edit/Write tools — implement an "atomic write" by writing a sibling temp file and renaming it over the target. The rename gives the path a new inode; the original inode is unlinked from the host directory entry but stays alive because the container still has it open via the bind mount.
+
+So:
+- The host's `hub/nginx.conf` correctly had the new content (new inode).
+- The container's `/etc/nginx/nginx.conf` was still pointing at the **old, now-orphaned inode** with the old content.
+- `nginx -s reload` re-read its config — but it re-read the *old* file, since that's what the bind mount still resolved to.
+
+`docker logs claude-bioflow-nginx` confirmed it: `wc -l /etc/nginx/nginx.conf` inside the container reported 99 lines, while the host file was 145. `ls -la` inside the container showed an mtime from days earlier — a clear inode-swap fingerprint.
+
+**Fix:** `docker restart <container>`. Restart re-resolves bind sources by path, so the new inode gets picked up.
+
+**Avoid in the future:**
+
+- For config files that change often, prefer bind-mounting the **parent directory** instead of the single file. Directory bind-mounts resolve children by name on each access, so atomic-rename edits work transparently.
+- Or treat any `Edit`/`Write` of a bind-mounted file as needing a `docker restart`, not just a config reload.
+- The same trap applies to `docker cp` in reverse — copying *over* a bind-mounted file inside the container won't propagate to the host either, because the container's overlay shadows the bind source.
+
+This burned roughly 15 minutes of upload-feature debugging today; the symptom (`405 Method Not Allowed` on `PUT /upload/...`) led me on a wild goose chase through frontend XHR code, nginx variable resolution, and adapter method handling before the inode mismatch became visible.
