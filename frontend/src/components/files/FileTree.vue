@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useFileStore } from '@/stores/files'
+import { useUploadsStore } from '@/stores/uploads'
+import { queueUpload, cancelUpload, retryUpload } from '@/services/upload'
 import { getFileIcon } from '@/utils/format'
 import { natsService } from '@/services/nats'
 import type { FileEntry } from '@/types'
@@ -10,11 +12,21 @@ const emit = defineEmits<{
 }>()
 
 const files = useFileStore()
+const uploads = useUploadsStore()
 
 // State: which dirs are expanded, their loaded children, loading status
 const expandedDirs = ref<Set<string>>(new Set())
 const dirChildren = ref<Map<string, FileEntry[]>>(new Map())
 const loadingDirs = ref<Set<string>>(new Set())
+
+// Retry support: keep the original File handle off the Pinia store (Vue's
+// reactivity proxy mangles XHR-related types). Component-local Map is fine
+// since retries only happen while the tree is mounted.
+const fileForUpload = new Map<string, File>()
+const dragOverPath = ref<string | null>(null)  // null = pane background
+const isDraggingFiles = ref(false)             // true while a file-drag is active over the tree
+const fileInput = ref<HTMLInputElement | null>(null)
+const uploadTargetDir = ref<string>('')        // dest for the toolbar button picker
 
 const newItemPath = ref('')
 const showNewInput = ref(false)
@@ -139,6 +151,109 @@ function refresh() {
   expandedDirs.value.clear()
   files.loadTree()
 }
+
+/** Workspace-relative directory that this drop target represents.
+ *  null path = the empty tree-content pane → workspace root. */
+function dropDirFor(path: string | null): string {
+  if (path === null) return ''
+  // If the row is a directory, drop into it. If it's a file, drop into its parent.
+  const child = visibleEntries.value.find(fe => fe.path === path)
+  if (!child) return ''
+  if (child.entry.type === 'directory') return path
+  const lastSlash = path.lastIndexOf('/')
+  return lastSlash < 0 ? '' : path.slice(0, lastSlash)
+}
+
+function refreshAfterUpload(destDir: string) {
+  // Reload the destination dir's listing so the new file appears.
+  if (destDir === '') {
+    files.loadTree()
+    return
+  }
+  // For a sub-dir, drop the cached children and re-toggle if expanded.
+  dirChildren.value.delete(destDir)
+  dirChildren.value = new Map(dirChildren.value)
+  if (expandedDirs.value.has(destDir)) {
+    // Force re-fetch by collapsing then re-expanding.
+    expandedDirs.value.delete(destDir)
+    toggleDir(destDir)
+  }
+}
+
+function startUploads(fileList: FileList | File[], destDir: string) {
+  const arr = Array.from(fileList)
+  for (const file of arr) {
+    const { id, promise } = queueUpload(file, destDir)
+    fileForUpload.set(id, file)
+    promise
+      .then(() => refreshAfterUpload(destDir))
+      .catch(() => { /* error state already in store */ })
+  }
+}
+
+function onPickFiles(e: Event) {
+  const input = e.target as HTMLInputElement
+  if (input.files && input.files.length > 0) {
+    startUploads(input.files, uploadTargetDir.value)
+    input.value = ''  // allow re-picking the same file
+  }
+}
+
+function openFilePicker() {
+  uploadTargetDir.value = ''  // toolbar button → workspace root
+  fileInput.value?.click()
+}
+
+function onDragOver(e: DragEvent, path: string | null) {
+  // Only react if the drag includes files.
+  if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'copy'
+  isDraggingFiles.value = true
+  dragOverPath.value = path
+}
+
+function onDragLeave(e: DragEvent, path: string | null) {
+  // Leave only if we're moving to outside this drop zone, not into a child.
+  // The relatedTarget is the new element under the cursor.
+  const next = e.relatedTarget as Node | null
+  const current = e.currentTarget as Node
+  if (next && current.contains(next)) return
+  if (dragOverPath.value === path) {
+    dragOverPath.value = null
+    if (path === null) isDraggingFiles.value = false
+  }
+}
+
+function onDrop(e: DragEvent, path: string | null) {
+  e.preventDefault()
+  dragOverPath.value = null
+  isDraggingFiles.value = false
+  const fileList = e.dataTransfer?.files
+  if (!fileList || fileList.length === 0) return
+  startUploads(fileList, dropDirFor(path))
+}
+
+function onCancelUpload(id: string) {
+  cancelUpload(id)
+}
+
+function onRetryUpload(id: string) {
+  const file = fileForUpload.get(id)
+  if (!file) return
+  retryUpload(id, file)
+}
+
+function onClearUploads() {
+  uploads.clearFinished()
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB'
+  return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
+}
 </script>
 
 <template>
@@ -147,10 +262,19 @@ function refresh() {
       <span class="title">Files</span>
       <div class="tree-actions">
         <button class="icon-btn" @click="refresh()" title="Refresh">&#8635;</button>
+        <button class="icon-btn" @click="openFilePicker()" title="Upload (max 2 GB)">&#x2B06;</button>
         <button class="icon-btn" @click="showNewInput = true; newItemType = 'file'" title="New File">+</button>
         <button class="icon-btn" @click="showNewInput = true; newItemType = 'directory'" title="New Folder">&#128193;</button>
       </div>
     </div>
+
+    <input
+      ref="fileInput"
+      type="file"
+      multiple
+      style="display:none"
+      @change="onPickFiles"
+    />
 
     <div v-if="showNewInput" class="new-item">
       <input
@@ -166,13 +290,23 @@ function refresh() {
 
     <div v-if="files.loading" class="loading">Loading...</div>
 
-    <div class="tree-content">
+    <div
+      class="tree-content"
+      :class="{ 'drag-over-pane': dragOverPath === null && isDraggingFiles }"
+      @dragover="onDragOver($event, null)"
+      @dragleave="onDragLeave($event, null)"
+      @drop="onDrop($event, null)"
+    >
       <div
         v-for="fe in visibleEntries"
         :key="fe.path"
         class="entry-row"
+        :class="{ 'drag-over': dragOverPath === fe.path }"
         :style="{ paddingLeft: (12 + fe.depth * 16) + 'px' }"
         @click="handleClick(fe)"
+        @dragover.stop="onDragOver($event, fe.path)"
+        @dragleave.stop="onDragLeave($event, fe.path)"
+        @drop.stop="onDrop($event, fe.path)"
       >
         <span v-if="fe.entry.type === 'directory'" class="expand-icon">
           <span v-if="loadingDirs.has(fe.path)" class="spinner"></span>
@@ -194,7 +328,45 @@ function refresh() {
       </div>
 
       <div v-if="!files.loading && files.tree.length === 0" class="empty">
-        No files found.
+        No files found. Drop a file here to upload to the workspace root.
+      </div>
+    </div>
+
+    <div v-if="uploads.items.length > 0" class="upload-tray">
+      <div class="tray-header">
+        <span>Uploads ({{ uploads.items.length }})</span>
+        <button class="icon-btn sm" @click="onClearUploads()" title="Clear finished">&times;</button>
+      </div>
+      <div
+        v-for="u in uploads.items"
+        :key="u.id"
+        class="upload-row"
+        :class="{ 'state-error': u.state === 'error', 'state-done': u.state === 'done', 'state-canceled': u.state === 'canceled' }"
+      >
+        <div class="upload-meta">
+          <span class="upload-name" :title="u.destPath">{{ u.fileName }}</span>
+          <span class="upload-size">
+            {{ fmtBytes(u.bytesSent) }} / {{ fmtBytes(u.totalBytes) }}
+          </span>
+        </div>
+        <div class="upload-bar">
+          <div class="upload-bar-fill" :style="{ width: u.totalBytes > 0 ? (u.bytesSent / u.totalBytes * 100) + '%' : '0%' }"></div>
+        </div>
+        <div class="upload-status">
+          <template v-if="u.state === 'uploading' || u.state === 'pending'">
+            <button class="link-btn" @click="onCancelUpload(u.id)">Cancel</button>
+          </template>
+          <template v-else-if="u.state === 'error'">
+            <span class="upload-error" :title="u.error">{{ u.error || 'Failed' }}</span>
+            <button class="link-btn" @click="onRetryUpload(u.id)">Retry</button>
+          </template>
+          <template v-else-if="u.state === 'done'">
+            <span class="upload-ok">Uploaded</span>
+          </template>
+          <template v-else-if="u.state === 'canceled'">
+            <span class="upload-muted">Canceled</span>
+          </template>
+        </div>
       </div>
     </div>
   </div>
@@ -259,4 +431,72 @@ function refresh() {
   padding: 20px 16px; text-align: center;
   color: var(--text-muted); font-size: 0.85em;
 }
+
+/* Drag-and-drop highlights */
+.tree-content.drag-over-pane {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.entry-row.drag-over {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: 1px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+/* Upload tray */
+.upload-tray {
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+  max-height: 220px; overflow-y: auto;
+  font-size: 0.82em;
+}
+.tray-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 12px; color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.upload-row {
+  display: grid; grid-template-columns: 1fr auto;
+  gap: 4px 8px; padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.upload-row:last-child { border-bottom: none; }
+.upload-meta {
+  grid-column: 1 / -1;
+  display: flex; justify-content: space-between; gap: 8px;
+}
+.upload-name {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 180px;
+}
+.upload-size { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.upload-bar {
+  grid-column: 1 / 2;
+  height: 4px; background: var(--bg-tertiary); border-radius: 2px;
+  overflow: hidden;
+}
+.upload-bar-fill {
+  height: 100%; background: var(--accent);
+  transition: width 0.12s linear;
+}
+.upload-row.state-done .upload-bar-fill { background: var(--success, #4caf50); }
+.upload-row.state-error .upload-bar-fill { background: var(--danger); }
+.upload-row.state-canceled .upload-bar-fill { background: var(--text-muted); }
+.upload-status {
+  grid-column: 2 / 3; grid-row: 2;
+  display: flex; align-items: center; gap: 8px;
+}
+.upload-error {
+  color: var(--danger); max-width: 120px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.upload-ok { color: var(--success, #4caf50); }
+.upload-muted { color: var(--text-muted); }
+.link-btn {
+  background: none; border: none; padding: 0;
+  color: var(--accent); cursor: pointer; font-size: inherit;
+}
+.link-btn:hover { text-decoration: underline; }
 </style>
