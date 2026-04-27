@@ -55,3 +55,17 @@ Rules:
 - GPU: `torch.cuda.is_available()` is True only when the host has
   `nvidia-container-toolkit` and the container was started with `--gpus all`.
   Don't hard-require it — check and fall back to CPU gracefully.
+
+## Installing Python packages
+
+`/venv` is the only Python kernel — install everything into it. Do **not** run `python -m venv …` to make a project-local venv; nothing in this stack can reach it (no kernel resolves there, and adding a new kernelspec breaks notebooks per the rule above).
+
+Recipes:
+
+- **PyPI package:** `/venv/bin/pip install <pkg>`
+- **Editable install of a local repo (live-edit source):** `/venv/bin/pip install -e /workspace/local_projects/<name>/repo`
+- **R package for the `ir` kernel:** `R -e 'install.packages("<pkg>")'`
+
+`/venv` is chowned to `node` at container start, so installs persist in the container's overlay across restarts (lost only on container recreate). Editable installs leave a `.pth` in `/venv` and keep sources in the project tree, so edits are picked up without reinstall.
+
+**Past mistake — don't repeat:** an agent ran `python -m venv local_projects/<pkg>/venv` to "isolate" a package, then `pip install -e .` into it, then *also* into `/venv` to make notebooks see the import. The local venv was orphan dead weight — no kernel pointed at it. If `/venv` pins genuinely conflict, surface the conflict and discuss bumping the pin instead of silently forking a venv.

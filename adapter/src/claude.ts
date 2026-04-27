@@ -37,6 +37,11 @@ export async function runTurn(args: RunTurnArgs): Promise<void> {
     abortController: { signal } as unknown as AbortController,
     includePartialMessages: true,
     pathToClaudeCodeExecutable: cliPath,
+    // Load workspace CLAUDE.md and .claude/ — without 'project' the SDK runs
+    // in isolation mode and ignores both, so per-workspace instructions and
+    // skills never reach the model.
+    settingSources: ["project"],
+    systemPrompt: { type: "preset", preset: "claude_code" },
     // SDK generates its own session UUID for new sessions; we capture it via
     // onSessionId and stash it against the chat_id so get_chat_messages works.
     ...(resumeSessionId ? { resume: resumeSessionId } : {}),
