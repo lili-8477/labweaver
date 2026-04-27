@@ -22,6 +22,7 @@ import { loadDbConfig } from "./db-config.js";
 import { NatsBus } from "./nats-bus.js";
 import { RpcRouter } from "./rpc.js";
 import { importSidecar } from "./sidecar-import.js";
+import { startUploadServer } from "./upload-http.js";
 
 function computeServiceId(idHash: string): string {
   return createHash("sha256").update(idHash).digest("hex");
@@ -83,10 +84,25 @@ async function main(): Promise<void> {
   await bus.serve((method, params) => router.dispatch(method, params));
   console.log("[adapter] serving RPCs");
 
+  // HTTP upload server. Listens on UPLOAD_PORT (default 5000) inside the
+  // container; nginx proxies authenticated /upload/* requests here. If the
+  // port is in use, log and continue — NATS RPC stays available.
+  const uploadPort = parsePositiveInt(process.env.UPLOAD_PORT, 5000);
+  let uploadServer: ReturnType<typeof startUploadServer> | undefined;
+  try {
+    uploadServer = startUploadServer({ workspaceRoot, port: uploadPort });
+  } catch (err) {
+    console.warn(`[upload] failed to start on :${uploadPort}:`, err);
+  }
+
   const shutdown = async (sig: string) => {
     console.log(`[adapter] ${sig} received, shutting down`);
     router.abortAll();
     await new Promise((r) => setTimeout(r, 500)); // let aborts flush
+    await new Promise<void>((r) => {
+      if (!uploadServer) return r();
+      uploadServer.close(() => r());
+    });
     await bus.close().catch(() => undefined);
     await pool.end().catch(() => undefined);
     process.exit(0);
