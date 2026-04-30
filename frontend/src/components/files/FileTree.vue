@@ -51,6 +51,54 @@ function closeCtxMenu() {
   ctxMenu.value = null
 }
 
+const renamingPath = ref<string | null>(null)
+const renameInput = ref('')
+
+function startRename(fe: FlatEntry) {
+  renamingPath.value = fe.path
+  renameInput.value = fe.entry.name
+}
+
+function cancelRename() {
+  renamingPath.value = null
+  renameInput.value = ''
+}
+
+async function commitRename(fe: FlatEntry) {
+  const newName = renameInput.value.trim()
+  if (!newName || newName === fe.entry.name) {
+    cancelRename()
+    return
+  }
+  if (newName.includes('/')) {
+    showTreeError('Rename: name cannot contain "/"')
+    cancelRename()
+    return
+  }
+  const parent = fe.path.includes('/') ? fe.path.slice(0, fe.path.lastIndexOf('/')) : ''
+  const targetPath = parent ? `${parent}/${newName}` : newName
+
+  const result = await files.movePath(fe.path, targetPath)
+  if (!result.ok) {
+    showTreeError(`Rename failed: ${result.error}`)
+    cancelRename()
+    return
+  }
+
+  cancelRename()
+  dirChildren.value.clear()
+  expandedDirs.value.clear()
+  await files.loadTree()
+}
+
+function focusRenameInput(el: Element | null, originalName: string) {
+  const input = el as HTMLInputElement | null
+  if (!input) return
+  input.focus()
+  const dot = originalName.lastIndexOf('.')
+  input.setSelectionRange(0, dot > 0 ? dot : originalName.length)
+}
+
 const treeError = ref<string | null>(null)
 let treeErrorTimer: number | null = null
 const TREE_ERROR_DISMISS_MS = 5000
@@ -352,7 +400,17 @@ function fmtBytes(n: number): string {
         </span>
         <span v-else class="expand-icon">&nbsp;</span>
         <span class="icon">{{ getFileIcon(fe.entry.name, fe.entry.type) }}</span>
-        <span class="name">{{ fe.entry.name }}</span>
+        <input
+          v-if="renamingPath === fe.path"
+          v-model="renameInput"
+          class="rename-input"
+          :ref="(el) => focusRenameInput(el as Element | null, fe.entry.name)"
+          @click.stop
+          @keyup.enter="commitRename(fe)"
+          @keyup.escape="cancelRename()"
+          @blur="commitRename(fe)"
+        />
+        <span v-else class="name">{{ fe.entry.name }}</span>
         <a
           v-if="fe.entry.type === 'file'"
           class="download-btn"
@@ -381,7 +439,7 @@ function fmtBytes(n: number): string {
       :x="ctxMenu.x"
       :y="ctxMenu.y"
       :type="ctxMenu.fe.entry.type"
-      @rename="closeCtxMenu()"
+      @rename="(startRename(ctxMenu.fe), closeCtxMenu())"
       @move-to="closeCtxMenu()"
       @new-file="(startNewItemIn(ctxMenu.fe, 'file'), closeCtxMenu())"
       @new-folder="(startNewItemIn(ctxMenu.fe, 'directory'), closeCtxMenu())"
@@ -581,4 +639,15 @@ function fmtBytes(n: number): string {
 }
 .entry-row:hover .more-btn { opacity: 1; }
 .more-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+
+.rename-input {
+  flex: 1;
+  background: var(--bg-primary);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--text-primary);
+  font: inherit;
+  padding: 1px 4px;
+  outline: none;
+}
 </style>
