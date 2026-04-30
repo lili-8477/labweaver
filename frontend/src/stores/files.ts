@@ -111,6 +111,21 @@ export const useFileStore = defineStore('files', () => {
     }, 'file_manager')
   }
 
+  async function movePath(from: string, to: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      const res = (await natsService.proxyToolset('manage_path', {
+        operation: 'move',
+        from,
+        to,
+      }, 'file_manager')) as { success?: boolean }
+      if (res?.success) return { ok: true }
+      return { ok: false, error: 'move failed' }
+    } catch (e) {
+      const msg = (e as Error)?.message ?? String(e)
+      return { ok: false, error: msg }
+    }
+  }
+
   function closeFile() {
     openFile.value = null
   }
@@ -118,6 +133,6 @@ export const useFileStore = defineStore('files', () => {
   return {
     tree, loading, openFile,
     loadTree, readFile, writeFile, createFile,
-    createDirectory, deletePath, closeFile,
+    createDirectory, deletePath, movePath, closeFile,
   }
 })

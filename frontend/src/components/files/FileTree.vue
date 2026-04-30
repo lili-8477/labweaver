@@ -32,6 +32,19 @@ const newItemPath = ref('')
 const showNewInput = ref(false)
 const newItemType = ref<'file' | 'directory'>('file')
 
+const treeError = ref<string | null>(null)
+let treeErrorTimer: number | null = null
+
+// @ts-ignore — used by upcoming rename / move flows
+function showTreeError(msg: string) {
+  treeError.value = msg
+  if (treeErrorTimer !== null) clearTimeout(treeErrorTimer)
+  treeErrorTimer = window.setTimeout(() => {
+    treeError.value = null
+    treeErrorTimer = null
+  }, 5000)
+}
+
 onMounted(() => {
   if (files.tree.length === 0) files.loadTree()
 })
@@ -332,6 +345,11 @@ function fmtBytes(n: number): string {
       </div>
     </div>
 
+    <div v-if="treeError" class="tree-error" role="alert">
+      {{ treeError }}
+      <button class="link-btn" @click="treeError = null">×</button>
+    </div>
+
     <div v-if="uploads.items.length > 0" class="upload-tray">
       <div class="tray-header">
         <span>Uploads ({{ uploads.items.length }})</span>
@@ -499,4 +517,13 @@ function fmtBytes(n: number): string {
   color: var(--accent); cursor: pointer; font-size: inherit;
 }
 .link-btn:hover { text-decoration: underline; }
+
+.tree-error {
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-secondary));
+  color: var(--danger);
+  font-size: 0.82em;
+  padding: 6px 12px;
+  display: flex; align-items: center; justify-content: space-between;
+}
 </style>
