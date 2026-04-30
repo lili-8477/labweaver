@@ -65,6 +65,7 @@ function cancelRename() {
 }
 
 async function commitRename(fe: FlatEntry) {
+  if (renameInFlight) return
   const newName = renameInput.value.trim()
   if (!newName || newName === fe.entry.name) {
     cancelRename()
@@ -78,22 +79,27 @@ async function commitRename(fe: FlatEntry) {
   const parent = fe.path.includes('/') ? fe.path.slice(0, fe.path.lastIndexOf('/')) : ''
   const targetPath = parent ? `${parent}/${newName}` : newName
 
-  const result = await files.movePath(fe.path, targetPath)
-  if (!result.ok) {
-    showTreeError(`Rename failed: ${result.error}`)
+  renameInFlight = true
+  try {
+    const result = await files.movePath(fe.path, targetPath)
+    if (!result.ok) {
+      showTreeError(`Rename failed: ${result.error}`)
+      cancelRename()
+      return
+    }
     cancelRename()
-    return
+    dirChildren.value.clear()
+    expandedDirs.value.clear()
+    await files.loadTree()
+  } finally {
+    renameInFlight = false
   }
-
-  cancelRename()
-  dirChildren.value.clear()
-  expandedDirs.value.clear()
-  await files.loadTree()
 }
 
 function focusRenameInput(el: Element | null, originalName: string) {
   const input = el as HTMLInputElement | null
   if (!input) return
+  if (input === document.activeElement) return
   input.focus()
   const dot = originalName.lastIndexOf('.')
   input.setSelectionRange(0, dot > 0 ? dot : originalName.length)
@@ -101,6 +107,7 @@ function focusRenameInput(el: Element | null, originalName: string) {
 
 const treeError = ref<string | null>(null)
 let treeErrorTimer: number | null = null
+let renameInFlight = false
 const TREE_ERROR_DISMISS_MS = 5000
 
 function showTreeError(msg: string) {
