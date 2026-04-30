@@ -31,6 +31,7 @@ const fileForUpload = new Map<string, File>()
 const dragOverPath = ref<string | null>(null)  // null = pane background
 const isDraggingFiles = ref(false)             // true while a file-drag is active over the tree
 const fileInput = ref<HTMLInputElement | null>(null)
+const dirInput = ref<HTMLInputElement | null>(null)
 const uploadTargetDir = ref<string>('')        // dest for the toolbar button picker
 
 const newItemPath = ref('')
@@ -139,6 +140,10 @@ function showTreeError(msg: string) {
 
 onMounted(() => {
   if (files.tree.length === 0) files.loadTree()
+  if (dirInput.value) {
+    dirInput.value.setAttribute('webkitdirectory', '')
+    dirInput.value.setAttribute('directory', '')
+  }
 })
 
 const visibleEntries = computed<FlatEntry[]>(() => {
@@ -313,6 +318,31 @@ function openFilePicker() {
   fileInput.value?.click()
 }
 
+function openDirPicker() {
+  // Match openFilePicker's destination — both flow into the same upload
+  // server and share the same allowed-subtree restriction.
+  uploadTargetDir.value = ''  // KEEP IN SYNC with openFilePicker
+  dirInput.value?.click()
+}
+
+function onPickDir(e: Event) {
+  const input = e.target as HTMLInputElement
+  if (!input.files || input.files.length === 0) return
+  const baseDir = uploadTargetDir.value
+  for (const file of Array.from(input.files)) {
+    const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath
+    if (!rel) continue
+    const subDir = parentOf(rel)
+    const destDir = joinPath(baseDir, subDir)
+    const { id, promise } = queueUpload(file, destDir)
+    fileForUpload.set(id, file)
+    promise
+      .then(() => refreshAfterUpload(destDir))
+      .catch(() => { /* error state already in store */ })
+  }
+  input.value = ''
+}
+
 function onRowDragStart(ev: DragEvent, fe: FlatEntry) {
   if (!ev.dataTransfer) return
   ev.dataTransfer.setData(INTERNAL_PATH_MIME, fe.path)
@@ -419,6 +449,7 @@ function fmtBytes(n: number): string {
       <div class="tree-actions">
         <button class="icon-btn" @click="refresh()" title="Refresh">&#8635;</button>
         <button class="icon-btn" @click="openFilePicker()" title="Upload (max 2 GB)">&#x2B06;</button>
+        <button class="icon-btn" @click="openDirPicker()" title="Upload folder">&#128194;</button>
         <button class="icon-btn" @click="showNewInput = true; newItemType = 'file'" title="New File">+</button>
         <button class="icon-btn" @click="showNewInput = true; newItemType = 'directory'" title="New Folder">&#128193;</button>
       </div>
@@ -430,6 +461,13 @@ function fmtBytes(n: number): string {
       multiple
       style="display:none"
       @change="onPickFiles"
+    />
+    <input
+      ref="dirInput"
+      type="file"
+      multiple
+      style="display:none"
+      @change="onPickDir"
     />
 
     <div v-if="showNewInput" class="new-item">
