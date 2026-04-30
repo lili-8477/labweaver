@@ -200,16 +200,12 @@ async function main() {
   console.log(`Folder upload button count: ${folderBtnCount}`);
   if (folderBtnCount === 0) errors.push('Folder upload button not found in toolbar');
 
-  // Error check
-  console.log(`\n=== Errors: ${errors.length} ===`);
-  for (const e of errors) console.log(`  ${e}`);
-
   if (errors.length > 0) {
     console.log('\nERRORS:');
     for (const e of errors) console.log(`  - ${e}`);
     process.exitCode = 1;
   } else {
-    console.log('\nAll new smoke checks passed.');
+    console.log('\nAll smoke checks passed.');
   }
 
   await browser.close();
