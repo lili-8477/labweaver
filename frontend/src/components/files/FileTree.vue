@@ -10,6 +10,7 @@ import { natsService } from '@/services/nats'
 import type { FileEntry } from '@/types'
 import FileContextMenu from './FileContextMenu.vue'
 import MoveToModal from './MoveToModal.vue'
+import UploadDestModal from './UploadDestModal.vue'
 
 const emit = defineEmits<{
   (e: 'open-file', path: string): void
@@ -61,6 +62,11 @@ const renamingPath = ref<string | null>(null)
 const renameInput = ref('')
 
 const moveSource = ref<string | null>(null)
+
+// When set, the upload-destination picker is open and tracks which input
+// to click after the user confirms ('file' = single-file picker, 'directory'
+// = folder picker).
+const uploadKind = ref<'file' | 'directory' | null>(null)
 
 function openMoveTo(fe: FlatEntry) {
   moveSource.value = fe.path
@@ -319,15 +325,26 @@ function onPickFiles(e: Event) {
 }
 
 function openFilePicker() {
-  uploadTargetDir.value = ''  // toolbar button → workspace root
-  fileInput.value?.click()
+  uploadKind.value = 'file'
 }
 
 function openDirPicker() {
-  // Match openFilePicker's destination — both flow into the same upload
-  // server and share the same allowed-subtree restriction.
-  uploadTargetDir.value = ''  // KEEP IN SYNC with openFilePicker
-  dirInput.value?.click()
+  uploadKind.value = 'directory'
+}
+
+async function onUploadDestPick(dir: string) {
+  const kind = uploadKind.value
+  uploadKind.value = null
+  if (!kind) return
+  uploadTargetDir.value = dir
+  // Wait one tick so the modal is fully unmounted before opening the OS dialog
+  // (some browsers/extensions misbehave if a click() races with overlay teardown).
+  await new Promise(resolve => setTimeout(resolve, 0))
+  if (kind === 'file') {
+    fileInput.value?.click()
+  } else {
+    dirInput.value?.click()
+  }
 }
 
 function onPickDir(e: Event) {
@@ -584,6 +601,12 @@ function fmtBytes(n: number): string {
       :source-path="moveSource"
       @pick="onMovePick"
       @close="moveSource = null"
+    />
+
+    <UploadDestModal
+      v-if="uploadKind"
+      @pick="onUploadDestPick"
+      @close="uploadKind = null"
     />
 
     <div v-if="treeError" class="tree-error" role="alert">
