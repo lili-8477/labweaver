@@ -7,6 +7,7 @@ import { getFileIcon } from '@/utils/format'
 import { natsService } from '@/services/nats'
 import type { FileEntry } from '@/types'
 import FileContextMenu from './FileContextMenu.vue'
+import MoveToModal from './MoveToModal.vue'
 
 const emit = defineEmits<{
   (e: 'open-file', path: string): void
@@ -60,6 +61,21 @@ function closeCtxMenu() {
 
 const renamingPath = ref<string | null>(null)
 const renameInput = ref('')
+
+const moveSource = ref<string | null>(null)
+
+function openMoveTo(fe: FlatEntry) {
+  moveSource.value = fe.path
+}
+
+async function onMovePick(targetDir: string) {
+  if (!moveSource.value) return
+  const source = moveSource.value
+  const basename = source.split('/').pop() ?? source
+  const newPath = targetDir ? `${targetDir}/${basename}` : basename
+  moveSource.value = null
+  await doMove(source, newPath)
+}
 
 function startRename(fe: FlatEntry) {
   renamingPath.value = fe.path
@@ -507,11 +523,18 @@ function fmtBytes(n: number): string {
       :y="ctxMenu.y"
       :type="ctxMenu.fe.entry.type"
       @rename="(startRename(ctxMenu.fe), closeCtxMenu())"
-      @move-to="closeCtxMenu()"
+      @move-to="(openMoveTo(ctxMenu.fe), closeCtxMenu())"
       @new-file="(startNewItemIn(ctxMenu.fe, 'file'), closeCtxMenu())"
       @new-folder="(startNewItemIn(ctxMenu.fe, 'directory'), closeCtxMenu())"
       @delete="(handleDelete(ctxMenu.fe), closeCtxMenu())"
       @close="closeCtxMenu"
+    />
+
+    <MoveToModal
+      v-if="moveSource"
+      :source-path="moveSource"
+      @pick="onMovePick"
+      @close="moveSource = null"
     />
 
     <div v-if="treeError" class="tree-error" role="alert">
