@@ -6,6 +6,7 @@ import { queueUpload, cancelUpload, retryUpload } from '@/services/upload'
 import { getFileIcon } from '@/utils/format'
 import { natsService } from '@/services/nats'
 import type { FileEntry } from '@/types'
+import FileContextMenu from './FileContextMenu.vue'
 
 const emit = defineEmits<{
   (e: 'open-file', path: string): void
@@ -32,6 +33,24 @@ const newItemPath = ref('')
 const showNewInput = ref(false)
 const newItemType = ref<'file' | 'directory'>('file')
 
+// Build flat visible list with depth info
+interface FlatEntry {
+  entry: FileEntry
+  depth: number
+  path: string
+}
+
+const ctxMenu = ref<{ x: number; y: number; fe: FlatEntry } | null>(null)
+
+function openCtxMenuAt(ev: MouseEvent, fe: FlatEntry) {
+  ev.preventDefault()
+  ev.stopPropagation()
+  ctxMenu.value = { x: ev.clientX, y: ev.clientY, fe }
+}
+function closeCtxMenu() {
+  ctxMenu.value = null
+}
+
 const treeError = ref<string | null>(null)
 let treeErrorTimer: number | null = null
 const TREE_ERROR_DISMISS_MS = 5000
@@ -48,13 +67,6 @@ function showTreeError(msg: string) {
 onMounted(() => {
   if (files.tree.length === 0) files.loadTree()
 })
-
-// Build flat visible list with depth info
-interface FlatEntry {
-  entry: FileEntry
-  depth: number
-  path: string
-}
 
 const visibleEntries = computed<FlatEntry[]>(() => {
   const result: FlatEntry[] = []
@@ -140,6 +152,18 @@ async function createItem() {
   newItemPath.value = ''
   dirChildren.value.clear()
   await files.loadTree()
+}
+
+function startNewItemIn(fe: FlatEntry, kind: 'file' | 'directory') {
+  const parent = fe.entry.type === 'directory'
+    ? fe.path
+    : (fe.path.includes('/') ? fe.path.slice(0, fe.path.lastIndexOf('/')) : '')
+  newItemType.value = kind
+  newItemPath.value = parent ? `${parent}/` : ''
+  showNewInput.value = true
+  if (parent && fe.entry.type === 'directory' && !expandedDirs.value.has(parent)) {
+    toggleDir(parent)
+  }
 }
 
 async function handleDelete(fe: FlatEntry) {
@@ -317,6 +341,7 @@ function fmtBytes(n: number): string {
         :class="{ 'drag-over': dragOverPath === fe.path }"
         :style="{ paddingLeft: (12 + fe.depth * 16) + 'px' }"
         @click="handleClick(fe)"
+        @contextmenu="openCtxMenuAt($event, fe)"
         @dragover.stop="onDragOver($event, fe.path)"
         @dragleave.stop="onDragLeave($event, fe.path)"
         @drop.stop="onDrop($event, fe.path)"
@@ -337,6 +362,12 @@ function fmtBytes(n: number): string {
           title="Download (works for any size)"
           aria-label="Download"
         >&#x2B07;</a>
+        <button
+          class="more-btn"
+          @click.stop="openCtxMenuAt($event, fe)"
+          title="More actions"
+          aria-label="More"
+        >&#x22EF;</button>
         <button class="delete-btn" @click.stop="handleDelete(fe)" title="Delete">&times;</button>
       </div>
 
@@ -344,6 +375,19 @@ function fmtBytes(n: number): string {
         No files found. Drop a file here to upload to the workspace root.
       </div>
     </div>
+
+    <FileContextMenu
+      v-if="ctxMenu"
+      :x="ctxMenu.x"
+      :y="ctxMenu.y"
+      :type="ctxMenu.fe.entry.type"
+      @rename="closeCtxMenu()"
+      @move-to="closeCtxMenu()"
+      @new-file="(startNewItemIn(ctxMenu.fe, 'file'), closeCtxMenu())"
+      @new-folder="(startNewItemIn(ctxMenu.fe, 'directory'), closeCtxMenu())"
+      @delete="(handleDelete(ctxMenu.fe), closeCtxMenu())"
+      @close="closeCtxMenu"
+    />
 
     <div v-if="treeError" class="tree-error" role="alert">
       {{ treeError }}
@@ -526,4 +570,15 @@ function fmtBytes(n: number): string {
   padding: 6px 12px;
   display: flex; align-items: center; justify-content: space-between;
 }
+
+.more-btn {
+  opacity: 0;
+  width: 20px; height: 20px;
+  background: transparent; border: none;
+  color: var(--text-muted); border-radius: 3px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.9em; cursor: pointer;
+}
+.entry-row:hover .more-btn { opacity: 1; }
+.more-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
 </style>
