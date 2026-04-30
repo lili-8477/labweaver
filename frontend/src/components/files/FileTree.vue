@@ -5,6 +5,7 @@ import { useUploadsStore } from '@/stores/uploads'
 import { queueUpload, cancelUpload, retryUpload } from '@/services/upload'
 import { getFileIcon } from '@/utils/format'
 import { basenameOf, isAncestorOrSelf, joinPath, parentOf } from '@/utils/path'
+import { walkDataTransferItems } from '@/utils/dnd'
 import { natsService } from '@/services/nats'
 import type { FileEntry } from '@/types'
 import FileContextMenu from './FileContextMenu.vue'
@@ -294,14 +295,18 @@ function refreshAfterUpload(destDir: string) {
   }
 }
 
+function queueOne(file: File, destDir: string) {
+  const { id, promise } = queueUpload(file, destDir)
+  fileForUpload.set(id, file)
+  promise
+    .then(() => refreshAfterUpload(destDir))
+    .catch(() => { /* error state already in store */ })
+}
+
 function startUploads(fileList: FileList | File[], destDir: string) {
   const arr = Array.from(fileList)
   for (const file of arr) {
-    const { id, promise } = queueUpload(file, destDir)
-    fileForUpload.set(id, file)
-    promise
-      .then(() => refreshAfterUpload(destDir))
-      .catch(() => { /* error state already in store */ })
+    queueOne(file, destDir)
   }
 }
 
@@ -334,11 +339,7 @@ function onPickDir(e: Event) {
     if (!rel) continue
     const subDir = parentOf(rel)
     const destDir = joinPath(baseDir, subDir)
-    const { id, promise } = queueUpload(file, destDir)
-    fileForUpload.set(id, file)
-    promise
-      .then(() => refreshAfterUpload(destDir))
-      .catch(() => { /* error state already in store */ })
+    queueOne(file, destDir)
   }
   input.value = ''
 }
@@ -405,10 +406,30 @@ function onDrop(e: DragEvent, path: string | null) {
     return
   }
 
-  // 2) OS-file upload (existing behavior)
+  // 2) OS-file or folder upload
+  const dropDir = dropDirFor(path)
+  const items = dt.items
+  const hasItems = items && items.length > 0 && typeof (items[0] as DataTransferItem & {
+    webkitGetAsEntry?: unknown
+  }).webkitGetAsEntry === 'function'
+
+  if (hasItems) {
+    void (async () => {
+      const dropped = await walkDataTransferItems(items)
+      if (dropped.length === 0) return
+      for (const { file, relativePath } of dropped) {
+        // relativePath includes the filename. Compute the parent portion.
+        const subDir = parentOf(relativePath)
+        const destDir = joinPath(dropDir, subDir)
+        queueOne(file, destDir)
+      }
+    })()
+    return
+  }
+
   const fileList = dt.files
   if (!fileList || fileList.length === 0) return
-  startUploads(fileList, dropDirFor(path))
+  startUploads(fileList, dropDir)
 }
 
 async function doMove(from: string, to: string) {
