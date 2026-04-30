@@ -34,15 +34,15 @@ const newItemType = ref<'file' | 'directory'>('file')
 
 const treeError = ref<string | null>(null)
 let treeErrorTimer: number | null = null
+const TREE_ERROR_DISMISS_MS = 5000
 
-// @ts-ignore — used by upcoming rename / move flows
 function showTreeError(msg: string) {
   treeError.value = msg
   if (treeErrorTimer !== null) clearTimeout(treeErrorTimer)
   treeErrorTimer = window.setTimeout(() => {
     treeError.value = null
     treeErrorTimer = null
-  }, 5000)
+  }, TREE_ERROR_DISMISS_MS)
 }
 
 onMounted(() => {

@@ -117,9 +117,9 @@ export const useFileStore = defineStore('files', () => {
         operation: 'move',
         from,
         to,
-      }, 'file_manager')) as { success?: boolean }
+      }, 'file_manager')) as { success?: boolean; error?: string }
       if (res?.success) return { ok: true }
-      return { ok: false, error: 'move failed' }
+      return { ok: false, error: res?.error ?? 'move failed' }
     } catch (e) {
       const msg = (e as Error)?.message ?? String(e)
       return { ok: false, error: msg }
