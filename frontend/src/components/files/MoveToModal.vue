@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { natsService } from '@/services/nats'
+import { isAncestorOrSelf, joinPath, parentOf } from '@/utils/path'
 
 const props = defineProps<{
   sourcePath: string
@@ -23,34 +24,39 @@ const expanded = ref<Set<string>>(new Set())
 const selected = ref<string>('')
 const error = ref<string | null>(null)
 
-const sourceParent = computed(() =>
-  props.sourcePath.includes('/')
-    ? props.sourcePath.slice(0, props.sourcePath.lastIndexOf('/'))
-    : '',
-)
-
-function isAncestorOrSelf(maybeAncestor: string, descendant: string): boolean {
-  if (maybeAncestor === descendant) return true
-  return descendant.startsWith(maybeAncestor + '/')
-}
+const sourceParent = computed(() => parentOf(props.sourcePath))
 
 async function loadDir(parentPath: string): Promise<DirNode[]> {
-  const result = await natsService.proxyToolset('list_files', {
-    sub_dir: parentPath || null,
-    recursive: false,
-  }, 'file_manager') as { success: boolean; files: Array<{ name: string; type: string }> }
-  if (!result?.success || !Array.isArray(result.files)) return []
-  return result.files
-    .filter(f => f.type === 'directory' && f.name !== '.executor')
-    .map(f => ({
-      name: f.name,
-      path: parentPath ? `${parentPath}/${f.name}` : f.name,
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name))
+  try {
+    const result = await natsService.proxyToolset('list_files', {
+      sub_dir: parentPath || null,
+      recursive: false,
+    }, 'file_manager') as { success: boolean; files: Array<{ name: string; type: string }> }
+    if (!result?.success || !Array.isArray(result.files)) return []
+    return result.files
+      .filter(f => f.type === 'directory' && f.name !== '.executor')
+      .map(f => ({
+        name: f.name,
+        path: joinPath(parentPath, f.name),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  } catch (e) {
+    console.error('MoveToModal: loadDir failed for', parentPath, e)
+    return []
+  }
+}
+
+function onKey(ev: KeyboardEvent) {
+  if (ev.key === 'Escape') emit('close')
 }
 
 onMounted(async () => {
+  document.addEventListener('keydown', onKey)
   root.value = await loadDir('')
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKey)
 })
 
 async function toggle(node: DirNode) {

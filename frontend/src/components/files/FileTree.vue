@@ -4,6 +4,7 @@ import { useFileStore } from '@/stores/files'
 import { useUploadsStore } from '@/stores/uploads'
 import { queueUpload, cancelUpload, retryUpload } from '@/services/upload'
 import { getFileIcon } from '@/utils/format'
+import { basenameOf, isAncestorOrSelf, joinPath, parentOf } from '@/utils/path'
 import { natsService } from '@/services/nats'
 import type { FileEntry } from '@/types'
 import FileContextMenu from './FileContextMenu.vue'
@@ -17,11 +18,6 @@ const files = useFileStore()
 const uploads = useUploadsStore()
 
 const INTERNAL_PATH_MIME = 'application/x-bioflow-path'
-
-function isAncestorOrSelf(maybeAncestor: string, descendant: string): boolean {
-  if (maybeAncestor === descendant) return true
-  return descendant.startsWith(maybeAncestor + '/')
-}
 
 // State: which dirs are expanded, their loaded children, loading status
 const expandedDirs = ref<Set<string>>(new Set())
@@ -71,8 +67,9 @@ function openMoveTo(fe: FlatEntry) {
 async function onMovePick(targetDir: string) {
   if (!moveSource.value) return
   const source = moveSource.value
-  const basename = source.split('/').pop() ?? source
-  const newPath = targetDir ? `${targetDir}/${basename}` : basename
+  const basename = basenameOf(source)
+  const newPath = joinPath(targetDir, basename)
+  // Close modal optimistically; doMove surfaces errors via tree-error toast.
   moveSource.value = null
   await doMove(source, newPath)
 }
@@ -99,8 +96,8 @@ async function commitRename(fe: FlatEntry) {
     cancelRename()
     return
   }
-  const parent = fe.path.includes('/') ? fe.path.slice(0, fe.path.lastIndexOf('/')) : ''
-  const targetPath = parent ? `${parent}/${newName}` : newName
+  const parent = parentOf(fe.path)
+  const targetPath = joinPath(parent, newName)
 
   renameInFlight = true
   try {
@@ -231,9 +228,7 @@ async function createItem() {
 }
 
 function startNewItemIn(fe: FlatEntry, kind: 'file' | 'directory') {
-  const parent = fe.entry.type === 'directory'
-    ? fe.path
-    : (fe.path.includes('/') ? fe.path.slice(0, fe.path.lastIndexOf('/')) : '')
+  const parent = fe.entry.type === 'directory' ? fe.path : parentOf(fe.path)
   newItemType.value = kind
   newItemPath.value = parent ? `${parent}/` : ''
   showNewInput.value = true
@@ -275,8 +270,7 @@ function dropDirFor(path: string | null): string {
   const child = visibleEntries.value.find(fe => fe.path === path)
   if (!child) return ''
   if (child.entry.type === 'directory') return path
-  const lastSlash = path.lastIndexOf('/')
-  return lastSlash < 0 ? '' : path.slice(0, lastSlash)
+  return parentOf(path)
 }
 
 function refreshAfterUpload(destDir: string) {
@@ -367,19 +361,15 @@ function onDrop(e: DragEvent, path: string | null) {
 
     const target = visibleEntries.value.find(fe => fe.path === path)
     if (!target) return
-    const targetDir = target.entry.type === 'directory'
-      ? target.path
-      : (target.path.includes('/') ? target.path.slice(0, target.path.lastIndexOf('/')) : '')
+    const targetDir = target.entry.type === 'directory' ? target.path : parentOf(target.path)
 
-    const sourceParent = sourcePath.includes('/')
-      ? sourcePath.slice(0, sourcePath.lastIndexOf('/'))
-      : ''
+    const sourceParent = parentOf(sourcePath)
 
     if (targetDir === sourceParent) return
     if (isAncestorOrSelf(sourcePath, targetDir)) return
 
-    const basename = sourcePath.split('/').pop() ?? sourcePath
-    const newPath = targetDir ? `${targetDir}/${basename}` : basename
+    const basename = basenameOf(sourcePath)
+    const newPath = joinPath(targetDir, basename)
 
     void doMove(sourcePath, newPath)
     return
