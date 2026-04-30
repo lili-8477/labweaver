@@ -153,9 +153,64 @@ async function main() {
   rows = page.locator('.entry-row');
   console.log(`Rows with projects expanded: ${await rows.count()}`);
 
+  // ================================================
+  // TEST: Context menu opens on right-click
+  // ================================================
+  console.log('\n=== Test: Context menu ===');
+  const firstRow = page.locator('.entry-row').first();
+  await firstRow.click({ button: 'right' });
+  await page.waitForTimeout(300);
+  const menuVisible = await page.locator('.ctx-menu').isVisible();
+  console.log(`Context menu visible: ${menuVisible}`);
+  if (!menuVisible) errors.push('Context menu did not appear on right-click');
+  await page.screenshot({ path: '/tmp/ss-ft-ctx.png' });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+
+  // ================================================
+  // TEST: New File pre-fills directory
+  // ================================================
+  console.log('\n=== Test: New File pre-fill ===');
+  const dirRows = page.locator('.entry-row');
+  const dirCount = await dirRows.count();
+  let dirIdx = -1;
+  for (let i = 0; i < dirCount; i++) {
+    const caret = await dirRows.nth(i).locator('.expand-icon').textContent();
+    if (caret && (caret.includes('▶') || caret.includes('▼'))) { dirIdx = i; break; }
+  }
+  if (dirIdx >= 0) {
+    await dirRows.nth(dirIdx).click({ button: 'right' });
+    await page.waitForTimeout(300);
+    await page.locator('.ctx-menu .ctx-item', { hasText: 'New File' }).click();
+    await page.waitForTimeout(300);
+    const inputVal = await page.locator('.new-item input').inputValue();
+    console.log(`Pre-filled value: "${inputVal}" (should end with "/")`);
+    if (!inputVal.endsWith('/')) errors.push('New File pre-fill missing trailing slash');
+    await page.keyboard.press('Escape');
+  } else {
+    console.log('No directory row found to test New File pre-fill (skipping).');
+  }
+
+  // ================================================
+  // TEST: Toolbar has folder-upload button
+  // ================================================
+  console.log('\n=== Test: Folder upload button ===');
+  const folderBtn = page.locator('.tree-actions .icon-btn[title="Upload folder"]');
+  const folderBtnCount = await folderBtn.count();
+  console.log(`Folder upload button count: ${folderBtnCount}`);
+  if (folderBtnCount === 0) errors.push('Folder upload button not found in toolbar');
+
   // Error check
   console.log(`\n=== Errors: ${errors.length} ===`);
   for (const e of errors) console.log(`  ${e}`);
+
+  if (errors.length > 0) {
+    console.log('\nERRORS:');
+    for (const e of errors) console.log(`  - ${e}`);
+    process.exitCode = 1;
+  } else {
+    console.log('\nAll new smoke checks passed.');
+  }
 
   await browser.close();
 }
