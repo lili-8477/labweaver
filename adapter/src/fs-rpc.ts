@@ -175,14 +175,20 @@ export class FileManager {
     return { success: true };
   }
 
-  /** manage_path: create_dir | delete — used by the frontend's file CRUD. */
-  async managePath(op: string, relPath: string, recursive = true): Promise<unknown> {
-    const abs = this.resolve(relPath);
+  /** manage_path: create_dir | delete | move — used by the frontend's file CRUD. */
+  async managePath(
+    op: string,
+    relPath: string,
+    recursive = true,
+    extra: { from?: string; to?: string } = {},
+  ): Promise<unknown> {
     if (op === "create_dir") {
+      const abs = this.resolve(relPath);
       await fs.mkdir(abs, { recursive: true });
       return { success: true };
     }
     if (op === "delete") {
+      const abs = this.resolve(relPath);
       try {
         const st = await fs.stat(abs);
         if (st.isDirectory()) await fs.rm(abs, { recursive, force: true });
@@ -190,6 +196,38 @@ export class FileManager {
       } catch (e: unknown) {
         if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       }
+      return { success: true };
+    }
+    if (op === "move") {
+      const from = extra.from ?? "";
+      const to = extra.to ?? "";
+      if (!from || !to) throw new Error("manage_path move: missing from/to");
+
+      // Hidden-name + traversal guard on every segment of both paths. The
+      // shared resolve() silently strips leading `../`, which is fine for
+      // single-path ops but unsafe for move (target gets rewritten to root).
+      for (const seg of from.split("/").filter(Boolean)) {
+        if (seg === "..") throw new Error(`manage_path move: traversal in from`);
+        if (isHidden(seg)) throw new Error(`manage_path move: hidden segment in from: ${seg}`);
+      }
+      for (const seg of to.split("/").filter(Boolean)) {
+        if (seg === "..") throw new Error(`manage_path move: traversal in to`);
+        if (isHidden(seg)) throw new Error(`manage_path move: hidden segment in to: ${seg}`);
+      }
+
+      const absFrom = this.resolve(from);
+      const absTo = this.resolve(to);
+
+      // Refuse if target already exists. No overwrite.
+      try {
+        await fs.stat(absTo);
+        throw new Error("manage_path move: target_exists");
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+
+      await fs.mkdir(path.dirname(absTo), { recursive: true });
+      await fs.rename(absFrom, absTo);
       return { success: true };
     }
     throw new Error(`manage_path: unknown operation ${op}`);
@@ -221,6 +259,10 @@ export class FileManager {
           (args.operation as string) ?? "delete",
           rel,
           (args.recursive as boolean) ?? true,
+          {
+            from: args.from as string | undefined,
+            to: args.to as string | undefined,
+          },
         );
       default:
         throw new Error(`file_manager: unknown method ${method}`);

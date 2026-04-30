@@ -92,4 +92,78 @@ describe("FileManager", () => {
     const res = (await fm.listFiles("")) as { success: boolean; files: Array<{ name: string }> };
     expect(res.files.map((f) => f.name).sort()).toEqual(["keep.txt"]);
   });
+
+  describe("manage_path move", () => {
+    it("renames a file in place", async () => {
+      await fs.writeFile(path.join(root, "a.txt"), "hello");
+      const res = (await fm.dispatch("manage_path", {
+        operation: "move",
+        from: "a.txt",
+        to: "b.txt",
+      })) as { success: boolean };
+      expect(res.success).toBe(true);
+      expect(await fs.readFile(path.join(root, "b.txt"), "utf8")).toBe("hello");
+      await expect(fs.stat(path.join(root, "a.txt"))).rejects.toThrow();
+    });
+
+    it("moves a file into a sibling directory, creating it if missing", async () => {
+      await fs.writeFile(path.join(root, "a.txt"), "x");
+      const res = (await fm.dispatch("manage_path", {
+        operation: "move",
+        from: "a.txt",
+        to: "sub/a.txt",
+      })) as { success: boolean };
+      expect(res.success).toBe(true);
+      expect(await fs.readFile(path.join(root, "sub", "a.txt"), "utf8")).toBe("x");
+    });
+
+    it("moves a directory recursively", async () => {
+      await fs.mkdir(path.join(root, "src"), { recursive: true });
+      await fs.writeFile(path.join(root, "src", "file.py"), "print(1)");
+      const res = (await fm.dispatch("manage_path", {
+        operation: "move",
+        from: "src",
+        to: "lib",
+      })) as { success: boolean };
+      expect(res.success).toBe(true);
+      expect(await fs.readFile(path.join(root, "lib", "file.py"), "utf8")).toBe("print(1)");
+    });
+
+    it("refuses when target exists", async () => {
+      await fs.writeFile(path.join(root, "a.txt"), "1");
+      await fs.writeFile(path.join(root, "b.txt"), "2");
+      await expect(
+        fm.dispatch("manage_path", { operation: "move", from: "a.txt", to: "b.txt" }),
+      ).rejects.toThrow(/target_exists/);
+      // Source is untouched.
+      expect(await fs.readFile(path.join(root, "a.txt"), "utf8")).toBe("1");
+    });
+
+    it("refuses path traversal in `from`", async () => {
+      await expect(
+        fm.dispatch("manage_path", { operation: "move", from: "../escape", to: "ok.txt" }),
+      ).rejects.toThrow();
+    });
+
+    it("refuses path traversal in `to`", async () => {
+      await fs.writeFile(path.join(root, "a.txt"), "1");
+      await expect(
+        fm.dispatch("manage_path", { operation: "move", from: "a.txt", to: "../escape" }),
+      ).rejects.toThrow();
+    });
+
+    it("refuses moving into a hidden segment", async () => {
+      await fs.writeFile(path.join(root, "a.txt"), "1");
+      await expect(
+        fm.dispatch("manage_path", { operation: "move", from: "a.txt", to: ".env" }),
+      ).rejects.toThrow();
+    });
+
+    it("refuses moving from a hidden segment", async () => {
+      await fs.writeFile(path.join(root, ".env"), "SECRET=1");
+      await expect(
+        fm.dispatch("manage_path", { operation: "move", from: ".env", to: "leaked.txt" }),
+      ).rejects.toThrow();
+    });
+  });
 });
