@@ -8,10 +8,42 @@ const chat = useChatStore()
 const templates = ref<TemplateFile[]>([])
 const loadingTemplates = ref(false)
 
+// Self-driving (tick harness) mode toggle.
+const harnessActive = ref(false)
+const harnessInstalled = ref(false)
+const harnessBusy = ref(false)
+
+async function loadHarnessMode() {
+  try {
+    const res = await natsService.invoke('get_harness_mode', {}) as {
+      success?: boolean; active?: boolean; installed?: boolean
+    }
+    harnessActive.value = !!res?.active
+    harnessInstalled.value = !!res?.installed
+  } catch { /* ignore */ }
+}
+
+async function toggleHarness() {
+  if (harnessBusy.value) return
+  harnessBusy.value = true
+  try {
+    const next = !harnessActive.value
+    const res = await natsService.invoke('set_harness_mode', { enabled: next }) as {
+      success?: boolean; active?: boolean
+    }
+    harnessActive.value = !!res?.active
+  } catch (e) {
+    console.error('Failed to toggle harness mode:', e)
+  } finally {
+    harnessBusy.value = false
+  }
+}
+
 onMounted(async () => {
   if (chat.activeChatId) {
     await chat.loadAgents(chat.activeChatId)
   }
+  await loadHarnessMode()
   loadTemplates()
 })
 
@@ -53,6 +85,33 @@ async function applyTemplate(template: TemplateFile) {
   <div class="agent-panel">
     <div class="panel-header">
       <span class="title">Agents</span>
+    </div>
+
+    <!-- Mode -->
+    <div class="section">
+      <div class="section-title">Mode</div>
+      <div class="mode-card" :class="{ disabled: !harnessInstalled }">
+        <div class="mode-row">
+          <span class="mode-icon">&#x21BB;</span>
+          <div class="mode-info">
+            <span class="mode-name">Self-driving</span>
+            <span class="mode-desc">
+              <template v-if="!harnessInstalled">Tick harness not installed for this workspace.</template>
+              <template v-else-if="harnessActive">Hooks active — Stop re-prompts /tick, progress.md auto-commits, every tool call audited.</template>
+              <template v-else>Hooks idle — chat behaves as a normal Claude Code session.</template>
+            </span>
+          </div>
+          <button
+            class="btn-toggle"
+            :class="{ on: harnessActive }"
+            :disabled="!harnessInstalled || harnessBusy"
+            @click="toggleHarness()"
+            :title="harnessActive ? 'Disable self-driving' : 'Enable self-driving'"
+          >
+            {{ harnessActive ? 'On' : 'Off' }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- Current agents -->
@@ -183,4 +242,25 @@ async function applyTemplate(template: TemplateFile) {
   transition: opacity 0.15s;
 }
 .template-item:hover .tpl-apply { opacity: 1; }
+
+.mode-card {
+  padding: 10px 12px; background: var(--bg-primary);
+  border: 1px solid var(--border); border-radius: var(--radius);
+}
+.mode-card.disabled { opacity: 0.6; }
+.mode-row { display: flex; align-items: center; gap: 8px; }
+.mode-icon { font-size: 1.4em; line-height: 1; }
+.mode-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mode-name { font-weight: 600; font-size: 0.9em; }
+.mode-desc { font-size: 0.78em; color: var(--text-secondary); line-height: 1.3; }
+.btn-toggle {
+  padding: 3px 14px; background: transparent;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text-secondary); font-size: 0.75em; min-width: 48px;
+}
+.btn-toggle:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-toggle.on {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.btn-toggle:disabled { cursor: not-allowed; opacity: 0.5; }
 </style>

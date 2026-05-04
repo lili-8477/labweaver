@@ -195,12 +195,18 @@ export class RpcRouter {
         return { success: true, suggestions: [] };
 
       case "get_agents": {
+        // Hide harness-internal subagents (planner/executor/reviewer of the
+        // tick harness) from the user-facing agents listing. They're dispatched
+        // by the orchestrator via the Task tool, not picked by the user.
+        // Convention: names starting with `tick-` or `_` are internal.
         const agentsDir = path.join(this.deps.home, ".claude", "agents");
         const names = await fs.readdir(agentsDir).catch(() => [] as string[]);
         const agents = names
           .filter((n) => n.endsWith(".md"))
-          .map((n) => ({
-            name: n.replace(/\.md$/, ""),
+          .map((n) => n.replace(/\.md$/, ""))
+          .filter((n) => !n.startsWith("tick-") && !n.startsWith("_"))
+          .map((name) => ({
+            name,
             instructions: "",
             tools: [],
             toolsets: [],
@@ -210,6 +216,27 @@ export class RpcRouter {
             models: [],
           }));
         return { success: true, agents, can_switch_agents: false };
+      }
+
+      case "get_harness_mode": {
+        const flag = path.join(this.deps.home, ".claude", ".harness_active");
+        const active = await fs.stat(flag).then(() => true).catch(() => false);
+        // installed = the orchestrator command + tick-* agents are present.
+        const cmdFile = path.join(this.deps.home, ".claude", "commands", "tick.md");
+        const installed = await fs.stat(cmdFile).then(() => true).catch(() => false);
+        return { success: true, active, installed };
+      }
+
+      case "set_harness_mode": {
+        const enabled = Boolean(params.enabled);
+        const flag = path.join(this.deps.home, ".claude", ".harness_active");
+        if (enabled) {
+          await fs.mkdir(path.dirname(flag), { recursive: true });
+          await fs.writeFile(flag, "");
+        } else {
+          await fs.unlink(flag).catch(() => { /* not present is fine */ });
+        }
+        return { success: true, active: enabled };
       }
 
       case "set_active_agent": {
