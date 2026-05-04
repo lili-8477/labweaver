@@ -1,28 +1,34 @@
-# Single-cell workflow conventions
+# Bioinformatics workflow conventions
 
-Before answering any single-cell / spatial / multiomics question, **consult the
-matching `sc-*` skill first** — the canonical best-practices references for this
-workspace live there. Only fall back to parametric knowledge if no skill fits.
+Before answering any single-cell, spatial, ChIP-seq, pathway, or differential-expression question, **consult the matching shared skill first** — the canonical references for this workspace live there. Only fall back to parametric knowledge if no skill fits.
 
 ## Skill routing
 
+Shared skills (read-only, available to every workspace):
+
 | Topic | Skill |
 | --- | --- |
-| Technology choice, raw data, format interop | `sc-introduction` |
-| QC, doublets, normalization, HVG, PCA/UMAP | `sc-preprocessing` |
-| Clustering, annotation, integration | `sc-clustering-annotation` |
-| Pseudotime, RNA velocity, CellRank | `sc-trajectory` |
-| Differential expression, composition, GSEA | `sc-differential-expression` |
-| pySCENIC, LIANA, NicheNet, CellChat | `sc-grn-communication` |
-| Bulk deconvolution (CIBERSORTx, MuSiC, DWLS) | `sc-bulk-deconvolution` |
-| scATAC-seq | `sc-atac` |
-| Spatial (Visium, MERFISH, Xenium) | `sc-spatial` |
-| CITE-seq / ADT | `sc-cite-seq` |
-| TCR/BCR repertoire | `sc-immune-repertoire` |
-| Multimodal integration (MOFA+, GLUE, WNN) | `sc-multimodal` |
-| Reproducibility, containers, pipelines | `sc-reproducibility` |
+| scRNA-seq: QC, normalization, clustering, annotation, integration | `single-cell` |
+| Spatial transcriptomics (Visium, MERFISH, Xenium, Slide-seq, Stereo-seq) | `spatial-transcriptomics` |
+| ChIP-seq, CUT&RUN, CUT&Tag: peaks, motifs, differential binding | `chip-seq` |
+| Pathway / gene-set enrichment (ORA, GSEA, ssGSEA) | `pathway-analysis` |
+| Differential expression (bulk, scRNA-seq pseudobulk, composition) | `differential-expression` |
 
-Invoke via `/sc-<name>` or the Skill tool.
+Invoke via `/<skill-name>` or the Skill tool.
+
+The shared skills source files live at `/workspace/shared/skills/<name>/SKILL.md` (read-only, visible in the file explorer for reference). Personal extensions go in `~/.claude/skills/` (per-user, writable) — drop a `SKILL.md` there and Claude Code auto-discovers it on the next session.
+
+## Project layout
+
+Every new task lives in its own project folder under `/workspace/local_projects/<project>/` with three required subdirectories:
+
+| Subdirectory | What goes there |
+| --- | --- |
+| `data/` | Raw and intermediate input files. Treated as read-mostly — pipelines write outputs into `results/`, not back into `data/`. |
+| `results/` | Processed objects, summary tables, and figures (use `results/figures/` for plots). |
+| `scripts/` | Pipeline code (`*.py` / `*.R` / `*.sh`). Notebooks for ad-hoc exploration may live here too; standard pipelines should be scripts (per Code conventions below). |
+
+Create the folder on the first action of a new task and stage all subsequent work there — do not scatter files at the `local_projects/` root or mix them with other projects'. Editable Python source lives in `/workspace/local_projects/<project>/repo/` (see "Installing Python packages" below).
 
 ## Code conventions
 
