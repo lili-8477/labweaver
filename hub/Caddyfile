@@ -1,0 +1,3 @@
+bioflow.selfai.cc {
+    reverse_proxy claude-bioflow-nginx:80
+}

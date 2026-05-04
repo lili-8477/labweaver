@@ -64,17 +64,20 @@ docker run -d \
     -e "SIDECAR_IMPORT_ON_BOOT=1" \
     -e "HOME=/home/node" \
     -v "${WORKSPACE}/local_projects:/workspace/local_projects" \
-    -v "${WORKSPACE}/.claude/chats:/workspace/.claude/chats" \
+    -v "${WORKSPACE}/.claude:/workspace/.claude" \
     -v "${WORKSPACE}/.env:/workspace/.env:ro" \
     -v "${WORKSPACE}/CLAUDE.md:/workspace/CLAUDE.md:ro" \
     -v "${SHARED_DIR}/CLAUDE.md:/workspace/.bioflow/shared.md:ro" \
     -v "${WORKSPACE}/.claude/skills:/home/node/.claude/skills-user" \
     -v "${WORKSPACE}/.claude/agents:/home/node/.claude/agents" \
+    -v "${WORKSPACE}/.claude/commands:/home/node/.claude/commands" \
+    -v "${WORKSPACE}/.claude/hooks:/home/node/.claude/hooks" \
     -v "${WORKSPACE}/.claude/settings.json:/home/node/.claude/settings.json" \
     -v "${WORKSPACE}/.claude/claude-projects:/home/node/.claude/projects" \
     -v "${SHARED_DIR}/reference:/workspace/shared/reference:ro" \
     -v "${SHARED_DIR}/projects:/workspace/shared/projects" \
     -v "${SHARED_DIR}/skills:/home/node/.claude/skills-shared:ro" \
+    -v "${SHARED_DIR}/skills:/workspace/shared/skills:ro" \
     -w /workspace \
     "${IMAGE}"
 

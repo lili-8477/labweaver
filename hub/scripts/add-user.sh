@@ -187,7 +187,11 @@ MOUNTS=(
     # the nginx /download/ endpoint (which serves directly from the host dir)
     # maps the UI path 1:1 without special rewrites.
     -v "${WORKSPACE}/local_projects:/workspace/local_projects"
-    -v "${WORKSPACE}/.claude/chats:/workspace/.claude/chats"
+    # Expose the user's whole .claude tree so the file explorer can browse and
+    # edit agents/, chats/, claude-projects/, skills/, and settings.json. The
+    # /home/node/.claude/* mounts below are still required (Claude Code reads
+    # from there); this just adds a second view at /workspace/.claude/.
+    -v "${WORKSPACE}/.claude:/workspace/.claude"
     -v "${WORKSPACE}/.env:/workspace/.env:ro"
     # Workspace-level instructions Claude Code auto-loads from cwd.
     -v "${WORKSPACE}/CLAUDE.md:/workspace/CLAUDE.md:ro"
@@ -199,12 +203,18 @@ MOUNTS=(
     # auto-discovers them. User skills win on name collisions.
     -v "${WORKSPACE}/.claude/skills:/home/node/.claude/skills-user"
     -v "${WORKSPACE}/.claude/agents:/home/node/.claude/agents"
+    -v "${WORKSPACE}/.claude/commands:/home/node/.claude/commands"
+    -v "${WORKSPACE}/.claude/hooks:/home/node/.claude/hooks"
     -v "${WORKSPACE}/.claude/settings.json:/home/node/.claude/settings.json"
     # Persist Claude Code session JSONLs across container recreations.
     -v "${WORKSPACE}/.claude/claude-projects:/home/node/.claude/projects"
     -v "${SHARED_DIR}/reference:/workspace/shared/reference:ro"
     -v "${SHARED_DIR}/projects:/workspace/shared/projects"
     -v "${SHARED_DIR}/skills:/home/node/.claude/skills-shared:ro"
+    # Also expose the shared skills tree under /workspace so the file
+    # explorer can render it for browsing. Read-only; users edit personal
+    # skills under their per-user .claude/skills mount above.
+    -v "${SHARED_DIR}/skills:/workspace/shared/skills:ro"
 )
 
 for spec in "${DATA_MOUNTS[@]+"${DATA_MOUNTS[@]}"}"; do

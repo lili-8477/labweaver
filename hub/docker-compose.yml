@@ -31,7 +31,7 @@ services:
     image: nginx:alpine
     container_name: claude-bioflow-nginx
     ports:
-      - "8088:80"     # UI + /ws/ — front with your own TLS terminator in prod
+      - "8088:80"     # UI + /ws/ — fronted by Caddy (below) in prod
     volumes:
       # Build the frontend (`cd frontend && npm run build`) BEFORE bringing up
       # nginx. If the host dir doesn't exist, Docker auto-creates it as root
@@ -46,6 +46,22 @@ services:
     depends_on:
       nats:
         condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - bioflow-net
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: claude-bioflow-caddy
+    ports:
+      - "80:80"       # ACME HTTP-01 + HTTP→HTTPS redirect
+      - "443:443"     # public TLS entrypoint for bioflow.selfai.cc
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - nginx
     restart: unless-stopped
     networks:
       - bioflow-net
@@ -90,3 +106,7 @@ services:
 networks:
   bioflow-net:
     driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
