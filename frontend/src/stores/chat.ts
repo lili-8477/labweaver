@@ -335,21 +335,29 @@ export const useChatStore = defineStore('chat', () => {
 
   // ---- Send / Stop ----
 
-  async function sendMessage(content: string) {
-    if (!activeChatId.value || !content.trim()) return
+  async function sendMessage(content: string, imagePaths: string[] = []) {
+    const trimmed = content.trim()
+    if (!activeChatId.value || (!trimmed && imagePaths.length === 0)) return
     sending.value = true
     streamingText.value = ''
     liveTimeline.value = []
     pendingToolCalls.clear()
     stepCounter = 0
 
-    messages.value.push({ role: 'user', content })
+    // Prepend `[image: <path>]` lines so Claude Code reads them via the Read
+    // tool. The agent sees these as part of the user turn alongside the text.
+    const prefix = imagePaths.map(p => `[image: ${p}]`).join('\n')
+    const fullContent = prefix
+      ? (trimmed ? `${prefix}\n${trimmed}` : prefix)
+      : trimmed
+
+    messages.value.push({ role: 'user', content: fullContent })
 
     const chatId = activeChatId.value
     try {
       await natsService.invoke('chat', {
         chat_id: chatId,
-        message: [{ role: 'user', content }],
+        message: [{ role: 'user', content: fullContent }],
       }, 600_000)
     } catch (e) {
       console.error('Chat error:', e)

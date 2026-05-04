@@ -1,15 +1,30 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, computed } from 'vue'
+import { ref, nextTick, watch, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { isDisplayableMessage } from '@/utils/content'
 import ChatMessageComp from '@/components/chat/ChatMessage.vue'
 import ExecutionTimeline from '@/components/chat/ExecutionTimeline.vue'
+import { isImage, makeAttachment, uploadAttachment, discardAttachmentFile, type ChatAttachment } from '@/services/chat-attachments'
+import { isSupported as voiceSupported, startVoice, type VoiceSession } from '@/services/voice'
 
 const chat = useChatStore()
 const input = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 
-const hasContent = computed(() => input.value.trim().length > 0)
+const attachments = ref<ChatAttachment[]>([])
+const isDragging = ref(false)
+const dragDepth = ref(0)
+const voiceOn = ref(false)
+const voiceSupportedFlag = voiceSupported()
+let voiceSession: VoiceSession | null = null
+// Text already in the textarea when recording starts; new transcript is
+// appended to it so we don't clobber a partially-typed message.
+let voiceBaseText = ''
+
+const anyUploading = computed(() => attachments.value.some(a => a.state === 'uploading'))
+const hasContent = computed(
+  () => (input.value.trim().length > 0 || attachments.value.some(a => a.state === 'done')) && !anyUploading.value,
+)
 
 // Filter messages for display — hide tool/system messages
 const displayMessages = computed(() =>
@@ -37,8 +52,13 @@ function getTimelineForDisplayMsg(displayIdx: number) {
 
 function send() {
   if (!hasContent.value || chat.sending) return
-  chat.sendMessage(input.value.trim())
+  if (voiceOn.value) stopVoice()
+  const paths = attachments.value
+    .filter(a => a.state === 'done' && a.workspacePath)
+    .map(a => a.workspacePath)
+  chat.sendMessage(input.value.trim(), paths)
   input.value = ''
+  clearAttachments()
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -52,6 +72,145 @@ function useSuggestion(text: string) {
   input.value = text
   send()
 }
+
+// ---- Image attachments ----
+
+function addFiles(files: FileList | File[]) {
+  for (const f of Array.from(files)) {
+    if (!isImage(f)) continue
+    const att = makeAttachment(f)
+    attachments.value.push(att)
+    const id = att.id
+
+    // Mutate via the reactive proxy (look up by id) so Vue's `set` trap
+    // fires and the chip re-renders. Mutating the local `att` reference
+    // updates the underlying object but skips reactivity tracking.
+    const patch = (p: Partial<ChatAttachment>) => {
+      const cur = attachments.value.find(a => a.id === id)
+      if (cur) Object.assign(cur, p)
+    }
+
+    uploadAttachment(id, (pct) => patch({ progress: pct }))
+      .then(path => patch({ workspacePath: path, state: 'done', progress: 100 }))
+      .catch(err => patch({ state: 'error', error: err.message || String(err) }))
+  }
+}
+
+function removeAttachment(id: string) {
+  const idx = attachments.value.findIndex(a => a.id === id)
+  if (idx < 0) return
+  URL.revokeObjectURL(attachments.value[idx].previewUrl)
+  attachments.value.splice(idx, 1)
+  discardAttachmentFile(id)
+}
+
+function clearAttachments() {
+  for (const a of attachments.value) {
+    URL.revokeObjectURL(a.previewUrl)
+    discardAttachmentFile(a.id)
+  }
+  attachments.value = []
+}
+
+function handlePaste(e: ClipboardEvent) {
+  const items = e.clipboardData?.items
+  if (!items) return
+  const files: File[] = []
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (it.kind === 'file') {
+      const f = it.getAsFile()
+      if (f && isImage(f)) files.push(f)
+    }
+  }
+  if (files.length > 0) {
+    e.preventDefault()
+    addFiles(files)
+  }
+}
+
+function onDragEnter(e: DragEvent) {
+  if (!hasImageInDrag(e)) return
+  e.preventDefault()
+  dragDepth.value++
+  isDragging.value = true
+}
+function onDragOver(e: DragEvent) {
+  if (!hasImageInDrag(e)) return
+  e.preventDefault()
+}
+function onDragLeave(e: DragEvent) {
+  if (!hasImageInDrag(e)) return
+  e.preventDefault()
+  dragDepth.value = Math.max(0, dragDepth.value - 1)
+  if (dragDepth.value === 0) isDragging.value = false
+}
+function onDrop(e: DragEvent) {
+  if (!e.dataTransfer) return
+  e.preventDefault()
+  dragDepth.value = 0
+  isDragging.value = false
+  const files = e.dataTransfer.files
+  if (files && files.length > 0) addFiles(files)
+}
+function hasImageInDrag(e: DragEvent): boolean {
+  const types = e.dataTransfer?.types
+  if (!types) return false
+  // dataTransfer.items isn't reliable across browsers during dragenter, so we
+  // accept any drag that carries Files and let addFiles filter by mime.
+  for (let i = 0; i < types.length; i++) if (types[i] === 'Files') return true
+  return false
+}
+
+// ---- Voice ----
+
+function toggleVoice() {
+  if (voiceOn.value) stopVoice()
+  else startVoiceSession()
+}
+
+function startVoiceSession() {
+  if (!voiceSupportedFlag) return
+  voiceBaseText = input.value
+  try {
+    voiceSession = startVoice({
+      onTranscript: (text) => {
+        input.value = (voiceBaseText ? voiceBaseText + ' ' : '') + text
+      },
+      onError: () => stopVoice(),
+      onEnd: () => { voiceOn.value = false; voiceSession = null },
+    })
+    voiceOn.value = true
+  } catch {
+    voiceOn.value = false
+  }
+}
+
+function stopVoice() {
+  voiceSession?.stop()
+  voiceSession = null
+  voiceOn.value = false
+}
+
+// If a drag escapes the chat panel and the user releases over an unhandled
+// region, the browser would otherwise navigate the tab to the dropped file —
+// which unloads the SPA and blanks everything. Swallow window-level drag/drop
+// so a stray miss is a no-op instead of a navigation.
+function swallow(e: DragEvent) {
+  if (e.dataTransfer?.types?.includes('Files')) e.preventDefault()
+}
+
+onMounted(() => {
+  window.addEventListener('dragover', swallow)
+  window.addEventListener('drop', swallow)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('dragover', swallow)
+  window.removeEventListener('drop', swallow)
+  voiceSession?.abort()
+  clearAttachments()
+})
 
 // Auto-scroll
 watch(
@@ -67,7 +226,14 @@ watch(
 </script>
 
 <template>
-  <div class="chat-panel">
+  <div
+    class="chat-panel"
+    :class="{ 'panel-drag-active': isDragging }"
+    @dragenter="onDragEnter"
+    @dragover="onDragOver"
+    @dragleave="onDragLeave"
+    @drop="onDrop"
+  >
     <!-- Empty state -->
     <div v-if="!chat.activeChatId" class="empty-state">
       <div class="empty-icon">&#x1F4AC;</div>
@@ -125,15 +291,56 @@ watch(
       </div>
 
       <!-- Input -->
-      <div class="input-area">
+      <div
+        class="input-area"
+        :class="{ 'drag-active': isDragging }"
+      >
+        <div v-if="attachments.length > 0" class="attachment-strip">
+          <div
+            v-for="a in attachments"
+            :key="a.id"
+            class="attachment-chip"
+            :class="{ 'chip-error': a.state === 'error' }"
+            :title="a.state === 'error' ? a.error : a.fileName"
+          >
+            <img :src="a.previewUrl" alt="" class="chip-thumb" />
+            <div v-if="a.state === 'uploading'" class="chip-progress">
+              <div class="chip-progress-bar" :style="{ width: a.progress + '%' }"></div>
+              <span class="chip-progress-pct">{{ a.progress }}%</span>
+            </div>
+            <span v-else-if="a.state === 'error'" class="chip-error-icon">!</span>
+            <button class="chip-remove" @click="removeAttachment(a.id)" title="Remove">&times;</button>
+          </div>
+        </div>
+
+        <div v-if="isDragging" class="drop-overlay">Drop image to attach</div>
+
         <div class="input-row">
           <textarea
             v-model="input"
             class="message-input"
-            placeholder="Type a message..."
+            placeholder="Type a message, drop or paste an image…"
             @keydown="handleKeydown"
+            @paste="handlePaste"
             rows="1"
           ></textarea>
+          <button
+            v-if="voiceSupportedFlag"
+            class="btn-mic"
+            :class="{ 'mic-on': voiceOn }"
+            :disabled="chat.sending"
+            @click="toggleVoice"
+            :title="voiceOn ? 'Stop recording' : 'Record voice'"
+          >
+            <svg v-if="!voiceOn" class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="12" rx="3" />
+              <path d="M5 11a7 7 0 0 0 14 0" />
+              <line x1="12" y1="18" x2="12" y2="22" />
+            </svg>
+            <svg v-else class="icon mic-rec" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <circle cx="12" cy="12" r="6" />
+            </svg>
+          </button>
           <button
             v-if="chat.sending"
             class="btn-stop"
@@ -200,10 +407,65 @@ watch(
 }
 
 .input-area {
+  position: relative;
   padding: 12px 16px; border-top: 1px solid var(--border);
   background: var(--bg-secondary);
 }
-.input-row { display: flex; gap: 8px; align-items: flex-end; }
+.input-area.drag-active { background: var(--bg-tertiary); }
+.drop-overlay {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  color: var(--accent); font-weight: 600; pointer-events: none;
+  z-index: 1;
+}
+
+.attachment-strip {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.attachment-chip {
+  position: relative; width: 64px; height: 64px;
+  border-radius: var(--radius); overflow: hidden;
+  border: 1px solid var(--border); background: var(--bg-primary);
+}
+.attachment-chip.chip-error { border-color: var(--danger); }
+.chip-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.chip-progress {
+  position: absolute; inset: 0;
+  background: color-mix(in srgb, var(--bg-primary) 55%, transparent);
+  display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 4px;
+}
+.chip-progress-bar {
+  position: absolute; left: 0; bottom: 0; height: 3px;
+  background: var(--accent);
+  transition: width 120ms ease-out;
+}
+.chip-progress-pct {
+  font-size: 0.7em; font-weight: 600;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--bg-primary) 80%, transparent);
+  padding: 1px 5px; border-radius: 10px;
+}
+.chip-error-icon {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--danger) 30%, transparent);
+  color: #fff; font-weight: 700;
+}
+.chip-remove {
+  position: absolute; top: 2px; right: 2px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: rgba(0,0,0,0.6); color: #fff; border: none;
+  font-size: 0.85em; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.chip-remove:hover { background: rgba(0,0,0,0.85); }
+
+.input-row { display: flex; gap: 8px; align-items: flex-end; position: relative; z-index: 0; }
 .message-input {
   flex: 1; padding: 10px 14px; background: var(--bg-primary);
   border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -223,4 +485,22 @@ watch(
 .btn-send:hover:not(:disabled) { background: var(--accent-hover); }
 .btn-stop { background: var(--danger); color: #fff; }
 .btn-stop:hover { opacity: 0.85; }
+
+.btn-mic {
+  width: 40px; height: 40px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--bg-primary);
+  color: var(--text-secondary);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.btn-mic .icon { width: 20px; height: 20px; }
+.btn-mic:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.btn-mic:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-mic.mic-on { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn-mic.mic-on .icon { width: 14px; height: 14px; }
+.mic-rec { animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
 </style>
