@@ -116,6 +116,8 @@ mkdir -p "${WORKSPACE}/.claude/skills" \
          "${WORKSPACE}/.claude/agents" \
          "${WORKSPACE}/.claude/chats" \
          "${WORKSPACE}/.claude/claude-projects" \
+         "${WORKSPACE}/.claude/commands" \
+         "${WORKSPACE}/.claude/hooks" \
          "${WORKSPACE}/local_projects"
 
 # Seed a minimal Claude Code settings file so the CLI has sensible defaults.
@@ -126,6 +128,53 @@ if [[ ! -f "${WORKSPACE}/.claude/settings.json" ]]; then
   "model": "claude-sonnet-4-6"
 }
 JSON
+fi
+
+# Install the self-driving tick harness skeleton (orchestrator command,
+# tick-* subagents, hook scripts). Idempotent: cp -n leaves user-edited
+# copies alone. The harness itself is dormant unless the user toggles
+# Self-driving on in the Agents panel (which writes ~/.claude/.harness_active);
+# until then the four hooks gate-out as no-ops.
+SKELETON_DIR="${HUB_DIR}/skeleton/harness"
+if [[ -d "${SKELETON_DIR}" ]]; then
+    cp -n "${SKELETON_DIR}/commands/"*.md "${WORKSPACE}/.claude/commands/" 2>/dev/null || true
+    cp -n "${SKELETON_DIR}/agents/"tick-*.md "${WORKSPACE}/.claude/agents/" 2>/dev/null || true
+    cp -n "${SKELETON_DIR}/hooks/"*.sh "${WORKSPACE}/.claude/hooks/" 2>/dev/null || true
+    chmod +x "${WORKSPACE}/.claude/hooks/"*.sh 2>/dev/null || true
+
+    # Merge harness hook entries into settings.json, preserving inode (the
+    # file is bind-mounted into the container; atomic-rename would break it).
+    python3 - "${WORKSPACE}/.claude/settings.json" <<'PY'
+import json, sys, pathlib
+HARNESS_HOOKS = {
+    "UserPromptSubmit": [
+        {"hooks": [{"type": "command", "command": "$HOME/.claude/hooks/userprompt_route.sh"}]}
+    ],
+    "PreToolUse": [
+        {"matcher": "Bash|Write|Edit",
+         "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/pretool_audit.sh"}]}
+    ],
+    "PostToolUse": [
+        {"matcher": "Write|Edit",
+         "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/posttool_commit.sh"}]},
+        {"matcher": "Bash",
+         "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/posttool_jobid.sh"}]}
+    ],
+    "Stop": [
+        {"hooks": [{"type": "command", "command": "$HOME/.claude/hooks/stop_tick.sh"}]}
+    ],
+}
+p = pathlib.Path(sys.argv[1])
+cur = json.loads(p.read_text())
+hooks = cur.setdefault("hooks", {})
+for k, v in HARNESS_HOOKS.items(): hooks[k] = v
+ordered = {}
+for k in ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]:
+    if k in hooks: ordered[k] = hooks[k]
+cur["hooks"] = ordered
+with p.open("w") as f:
+    json.dump(cur, f, indent=2); f.write("\n")
+PY
 fi
 
 # Shared dirs — created on demand by the first user provisioning.
