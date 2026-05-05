@@ -1,0 +1,23 @@
+{
+  "summary": {
+    "name": "PBMC3K preprocessing pass",
+    "description": "Loaded counts, ran sc.pp.* QC and normalisation.",
+    "body": "Walked through the standard scanpy preprocessing pipeline on PBMC3K, settling on percentile-based mt-cutoffs and log1p-norm."
+  },
+  "observations": [
+    {
+      "type": "decision",
+      "name": "percentile mt-cutoff",
+      "description": "drop top 1% mt%",
+      "body": "Used sc.pp.calculate_qc_metrics + 99th percentile cutoff over fixed thresholds because cell composition varies across batches.",
+      "facets": { "tool": ["scanpy"], "dataset": ["PBMC3K"] }
+    },
+    {
+      "type": "user-preference",
+      "name": "Seurat naming conventions",
+      "description": "use percent.mt not pct_counts_mt",
+      "body": "User wants downstream column names to match Seurat's convention so notebooks port between tools.",
+      "facets": {}
+    }
+  ]
+}
