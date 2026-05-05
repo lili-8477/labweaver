@@ -16,7 +16,8 @@
   "dependencies": {
     "chokidar": "^4.0.1",
     "pg": "^8.13.1",
-    "pino": "^9.5.0"
+    "pino": "^9.5.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^10.14.0",
