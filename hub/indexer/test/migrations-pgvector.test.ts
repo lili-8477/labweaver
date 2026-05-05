@@ -181,7 +181,8 @@ describe("migration 0008 — facets, embedder_queue, distill_cursor", () => {
 
   it("creates memory_distill_cursor with PK = username and 1970-01-01 default", async () => {
     await pool.query(
-      `INSERT INTO memory_distill_cursor (username) VALUES ('alice')`,
+      `INSERT INTO memory_distill_cursor (username) VALUES ('alice')
+       ON CONFLICT (username) DO NOTHING`,
     );
     const got = await pool.query(
       "SELECT EXTRACT(YEAR FROM last_seen_session_last_active) AS y FROM memory_distill_cursor WHERE username='alice'",
