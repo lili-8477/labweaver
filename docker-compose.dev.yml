@@ -53,7 +53,7 @@ services:
       - bioflow-dev-net
 
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: claude-bioflow-dev-postgres
     env_file: [ ./hub/.env ]
     environment:
