@@ -211,7 +211,7 @@ CREATE TABLE memories (
   body               TEXT NOT NULL,                 -- full content
   source_session_id  UUID,                          -- FK-shaped ref to sessions; not enforced (settled sessions can be archived in Phase 3)
   source_entry_uuids JSONB NOT NULL DEFAULT '[]'::jsonb,  -- entry_uuids that contributed; for observation provenance
-  content_hash       BYTEA NOT NULL,                -- SHA-256 of normalised body; dedup key
+  content_hash       BYTEA NOT NULL,                -- SHA-256 of normalised "name\nbody" with promptVersion prefix; dedup key
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   hit_count          INT  NOT NULL DEFAULT 0,
