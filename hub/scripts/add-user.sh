@@ -210,6 +210,32 @@ EOF
     chmod 600 "${WORKSPACE}/.env"
 fi
 
+# Register the bioflow-memory MCP server for this user. Claude Code reads
+# .mcp.json from the project root (cwd = /workspace inside the container,
+# i.e. ${WORKSPACE} on the host). Merged via Python so we don't clobber
+# any pre-existing servers (e.g. an adapter MCP added later); idempotent
+# on re-runs since the same key just overwrites itself.
+MCP_FILE="${WORKSPACE}/.mcp.json"
+[[ -f "$MCP_FILE" ]] || echo '{}' > "$MCP_FILE"
+python3 - "$MCP_FILE" "$USERNAME" <<'PY'
+import json, sys, pathlib
+p, username = pathlib.Path(sys.argv[1]), sys.argv[2]
+try:
+    cur = json.loads(p.read_text() or "{}")
+except json.JSONDecodeError:
+    cur = {}
+servers = cur.setdefault("mcpServers", {})
+servers["bioflow-memory"] = {
+    "command": "bioflow-memory-mcp",
+    "env": {
+        "USERNAME": username,
+        "MEMORY_API_URL": "http://claude-bioflow-indexer:8400",
+    },
+}
+with p.open("w") as f:
+    json.dump(cur, f, indent=2); f.write("\n")
+PY
+
 # --- 2. HTTP Basic auth entry ------------------------------------------------
 echo "[2/4] Setting up HTTP auth"
 echo -n "Enter password for ${USERNAME}: "
@@ -247,6 +273,10 @@ MOUNTS=(
     -v "${WORKSPACE}/.env:/workspace/.env:ro"
     # Workspace-level instructions Claude Code auto-loads from cwd.
     -v "${WORKSPACE}/CLAUDE.md:/workspace/CLAUDE.md:ro"
+    # Project-scoped MCP server registry — Claude Code reads .mcp.json
+    # from cwd (/workspace) on launch. Single-file mount keeps the inode
+    # stable across host edits (atomic-rename would break the mount).
+    -v "${WORKSPACE}/.mcp.json:/workspace/.mcp.json:ro"
     # Shared CLAUDE.md, mounted live so org-wide edits propagate without
     # touching per-user files. The user CLAUDE.md @-imports this path.
     -v "${SHARED_DIR}/CLAUDE.md:/workspace/.bioflow/shared.md:ro"
@@ -302,6 +332,8 @@ docker run -d \
     -e "USERNAME=${USERNAME}" \
     -e "SIDECAR_IMPORT_ON_BOOT=1" \
     -e "HOME=/home/node" \
+    -e "MEMORY_API_URL=http://claude-bioflow-indexer:8400" \
+    -e "MEMORY_ENABLED=1" \
     "${MOUNTS[@]}" \
     -w /workspace \
     "${IMAGE}"
