@@ -9,8 +9,17 @@ import { startWatcher } from "./watcher.js";
 import { distill } from "./llm-client.js";
 import { runDistillerOnce } from "./distiller.js";
 import { runEmbedderOnce } from "./embedder-worker.js";
+import { embedTexts } from "./embedder-client.js";
 import { readSessionJsonl } from "./transcript-reader.js";
 import { buildApp } from "./memory-api.js";
+import {
+  searchMemories,
+  getMemory,
+  timelineMemories,
+  writeUserMemory,
+  forgetMemory,
+  getContext,
+} from "./memory-repo.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -83,7 +92,20 @@ async function main(): Promise<void> {
   startDistillerLoop();
   startEmbedderLoop();
 
-  const app = buildApp({});
+  const app = buildApp({
+    pool,
+    embedderClient: {
+      embedTexts: (texts) => embedTexts({ baseUrl: cfg.embedderUrl, texts }),
+    },
+    repo: {
+      searchMemories,
+      getMemory,
+      timelineMemories,
+      writeUserMemory,
+      forgetMemory,
+      getContext,
+    },
+  });
   await app.listen({ port: cfg.memoryApiPort, host: "0.0.0.0" });
   logger.info({ port: cfg.memoryApiPort }, "memory-api listening");
 
