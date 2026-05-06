@@ -3,6 +3,7 @@ import { logger } from "./config.js";
 import { findSettledSessions, writeDistillation, type SettledSession } from "./distiller-repo.js";
 import { getCursor, setCursor } from "./distiller-cursor.js";
 import type { DistillationResult } from "./distiller-prompts.js";
+import { DistillerLlmError } from "./llm-client.js";
 
 export interface RunDistillerOpts {
   llm:               (transcript: string) => Promise<DistillationResult>;
@@ -19,7 +20,10 @@ export interface RunSummary {
   sessionsFailed:    number;
 }
 
-const CHARS_PER_TOKEN = 4; // crude; sufficient for a transcript-trimming guard
+// Dense JSONL (escaped JSON, tool_use blocks) tokenises closer to 2 chars/token
+// than the 4 typical of prose. Erring conservative keeps trimmed input under the
+// model's 200k context window.
+const CHARS_PER_TOKEN = 2;
 
 export async function runDistillerOnce(pool: Pool, opts: RunDistillerOpts): Promise<RunSummary> {
   const summary: RunSummary = { usersScanned: 0, sessionsDistilled: 0, sessionsFailed: 0 };
@@ -81,14 +85,66 @@ async function processUser(
       summary.sessionsDistilled++;
     } catch (err) {
       summary.sessionsFailed++;
-      logger.error(
-        { err, username, sessionId: s.session_id },
-        "distillation failed; cursor not advanced",
-      );
-      // stop processing this user this pass — the next pass will retry the same session
-      return;
+      if (isPermanentFailure(err)) {
+        logger.warn(
+          { err, username, sessionId: s.session_id },
+          "distillation failed permanently; writing sentinel row and advancing cursor",
+        );
+        await writeDistillation(pool, {
+          sessionMeta: {
+            username,
+            project_dir:       s.encoded_project_dir,
+            source_session_id: s.session_id,
+          },
+          result: {
+            summary: {
+              name:        "raw distillation failed",
+              description: classifyFailure(err),
+              body:        truncate(errorMessage(err), 1400),
+            },
+            observations: [],
+          },
+          promptVersion: opts.promptVersion,
+        });
+        await setCursor(pool, username, s.last_active);
+      } else {
+        logger.error(
+          { err, username, sessionId: s.session_id },
+          "distillation failed; cursor not advanced",
+        );
+        // stop processing this user this pass — the next pass will retry the same session
+        return;
+      }
     }
   }
+}
+
+// Permanent: HTTP request was made and the response is unusable for *this*
+// session as-is. Retrying with the same input won't help, so we write a
+// sentinel and advance. Transient (network, 5xx) errors return false here.
+function isPermanentFailure(err: unknown): boolean {
+  if (err instanceof DistillerLlmError) return true;
+  if (typeof err === "object" && err !== null && "status" in err) {
+    return (err as { status?: unknown }).status === 400;
+  }
+  return false;
+}
+
+function classifyFailure(err: unknown): string {
+  if (err instanceof DistillerLlmError) return "schema-or-parse-fail";
+  if (typeof err === "object" && err !== null && "status" in err && (err as { status?: unknown }).status === 400) {
+    return "anthropic-400";
+  }
+  return "unknown-fail";
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max);
 }
 
 function userLockKey(username: string): bigint {

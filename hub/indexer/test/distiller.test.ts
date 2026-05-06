@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runMigrations } from "../src/migrate.js";
 import { runDistillerOnce } from "../src/distiller.js";
 import { setCursor, getCursor } from "../src/distiller-cursor.js";
+import { DistillerLlmError } from "../src/llm-client.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 let pg: StartedPostgreSqlContainer;
@@ -119,16 +120,83 @@ describe("runDistillerOnce", () => {
       [SID(4), tenMinAgo],
     );
 
-    const huge = "x".repeat(2_000_000); // ~500k tokens at 4 chars/token
+    const huge = "x".repeat(2_000_000);
     const captured: { transcript?: string } = {};
     await runDistillerOnce(pool, {
       llm: async (transcript) => { captured.transcript = transcript; return RESULT; },
       readTranscript: async () => huge,
       settleSeconds: 300,
       perUserLimit: 50,
-      maxDistillTokens: 1000, // ~4000 chars after trim
+      maxDistillTokens: 1000,
       promptVersion: 1,
     });
-    expect(captured.transcript!.length).toBeLessThanOrEqual(4 * 1000 + 100);
+    // Trim budget = maxDistillTokens × CHARS_PER_TOKEN (2). Conservative cap.
+    expect(captured.transcript!.length).toBeLessThan(huge.length);
+    expect(captured.transcript!.length).toBeLessThanOrEqual(2 * 1000 + 100);
+  });
+
+  it("on DistillerLlmError, writes sentinel summary and advances cursor", async () => {
+    const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    await pool.query(
+      `INSERT INTO sessions (session_id, username, encoded_project_dir, last_active)
+       VALUES ($1,'alice','-w-p',$2)`,
+      [SID(5), tenMinAgo],
+    );
+
+    const llmFn = vi.fn(async () => {
+      throw new DistillerLlmError("LLM output failed schema validation: missing field");
+    });
+    const summary = await runDistillerOnce(pool, {
+      llm: llmFn,
+      readTranscript: async () => "x",
+      settleSeconds: 300,
+      perUserLimit: 50,
+      maxDistillTokens: 80_000,
+      promptVersion: 1,
+    });
+
+    expect(summary.sessionsFailed).toBe(1);
+    expect(summary.sessionsDistilled).toBe(0);
+
+    const cursor = await getCursor(pool, "alice");
+    expect(cursor.toISOString()).toBe(new Date(tenMinAgo).toISOString());
+
+    const sentinel = await pool.query(
+      "SELECT name, description, body FROM memories WHERE type = 'session_summary'",
+    );
+    expect(sentinel.rows).toHaveLength(1);
+    expect(sentinel.rows[0].name).toBe("raw distillation failed");
+    expect(sentinel.rows[0].description).toBe("schema-or-parse-fail");
+    expect(sentinel.rows[0].body).toContain("schema validation");
+  });
+
+  it("on Anthropic 400, writes sentinel summary and advances cursor", async () => {
+    const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    await pool.query(
+      `INSERT INTO sessions (session_id, username, encoded_project_dir, last_active)
+       VALUES ($1,'alice','-w-p',$2)`,
+      [SID(6), tenMinAgo],
+    );
+
+    const apiErr = Object.assign(new Error("prompt is too long: 213503 tokens > 200000"), {
+      status: 400,
+    });
+    const llmFn = vi.fn(async () => { throw apiErr; });
+    const summary = await runDistillerOnce(pool, {
+      llm: llmFn,
+      readTranscript: async () => "x",
+      settleSeconds: 300,
+      perUserLimit: 50,
+      maxDistillTokens: 80_000,
+      promptVersion: 1,
+    });
+
+    expect(summary.sessionsFailed).toBe(1);
+    const cursor = await getCursor(pool, "alice");
+    expect(cursor.toISOString()).toBe(new Date(tenMinAgo).toISOString());
+    const sentinel = await pool.query(
+      "SELECT description FROM memories WHERE type = 'session_summary'",
+    );
+    expect(sentinel.rows[0].description).toBe("anthropic-400");
   });
 });
