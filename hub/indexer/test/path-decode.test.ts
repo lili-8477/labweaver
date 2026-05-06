@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveJsonlPath } from "../src/path-decode.js";
+import { resolveJsonlPath, encodeProjectDir } from "../src/path-decode.js";
 
 const ROOT = "/workspaces";
 
@@ -51,5 +51,19 @@ describe("resolveJsonlPath", () => {
       "/workspaces/u/.claude/claude-projects/-p/f8e3b6c4-1234-5678-9abc-def012345678.jsonl",
     );
     expect(r!.sessionId).toBe("f8e3b6c4-1234-5678-9abc-def012345678");
+  });
+});
+
+describe("encodeProjectDir", () => {
+  it("encodes the workspace root", () => {
+    expect(encodeProjectDir("/workspace")).toBe("-workspace");
+  });
+
+  it("strips a trailing slash before encoding", () => {
+    expect(encodeProjectDir("/workspace/pbmc3k/")).toBe("-workspace-pbmc3k");
+  });
+
+  it("normalizes a missing leading slash", () => {
+    expect(encodeProjectDir("workspace")).toBe("-workspace");
   });
 });
