@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runMigrations } from "../src/migrate.js";
 import { insertMemoryRow } from "../src/distiller-repo.js";
 import { contentHash } from "../src/content-hash.js";
-import { searchMemories, getMemory, timelineMemories, writeUserMemory } from "../src/memory-repo.js";
+import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext } from "../src/memory-repo.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 let pg: StartedPostgreSqlContainer;
@@ -576,5 +576,211 @@ describe("writeUserMemory", () => {
     expect(first.memory_id).not.toBeNull();
     const second = await writeUserMemory(args);
     expect(second.memory_id).toBeNull();
+  });
+});
+
+describe("forgetMemory", () => {
+  it("soft-deletes own memory and getMemory subsequently returns null", async () => {
+    const id = await seedMemory({
+      username: "alice", project_dir: "-w-p", body: "to be forgotten", seed: 500,
+    });
+    const before = await getMemory(pool, id);
+    expect(before).not.toBeNull();
+
+    const res = await forgetMemory({ pool, username: "alice", memoryId: id });
+    expect(res).toEqual({ ok: true });
+
+    const after = await getMemory(pool, id);
+    expect(after).toBeNull();
+
+    // Confirm deleted_at was set (and updated_at advanced) without nuking
+    // chunks / facets / queue rows.
+    const r = await pool.query<{ deleted_at: Date | null; updated_at: Date }>(
+      `SELECT deleted_at, updated_at FROM memories WHERE memory_id = $1`,
+      [id],
+    );
+    expect(r.rowCount).toBe(1);
+    expect(r.rows[0].deleted_at).not.toBeNull();
+    const chunkCount = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM memory_chunks WHERE memory_id = $1`,
+      [id],
+    );
+    expect(chunkCount.rows[0].count).toBe("1");
+  });
+
+  it("returns {ok: false} for a nonexistent id", async () => {
+    const res = await forgetMemory({
+      pool, username: "alice",
+      memoryId: "00000000-0000-0000-0000-000000000000",
+    });
+    expect(res).toEqual({ ok: false });
+  });
+
+  it("returns {ok: false} when caller does not own the memory", async () => {
+    const bobId = await seedMemory({
+      username: "bob", project_dir: "-w-p", body: "bob's memory", seed: 501,
+    });
+    const res = await forgetMemory({ pool, username: "alice", memoryId: bobId });
+    expect(res).toEqual({ ok: false });
+
+    // bob's row is still alive
+    const got = await getMemory(pool, bobId);
+    expect(got).not.toBeNull();
+  });
+
+  it("is idempotent: a second forget on the same id returns {ok: false}", async () => {
+    const id = await seedMemory({
+      username: "alice", project_dir: "-w-p", body: "double-forget", seed: 502,
+    });
+    const first = await forgetMemory({ pool, username: "alice", memoryId: id });
+    expect(first).toEqual({ ok: true });
+    const second = await forgetMemory({ pool, username: "alice", memoryId: id });
+    expect(second).toEqual({ ok: false });
+  });
+});
+
+describe("getContext", () => {
+  it("returns empty bundle when the user has no memories", async () => {
+    const ctx = await getContext({
+      pool, username: "alice",
+      project_path: "/workspace",
+      budget_tokens: 2000,
+    });
+    expect(ctx).toEqual({ system_prompt: "", memory_ids: [] });
+  });
+
+  it("includes a single memory and emits the header line", async () => {
+    const id = await seedMemory({
+      username: "alice", project_dir: null,
+      body: "alice prefers fastp for adapter trimming", seed: 600,
+    });
+    const ctx = await getContext({
+      pool, username: "alice",
+      project_path: "/workspace",
+      budget_tokens: 2000,
+    });
+    expect(ctx.memory_ids).toEqual([id]);
+    expect(ctx.system_prompt.startsWith("# Memory Context\n\n[")).toBe(true);
+    expect(ctx.system_prompt).toContain("[user:observation] seed-600");
+    expect(ctx.system_prompt).toContain("alice prefers fastp for adapter trimming");
+  });
+
+  it("orders multiple in-budget memories by score DESC (project > user > org)", async () => {
+    // Encoded form of "/workspace/pbmc3k" → "-workspace-pbmc3k"
+    const projectDir = "-workspace-pbmc3k";
+    const orgId     = await seedMemory({ username: "__org__", project_dir: null,        body: "org body",     seed: 610 });
+    const userId    = await seedMemory({ username: "alice",   project_dir: null,        body: "user body",    seed: 611 });
+    const projectId = await seedMemory({ username: "alice",   project_dir: projectDir,  body: "project body", seed: 612 });
+
+    const ctx = await getContext({
+      pool, username: "alice",
+      project_path: "/workspace/pbmc3k",
+      budget_tokens: 2000,
+    });
+    expect(ctx.memory_ids).toEqual([projectId, userId, orgId]);
+
+    // Order in the prompt mirrors memory_ids order
+    const prj = ctx.system_prompt.indexOf("seed-612");
+    const usr = ctx.system_prompt.indexOf("seed-611");
+    const org = ctx.system_prompt.indexOf("seed-610");
+    expect(prj).toBeGreaterThan(-1);
+    expect(usr).toBeGreaterThan(prj);
+    expect(org).toBeGreaterThan(usr);
+
+    // Header lines exist for each scope tier
+    expect(ctx.system_prompt).toContain("[project:observation] seed-612");
+    expect(ctx.system_prompt).toContain("[user:observation] seed-611");
+    expect(ctx.system_prompt).toContain("[org:observation] seed-610");
+  });
+
+  it("includes at least one memory even when budget is too small to fit any", async () => {
+    const id = await seedMemory({
+      username: "alice", project_dir: null,
+      body: "x".repeat(500), seed: 620,
+    });
+    // budget_tokens=1 → 4 chars budget; the single memory will overshoot.
+    const ctx = await getContext({
+      pool, username: "alice",
+      project_path: "/workspace",
+      budget_tokens: 1,
+    });
+    expect(ctx.memory_ids).toEqual([id]);
+    expect(ctx.system_prompt.length).toBeGreaterThan(4);
+  });
+
+  it("excludes soft-deleted memories", async () => {
+    const liveId = await seedMemory({
+      username: "alice", project_dir: null, body: "live", seed: 630,
+    });
+    const goneId = await seedMemory({
+      username: "alice", project_dir: null, body: "gone", seed: 631,
+    });
+    await pool.query("UPDATE memories SET deleted_at = now() WHERE memory_id = $1", [goneId]);
+
+    const ctx = await getContext({
+      pool, username: "alice",
+      project_path: "/workspace",
+      budget_tokens: 2000,
+    });
+    expect(ctx.memory_ids).toContain(liveId);
+    expect(ctx.memory_ids).not.toContain(goneId);
+  });
+
+  it("excludes sentinel 'raw distillation failed' rows", async () => {
+    const goodId = await seedMemory({
+      username: "alice", project_dir: null, body: "good content", seed: 640,
+    });
+    const badId = await seedMemory({
+      username: "alice", project_dir: null, body: "bad content", seed: 641,
+    });
+    await pool.query(
+      `UPDATE memories SET name = 'raw distillation failed' WHERE memory_id = $1`,
+      [badId],
+    );
+
+    const ctx = await getContext({
+      pool, username: "alice",
+      project_path: "/workspace",
+      budget_tokens: 2000,
+    });
+    expect(ctx.memory_ids).toContain(goodId);
+    expect(ctx.memory_ids).not.toContain(badId);
+  });
+
+  it("includes __org__ memories alongside the user's own", async () => {
+    const orgId  = await seedMemory({ username: "__org__", project_dir: null, body: "org rule", seed: 650 });
+    const userId = await seedMemory({ username: "alice",   project_dir: null, body: "user pref", seed: 651 });
+    const otherId = await seedMemory({ username: "bob",    project_dir: null, body: "bob's", seed: 652 });
+
+    const ctx = await getContext({
+      pool, username: "alice",
+      project_path: "/workspace",
+      budget_tokens: 2000,
+    });
+    expect(ctx.memory_ids).toContain(orgId);
+    expect(ctx.memory_ids).toContain(userId);
+    expect(ctx.memory_ids).not.toContain(otherId);
+  });
+
+  it("encodes project_path into the encoded_project_dir filter", async () => {
+    // Only project rows whose project_dir matches the encoded form should
+    // surface; rows for other projects (or for the same human path encoded
+    // differently) must be excluded.
+    const matchingId = await seedMemory({
+      username: "alice", project_dir: "-workspace-pbmc3k",
+      body: "matches", seed: 660,
+    });
+    const otherProjectId = await seedMemory({
+      username: "alice", project_dir: "-workspace-other",
+      body: "other", seed: 661,
+    });
+
+    const ctx = await getContext({
+      pool, username: "alice",
+      project_path: "/workspace/pbmc3k",
+      budget_tokens: 2000,
+    });
+    expect(ctx.memory_ids).toContain(matchingId);
+    expect(ctx.memory_ids).not.toContain(otherProjectId);
   });
 });

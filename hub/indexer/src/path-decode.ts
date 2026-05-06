@@ -52,3 +52,24 @@ function decodeDisplay(encoded: string): string {
   // "/". Known lossy when a real path contains "-".
   return encoded.replace(/-/g, "/");
 }
+
+/**
+ * Encode an absolute project path into the Claude-Code-style directory name
+ * used as `encoded_project_dir` (e.g. "/workspace/pbmc3k" → "-workspace-pbmc3k").
+ *
+ * This is the inverse of `decodeDisplay` and is intentionally lossy in the
+ * other direction: a real underscore-vs-hyphen decision belongs to whatever
+ * tool created the on-disk encoded name. Use this only to produce filter
+ * values for queries against `memories.project_dir` / `sessions.encoded_project_dir`,
+ * never to construct filesystem paths.
+ *
+ * Inputs are normalised to a leading "/" so callers may pass either a raw
+ * absolute path or an already-leading-slash path. A trailing slash is
+ * stripped so "/workspace" and "/workspace/" produce the same output.
+ */
+export function encodeProjectDir(projectPath: string): string {
+  let p = projectPath;
+  if (!p.startsWith("/")) p = "/" + p;
+  if (p.length > 1 && p.endsWith("/")) p = p.slice(0, -1);
+  return p.replace(/\//g, "-");
+}

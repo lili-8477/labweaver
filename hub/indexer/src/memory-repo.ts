@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { logger } from "./config.js";
 import { contentHash } from "./content-hash.js";
 import { insertMemoryRow } from "./distiller-repo.js";
+import { encodeProjectDir } from "./path-decode.js";
 
 export interface SearchMemoriesArgs {
   pool:           Pool;
@@ -386,4 +387,122 @@ export async function writeUserMemory(
   } finally {
     client.release();
   }
+}
+
+export interface ForgetMemoryArgs {
+  pool:     Pool;
+  username: string;          // for authorization scoping (caller cannot forget another user's memory)
+  memoryId: string;
+}
+
+// Soft-delete a memory by setting `deleted_at = now()`. Authorisation is
+// enforced in the WHERE clause: a row is only updated when both the id and
+// the caller's username match. Returns {ok: true} when a row was actually
+// updated, {ok: false} for any miss (not found, owned by someone else, or
+// already deleted) — that asymmetry makes the second forget on the same id
+// idempotent without silently lying to the caller.
+//
+// Chunks, facets, and embedder_queue rows are intentionally left in place.
+// Search and timeline already filter by `deleted_at IS NULL`, so the data is
+// invisible to readers; physical deletion is a separate retention concern.
+export async function forgetMemory(args: ForgetMemoryArgs): Promise<{ ok: boolean }> {
+  const r = await args.pool.query(
+    `UPDATE memories
+        SET deleted_at = now(),
+            updated_at = now()
+      WHERE memory_id = $1
+        AND username = $2
+        AND deleted_at IS NULL`,
+    [args.memoryId, args.username],
+  );
+  return { ok: (r.rowCount ?? 0) > 0 };
+}
+
+export interface GetContextArgs {
+  pool:          Pool;
+  username:      string;
+  project_path:  string;
+  budget_tokens: number;
+}
+
+export interface MemoryContext {
+  system_prompt: string;
+  memory_ids:    string[];
+}
+
+// SessionStart bundle: rank up to ~50 candidate memories by
+// scope_tier × popularity × recency (no FTS or vector — context isn't
+// query-driven), then walk them in score-DESC order and accumulate header +
+// body lines into a single system_prompt string until adding the next memory
+// would push the running char count past `budget_tokens * 4` (the
+// 4-chars-per-token heuristic). Always include at least one memory if any
+// candidates exist; an empty bundle is worse than slightly oversized.
+//
+// project_path is the raw absolute path inside the user's container (e.g.
+// "/workspace/pbmc3k"). It's encoded to "-workspace-pbmc3k" via
+// encodeProjectDir before filtering on memories.project_dir.
+//
+// Returns {system_prompt: "", memory_ids: []} when no rows match — the
+// caller checks `memory_ids.length === 0` to decide whether to emit a
+// SessionStart hook at all, so the empty string (not the bare header) is
+// the documented "skip" signal.
+const CONTEXT_SQL = `
+SELECT m.memory_id, m.type, m.name, m.body,
+       CASE
+         WHEN m.username = '__org__'                              THEN 'org'
+         WHEN m.project_dir IS NULL                               THEN 'user'
+         ELSE 'project'
+       END AS scope_tier,
+       (CASE
+          WHEN m.username = '__org__'                              THEN 1.00
+          WHEN m.project_dir IS NULL                               THEN 1.10
+          ELSE 1.20
+        END
+        * (1.0 + LN(1 + m.hit_count) * 0.05)
+        * EXP(-EXTRACT(EPOCH FROM (now() - m.created_at)) / (86400 * 90))
+       ) AS score
+FROM memories m
+WHERE m.deleted_at IS NULL
+  AND (m.username = $1 OR m.username = '__org__')
+  AND (m.project_dir IS NULL OR m.project_dir = $2)
+  AND m.name <> 'raw distillation failed'
+ORDER BY score DESC
+LIMIT 50
+`;
+
+export async function getContext(args: GetContextArgs): Promise<MemoryContext> {
+  const encodedProjectDir = encodeProjectDir(args.project_path);
+
+  type Row = {
+    memory_id:  string;
+    type:       string;
+    name:       string;
+    body:       string;
+    scope_tier: "org" | "user" | "project";
+    score:      string;
+  };
+  const r = await args.pool.query<Row>(CONTEXT_SQL, [args.username, encodedProjectDir]);
+
+  if (r.rows.length === 0) {
+    return { system_prompt: "", memory_ids: [] };
+  }
+
+  const HEADER = "# Memory Context\n\n";
+  const charBudget = args.budget_tokens * 4;
+  const ids: string[] = [];
+  const parts: string[] = [HEADER];
+  let used = HEADER.length;
+
+  for (const row of r.rows) {
+    const block = `[${row.scope_tier}:${row.type}] ${row.name}\n${row.body}\n\n`;
+    if (ids.length === 0 || used + block.length <= charBudget) {
+      parts.push(block);
+      used += block.length;
+      ids.push(row.memory_id);
+    } else {
+      break;
+    }
+  }
+
+  return { system_prompt: parts.join(""), memory_ids: ids };
 }
