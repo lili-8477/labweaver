@@ -4,6 +4,7 @@ import {
   callMemoryGet,
   callMemoryTimeline,
   callMemoryWrite,
+  callMemoryForget,
   toolDefinitions,
 } from "../src/index.js";
 
@@ -36,9 +37,10 @@ const baseDeps = (stub: typeof fetch) => ({
 });
 
 describe("toolDefinitions", () => {
-  it("exposes exactly the four memory tools", () => {
+  it("exposes exactly the five memory tools", () => {
     const names = toolDefinitions.map((t) => t.name).sort();
     expect(names).toEqual([
+      "memory_forget",
       "memory_get",
       "memory_search",
       "memory_timeline",
@@ -282,5 +284,34 @@ describe("callMemoryWrite", () => {
     );
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("validation failed");
+  });
+});
+
+describe("callMemoryForget", () => {
+  it("POSTs /memory/forget with username from deps and memory_id from caller", async () => {
+    const { stub, calls } = makeFetchStub(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const result = await callMemoryForget({ memory_id: "abc-123" }, baseDeps(stub));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("http://stub:8400/memory/forget");
+    expect(calls[0]!.init.method).toBe("POST");
+    const body = JSON.parse(calls[0]!.init.body as string);
+    expect(body).toEqual({ username: "alice", memory_id: "abc-123" });
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ ok: true });
+  });
+
+  it("returns isError without calling fetch when memory_id is missing", async () => {
+    const { stub, calls } = makeFetchStub(
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    const result = await callMemoryForget({}, baseDeps(stub));
+    expect(calls).toHaveLength(0);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("'memory_id' is required");
   });
 });

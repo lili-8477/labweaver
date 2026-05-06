@@ -88,6 +88,18 @@ export const toolDefinitions = [
       required: ["scope", "type", "name", "description", "body"],
     },
   },
+  {
+    name: "memory_forget",
+    description:
+      "Soft-delete a memory by id. The agent's username (from env) must own the memory; cross-user deletes are rejected at the API layer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memory_id: { type: "string" },
+      },
+      required: ["memory_id"],
+    },
+  },
 ] as const;
 
 // ─── deps & result types ───────────────────────────────────────────────
@@ -216,6 +228,25 @@ export async function callMemoryWrite(args: any, deps: ToolDeps): Promise<ToolRe
   }
 }
 
+export async function callMemoryForget(args: any, deps: ToolDeps): Promise<ToolResult> {
+  // Validate the one required arg up front so we don't issue a POST that the
+  // API would reject anyway — saves a round trip and gives the agent a
+  // crisper error than the API's zod issue list.
+  if (!args?.memory_id || typeof args.memory_id !== "string") {
+    return fail("memory_forget: 'memory_id' is required");
+  }
+  try {
+    const res = await deps.fetch(`${deps.baseUrl}/memory/forget`, {
+      method:  "POST",
+      headers: { "content-type": "application/json" },
+      body:    JSON.stringify({ username: deps.username, memory_id: args.memory_id }),
+    });
+    return await unwrap(res, "memory_forget");
+  } catch (err) {
+    return fail(`memory_forget network error: ${(err as Error).message}`);
+  }
+}
+
 // ─── stdio entrypoint ──────────────────────────────────────────────────
 // Only run main() when invoked as a script. Test imports just want the
 // handler functions and must not start a stdio server (which would hang
@@ -253,6 +284,7 @@ async function main(): Promise<void> {
       case "memory_get":      result = await callMemoryGet(args, deps); break;
       case "memory_timeline": result = await callMemoryTimeline(args, deps); break;
       case "memory_write":    result = await callMemoryWrite(args, deps); break;
+      case "memory_forget":   result = await callMemoryForget(args, deps); break;
       default:                result = fail(`unknown tool: ${name}`); break;
     }
     // SDK 1.x widened CallToolResult to include a "task" variant (long-running
