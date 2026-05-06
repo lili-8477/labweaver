@@ -7,6 +7,7 @@ set -euo pipefail
 HUB_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORKSPACES_DIR="${HUB_DIR}/workspaces"
 SHARED_DIR="${WORKSPACES_DIR}/shared"
+SKELETON_DIR="${HUB_DIR}/skeleton/harness"
 NETWORK="claude-bioflow_bioflow-net"
 NATS_HOST="claude-bioflow-nats"
 ENV_FILE="${HUB_DIR}/.env"
@@ -38,6 +39,83 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
     docker rm "${CONTAINER}" >/dev/null
 fi
 
+# Refresh harness skeleton + memory wiring on the existing workspace so
+# recreating a pre-memory user gains the SessionStart hook, the slash
+# commands, and the bioflow-memory MCP server. All three operations are
+# idempotent (cp -n + Python merges) so re-running does not clobber
+# user-edited files.
+if [[ -d "${SKELETON_DIR}" ]]; then
+    mkdir -p "${WORKSPACE}/.claude/commands" \
+             "${WORKSPACE}/.claude/agents" \
+             "${WORKSPACE}/.claude/hooks"
+    cp -n "${SKELETON_DIR}/commands/"*.md "${WORKSPACE}/.claude/commands/" 2>/dev/null || true
+    cp -n "${SKELETON_DIR}/agents/"tick-*.md "${WORKSPACE}/.claude/agents/" 2>/dev/null || true
+    cp -n "${SKELETON_DIR}/hooks/"*.sh "${WORKSPACE}/.claude/hooks/" 2>/dev/null || true
+    chmod +x "${WORKSPACE}/.claude/hooks/"*.sh 2>/dev/null || true
+
+    # Merge harness hook entries into settings.json (idempotent overwrite of
+    # the harness-managed keys). Preserves inode for the bind mount.
+    if [[ -f "${WORKSPACE}/.claude/settings.json" ]]; then
+        python3 - "${WORKSPACE}/.claude/settings.json" <<'PY'
+import json, sys, pathlib
+HARNESS_HOOKS = {
+    "SessionStart": [
+        {"hooks": [{"type": "command", "command": "$HOME/.claude/hooks/memory_session_start.sh"}]}
+    ],
+    "UserPromptSubmit": [
+        {"hooks": [{"type": "command", "command": "$HOME/.claude/hooks/userprompt_route.sh"}]}
+    ],
+    "PreToolUse": [
+        {"matcher": "Bash|Write|Edit",
+         "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/pretool_audit.sh"}]}
+    ],
+    "PostToolUse": [
+        {"matcher": "Write|Edit",
+         "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/posttool_commit.sh"}]},
+        {"matcher": "Bash",
+         "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/posttool_jobid.sh"}]}
+    ],
+    "Stop": [
+        {"hooks": [{"type": "command", "command": "$HOME/.claude/hooks/stop_tick.sh"}]}
+    ],
+}
+p = pathlib.Path(sys.argv[1])
+cur = json.loads(p.read_text())
+hooks = cur.setdefault("hooks", {})
+for k, v in HARNESS_HOOKS.items(): hooks[k] = v
+ordered = {}
+for k in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]:
+    if k in hooks: ordered[k] = hooks[k]
+cur["hooks"] = ordered
+with p.open("w") as f:
+    json.dump(cur, f, indent=2); f.write("\n")
+PY
+    fi
+fi
+
+# Ensure the bioflow-memory MCP server is registered in the per-user
+# .mcp.json. Mirrors add-user.sh; merge keeps any pre-existing servers.
+MCP_FILE="${WORKSPACE}/.mcp.json"
+[[ -f "$MCP_FILE" ]] || echo '{}' > "$MCP_FILE"
+python3 - "$MCP_FILE" "$USERNAME" <<'PY'
+import json, sys, pathlib
+p, username = pathlib.Path(sys.argv[1]), sys.argv[2]
+try:
+    cur = json.loads(p.read_text() or "{}")
+except json.JSONDecodeError:
+    cur = {}
+servers = cur.setdefault("mcpServers", {})
+servers["bioflow-memory"] = {
+    "command": "bioflow-memory-mcp",
+    "env": {
+        "USERNAME": username,
+        "MEMORY_API_URL": "http://claude-bioflow-indexer:8400",
+    },
+}
+with p.open("w") as f:
+    json.dump(cur, f, indent=2); f.write("\n")
+PY
+
 ID_HASH=$(printf 'claude-bioflow-%s' "${USERNAME}" | sha256sum | cut -c1-12)
 
 # GPU passthrough: pass --gpus all when nvidia-container-toolkit is present
@@ -63,10 +141,13 @@ docker run -d \
     -e "USERNAME=${USERNAME}" \
     -e "SIDECAR_IMPORT_ON_BOOT=1" \
     -e "HOME=/home/node" \
+    -e "MEMORY_API_URL=http://claude-bioflow-indexer:8400" \
+    -e "MEMORY_ENABLED=1" \
     -v "${WORKSPACE}/local_projects:/workspace/local_projects" \
     -v "${WORKSPACE}/.claude:/workspace/.claude" \
     -v "${WORKSPACE}/.env:/workspace/.env:ro" \
     -v "${WORKSPACE}/CLAUDE.md:/workspace/CLAUDE.md:ro" \
+    -v "${WORKSPACE}/.mcp.json:/workspace/.mcp.json:ro" \
     -v "${SHARED_DIR}/CLAUDE.md:/workspace/.bioflow/shared.md:ro" \
     -v "${WORKSPACE}/.claude/skills:/home/node/.claude/skills-user" \
     -v "${WORKSPACE}/.claude/agents:/home/node/.claude/agents" \
