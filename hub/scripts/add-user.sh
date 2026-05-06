@@ -147,6 +147,9 @@ if [[ -d "${SKELETON_DIR}" ]]; then
     python3 - "${WORKSPACE}/.claude/settings.json" <<'PY'
 import json, sys, pathlib
 HARNESS_HOOKS = {
+    "SessionStart": [
+        {"hooks": [{"type": "command", "command": "$HOME/.claude/hooks/memory_session_start.sh"}]}
+    ],
     "UserPromptSubmit": [
         {"hooks": [{"type": "command", "command": "$HOME/.claude/hooks/userprompt_route.sh"}]}
     ],
@@ -169,7 +172,7 @@ cur = json.loads(p.read_text())
 hooks = cur.setdefault("hooks", {})
 for k, v in HARNESS_HOOKS.items(): hooks[k] = v
 ordered = {}
-for k in ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]:
+for k in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]:
     if k in hooks: ordered[k] = hooks[k]
 cur["hooks"] = ordered
 with p.open("w") as f:
