@@ -10,7 +10,10 @@ From the repo root:
 # 1. Build the adapter bundle first — Dockerfile copies dist/ directly.
 cd adapter && npm ci && npm run build && cd ..
 
-# 2. Build the image.
+# 2. Build the bioflow-memory-mcp bundle — Dockerfile copies dist/ directly.
+cd mcp-memory && npm ci && npm run build && cd ..
+
+# 3. Build the image.
 docker build -f image/Dockerfile -t claude-bioflow:dev .
 ```
 

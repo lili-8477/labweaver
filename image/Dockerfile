@@ -12,11 +12,15 @@ FROM pantheon-agents-sc:latest
 
 # 1. Node 20 for the claude CLI + adapter.
 #    Use NodeSource for a clean apt install (Debian bookworm).
+#    `jq` is required by the memory SessionStart hook
+#    (hub/skeleton/harness/hooks/memory_session_start.sh) which parses the
+#    /memory/context JSON response.
 USER root
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         curl \
         ca-certificates \
         gnupg \
+        jq \
         tini \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
@@ -43,6 +47,20 @@ RUN npm ci --omit=dev --no-audit --no-fund
 COPY adapter/dist/ ./dist/
 COPY image/kernel-bridge.py ./kernel-bridge.py
 
+# 3b. bioflow-memory MCP server. Pre-built dist/ is copied in (same convention
+#     as adapter/). A direct symlink to dist/index.js puts the
+#     `bioflow-memory-mcp` binary on PATH so per-user `.mcp.json` files can
+#     `command: bioflow-memory-mcp` without per-user installs. We symlink
+#     instead of `npm install -g .` to avoid duplicating node_modules into
+#     /usr/lib — the runtime resolves @modelcontextprotocol/sdk from the
+#     sibling node_modules of the symlink target.
+WORKDIR /opt/mcp-memory
+COPY mcp-memory/package.json mcp-memory/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+COPY mcp-memory/dist/ ./dist/
+RUN chmod +x /opt/mcp-memory/dist/index.js \
+    && ln -s /opt/mcp-memory/dist/index.js /usr/local/bin/bioflow-memory-mcp
+
 # 4. Entrypoint script launches the adapter under tini (PID 1 signal handling).
 COPY image/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
@@ -59,7 +77,7 @@ RUN groupadd --gid "${GID}" node \
     && mkdir -p /home/node/.claude/skills \
                 /home/node/.claude/agents \
                 /home/node/.claude/projects \
-    && chown -R node:node /home/node/.claude /opt/adapter \
+    && chown -R node:node /home/node/.claude /opt/adapter /opt/mcp-memory \
     && chmod +x /opt/adapter/kernel-bridge.py
 # NOTE: `/venv` is inherited from the base image owned by root. We intentionally
 # do NOT chown it here — doing so rewrites ~10k file inode bits and forces a
