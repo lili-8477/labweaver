@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runMigrations } from "../src/migrate.js";
 import { insertMemoryRow } from "../src/distiller-repo.js";
 import { contentHash } from "../src/content-hash.js";
-import { searchMemories, getMemory, timelineMemories } from "../src/memory-repo.js";
+import { searchMemories, getMemory, timelineMemories, writeUserMemory } from "../src/memory-repo.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 let pg: StartedPostgreSqlContainer;
@@ -407,5 +407,155 @@ describe("timelineMemories", () => {
     expect(two.length).toBe(2);
     // newest first → ids[4], ids[3]
     expect(two.map((r) => r.memory_id)).toEqual([ids[4], ids[3]]);
+  });
+});
+
+describe("writeUserMemory", () => {
+  it("scope='user' writes a row with (username, NULL) and source='user'", async () => {
+    const { memory_id } = await writeUserMemory({
+      pool,
+      username:    "alice",
+      scope:       "user",
+      project_dir: null,
+      type:        "user",
+      name:        "remember the alamo",
+      description: "a personal note",
+      body:        "alice prefers fastp over trimmomatic for adapter trimming",
+    });
+    expect(memory_id).not.toBeNull();
+    const r = await pool.query<{ username: string; project_dir: string | null; source: string }>(
+      `SELECT username, project_dir, source FROM memories WHERE memory_id = $1`,
+      [memory_id],
+    );
+    expect(r.rowCount).toBe(1);
+    expect(r.rows[0].username).toBe("alice");
+    expect(r.rows[0].project_dir).toBeNull();
+    expect(r.rows[0].source).toBe("user");
+  });
+
+  it("scope='project' writes a row with (username, project_dir)", async () => {
+    const { memory_id } = await writeUserMemory({
+      pool,
+      username:    "alice",
+      scope:       "project",
+      project_dir: "-w-bio-pipeline",
+      type:        "project",
+      name:        "project convention",
+      description: "default thread count is 16 for STAR alignment in this project",
+      body:        "use --runThreadN 16 when invoking STAR; project nodes have 16 vCPU",
+    });
+    expect(memory_id).not.toBeNull();
+    const r = await pool.query<{ username: string; project_dir: string | null; source: string }>(
+      `SELECT username, project_dir, source FROM memories WHERE memory_id = $1`,
+      [memory_id],
+    );
+    expect(r.rowCount).toBe(1);
+    expect(r.rows[0].username).toBe("alice");
+    expect(r.rows[0].project_dir).toBe("-w-bio-pipeline");
+    expect(r.rows[0].source).toBe("user");
+  });
+
+  it("scope='project' without project_dir throws", async () => {
+    await expect(
+      writeUserMemory({
+        pool,
+        username:    "alice",
+        scope:       "project",
+        project_dir: null,
+        type:        "project",
+        name:        "no dir",
+        description: "should fail",
+        body:        "this should fail because project scope needs a project_dir",
+      }),
+    ).rejects.toThrow(/project_dir/);
+  });
+
+  it("scope='org' throws (admin-only)", async () => {
+    await expect(
+      writeUserMemory({
+        pool,
+        username:    "alice",
+        scope:       "org",
+        project_dir: null,
+        type:        "reference",
+        name:        "policy",
+        description: "should fail",
+        body:        "users cannot write org-scope memories from inside their container",
+      }),
+    ).rejects.toThrow(/admin-only/);
+  });
+
+  it("creates exactly one chunk in memory_chunks", async () => {
+    const { memory_id } = await writeUserMemory({
+      pool,
+      username:    "alice",
+      scope:       "user",
+      project_dir: null,
+      type:        "user",
+      name:        "chunk-test",
+      description: "verifies chunk creation",
+      body:        "the body of a user memory should land as a single chunk",
+    });
+    const r = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM memory_chunks WHERE memory_id = $1`,
+      [memory_id],
+    );
+    expect(r.rows[0].count).toBe("1");
+  });
+
+  it("enqueues exactly one row in embedder_queue for the new chunk", async () => {
+    const { memory_id } = await writeUserMemory({
+      pool,
+      username:    "alice",
+      scope:       "user",
+      project_dir: null,
+      type:        "user",
+      name:        "queue-test",
+      description: "verifies embedder queue insertion",
+      body:        "a fresh chunk must enqueue an embedder job exactly once",
+    });
+    const r = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM embedder_queue
+        WHERE chunk_id IN (SELECT chunk_id FROM memory_chunks WHERE memory_id = $1)`,
+      [memory_id],
+    );
+    expect(r.rows[0].count).toBe("1");
+  });
+
+  it("writes facets when supplied", async () => {
+    const { memory_id } = await writeUserMemory({
+      pool,
+      username:    "alice",
+      scope:       "user",
+      project_dir: null,
+      type:        "user",
+      name:        "facet-test",
+      description: "verifies facets persist",
+      body:        "alice prefers fastp",
+      facets:      { tool: ["fastp"] },
+    });
+    const r = await pool.query<{ key: string; value: string }>(
+      `SELECT key, value FROM memory_facets WHERE memory_id = $1 ORDER BY key, value`,
+      [memory_id],
+    );
+    expect(r.rows).toEqual([{ key: "tool", value: "fastp" }]);
+  });
+
+  it("dedups identical content: second call returns memory_id=null", async () => {
+    const args = {
+      pool,
+      username:    "alice" as const,
+      scope:       "user" as const,
+      project_dir: null,
+      type:        "user" as const,
+      name:        "dup-test",
+      description: "first write",
+      body:        "alice always uses scanpy for single-cell analysis pipelines",
+    };
+    const first = await writeUserMemory(args);
+    expect(first.memory_id).not.toBeNull();
+    const second = await writeUserMemory(args);
+    expect(second.memory_id).toBeNull();
   });
 });

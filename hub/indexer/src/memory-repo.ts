@@ -1,5 +1,7 @@
 import type { Pool } from "pg";
 import { logger } from "./config.js";
+import { contentHash } from "./content-hash.js";
+import { insertMemoryRow } from "./distiller-repo.js";
 
 export interface SearchMemoriesArgs {
   pool:           Pool;
@@ -318,4 +320,70 @@ export async function timelineMemories(args: TimelineMemoriesArgs): Promise<Time
     type:       row.type,
     created_at: row.created_at,
   }));
+}
+
+export interface WriteUserMemoryArgs {
+  pool:        Pool;
+  username:    string;
+  scope:       "user" | "project" | "org";
+  project_dir: string | null;     // required when scope === "project"; ignored otherwise
+  type:        "user" | "feedback" | "project" | "reference";
+  name:        string;
+  description: string;
+  body:        string;
+  facets?:     Record<string, string[]>;
+}
+
+// Persist a /memorize-style user-authored memory. Shares the chunk + facet +
+// queue path with distillation by delegating to insertMemoryRow; the only
+// caller-side differences are source='user', source_session_id=NULL, and the
+// content_hash recipe.
+//
+// Org-scope writes are operator-administered (sub-phase B spec §7.4): they
+// cannot be issued from inside a user container, so we reject them here.
+//
+// Returns { memory_id: null } when the row collides on
+// (username, project_dir, type, content_hash) — that is dedup, not failure.
+export async function writeUserMemory(
+  args: WriteUserMemoryArgs,
+): Promise<{ memory_id: string | null }> {
+  if (args.scope === "org") {
+    throw new Error("org-scope writes are admin-only; use the operator administration path");
+  }
+  if (args.scope === "project" && args.project_dir == null) {
+    throw new Error("scope=project requires a project_dir");
+  }
+  const project_dir = args.scope === "user" ? null : args.project_dir;
+
+  // promptVersion=0 is the sentinel for user-authored memories: there is no
+  // distillation prompt to version, so identical user content always hashes
+  // the same regardless of any future prompt-version bumps in distillation.
+  const hash = contentHash({
+    body:          `${args.name}\n${args.body}`,
+    promptVersion: 0,
+  });
+
+  const client = await args.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const memory_id = await insertMemoryRow(client, {
+      username:          args.username,
+      project_dir,
+      source:            "user",
+      type:              args.type,
+      source_session_id: null,
+      name:              args.name,
+      description:       args.description,
+      body:              args.body,
+      facets:            args.facets ?? {},
+      content_hash:      hash,
+    });
+    await client.query("COMMIT");
+    return { memory_id };
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
 }
