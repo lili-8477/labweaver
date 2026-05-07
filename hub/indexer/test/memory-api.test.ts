@@ -6,6 +6,7 @@ import type {
   MemoryDetail,
   TimelineEntry,
   MemoryContext,
+  ListItem,
 } from "../src/memory-repo.js";
 
 // Tiny test-double factory: every repo function is a vi.fn() with a sensible
@@ -19,6 +20,7 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
   getContext:       ReturnType<typeof vi.fn>;
   updateMemory:     ReturnType<typeof vi.fn>;
   restoreMemory:    ReturnType<typeof vi.fn>;
+  listMemories:     ReturnType<typeof vi.fn>;
 } } {
   const repo = {
     searchMemories:   vi.fn(async (): Promise<SearchHit[]>     => []),
@@ -29,6 +31,7 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
     getContext:       vi.fn(async (): Promise<MemoryContext>   => ({ system_prompt: "", memory_ids: [] })),
     updateMemory:     vi.fn(async (): Promise<{ ok: boolean; reason?: 'not_found' | 'forbidden' | 'distilled' }> => ({ ok: true })),
     restoreMemory:    vi.fn(async (): Promise<{ ok: boolean; reason?: 'not_found' | 'forbidden' | 'not_deleted' }> => ({ ok: true })),
+    listMemories:     vi.fn(async (): Promise<{ items: ListItem[]; next_cursor: string | null }> => ({ items: [], next_cursor: null })),
   };
   const deps: MemoryApiDeps = {
     pool: {} as Pool,
@@ -464,6 +467,61 @@ describe("memory-api", () => {
       expect(res.statusCode).toBe(400);
       expect(res.json()).toMatchObject({ error: "validation failed", issues: expect.any(Array) });
       expect(depsBag.repo.restoreMemory).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─────────────────────────── GET /memory/list ───────────────────────────────
+
+  describe("GET /memory/list", () => {
+    const sampleItem: ListItem = {
+      memory_id:   "abc",
+      type:        "observation",
+      source:      "user",
+      scope_tier:  "user",
+      name:        "test memory",
+      description: "desc",
+      created_at:  "2026-01-01T00:00:00.000Z",
+      updated_at:  "2026-01-01T00:00:00.000Z",
+      hit_count:   0,
+      last_hit_at: null,
+      deleted_at:  null,
+    };
+
+    it("happy path: forwards query params and returns items + next_cursor", async () => {
+      depsBag.repo.listMemories.mockResolvedValueOnce({
+        items:       [sampleItem],
+        next_cursor: "2026-01-01T00:00:00.000Z",
+      });
+
+      const res = await app.inject({
+        method: "GET",
+        url:    "/memory/list?username=alice&project_dir=-w-foo&scope=user&source=user&limit=50&sort=created",
+      });
+      expect(res.statusCode).toBe(200);
+      const json = res.json();
+      expect(json.items).toHaveLength(1);
+      expect(json.items[0].memory_id).toBe("abc");
+      expect(json.next_cursor).toBe("2026-01-01T00:00:00.000Z");
+
+      expect(depsBag.repo.listMemories).toHaveBeenCalledTimes(1);
+      const arg = depsBag.repo.listMemories.mock.calls[0]![0];
+      expect(arg.username).toBe("alice");
+      expect(arg.project_dir).toBe("-w-foo");
+      expect(arg.scope).toBe("user");
+      expect(arg.source).toBe("user");
+      expect(arg.limit).toBe(50);
+      expect(arg.sort).toBe("created");
+      expect(arg.pool).toBe(depsBag.deps.pool);
+    });
+
+    it("400 when cursor is not a valid ISO datetime", async () => {
+      const res = await app.inject({
+        method: "GET",
+        url:    "/memory/list?username=alice&cursor=not-a-date",
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: "validation failed", issues: expect.any(Array) });
+      expect(depsBag.repo.listMemories).not.toHaveBeenCalled();
     });
   });
 });

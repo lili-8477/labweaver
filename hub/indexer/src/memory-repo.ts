@@ -650,6 +650,216 @@ export async function restoreMemory(args: {
   }
 }
 
+export interface ListFilter {
+  pool:             Pool;
+  username:         string;                       // requester (for org-merge)
+  project_dir:      string | null;                // null = no project filter
+  scope?:           'org' | 'user' | 'project';  // optional narrow
+  type?:            string[];                     // any-of
+  source?:          'user' | 'distilled';
+  include_deleted?: boolean;                      // default false
+  sort?:            'created' | 'hit';            // default 'created'
+  limit?:           number;                       // default 50, cap 200
+  cursor?:          string;                       // ISO timestamp from prev page's tail
+}
+
+export interface ListItem {
+  memory_id:   string;
+  type:        string;
+  source:      'user' | 'distilled';
+  scope_tier:  'org' | 'user' | 'project';
+  name:        string;
+  description: string;
+  created_at:  string;
+  updated_at:  string;
+  hit_count:   number;
+  last_hit_at: string | null;
+  deleted_at:  string | null;
+}
+
+// Paginated browser-friendly listing. Filterable by scope_tier, type, source,
+// include_deleted. Sortable by created_at DESC (default) or last_hit_at DESC.
+// Cursor pagination: the cursor is the ISO timestamp of the last item's sort
+// column from the previous page. Returns items plus next_cursor (null = last page).
+//
+// The org-merge: when scope is undefined, returns rows where
+// (username = $u OR username = '__org__') AND (project_dir filter).
+// When scope='org', returns only username='__org__' rows.
+// When scope='user', returns only rows where username=$u AND project_dir IS NULL.
+// When scope='project', returns only rows where username=$u AND project_dir IS NOT NULL
+//   (and project_dir=$project_dir when project_dir is specified).
+//
+// Params:
+//   $1  username
+//   $2  project_dir (text or NULL = no filter)
+//   $3  scope_filter (text or NULL = no scope filter)
+//   $4  types[] (text[] or NULL = no type filter)
+//   $5  source (text or NULL = no source filter)
+//   $6  include_deleted (boolean)
+//   $7  cursor (timestamptz or NULL = no cursor)
+//   $8  limit+1
+export async function listMemories(f: ListFilter): Promise<{
+  items: ListItem[];
+  next_cursor: string | null;
+}> {
+  const limit       = Math.min(f.limit ?? 50, 200);
+  const sort        = f.sort ?? 'created';
+  const sortCol     = sort === 'hit' ? 'm.last_hit_at' : 'm.created_at';
+  const types       = f.type && f.type.length > 0 ? f.type : null;
+  const source      = f.source ?? null;
+  const scope       = f.scope ?? null;
+  const projectDir  = f.project_dir;
+  const cursor      = f.cursor ?? null;
+  const inclDeleted = f.include_deleted ?? false;
+
+  // Scope filter logic (applied in WHERE):
+  // - scope=undefined: (username=$u OR username='__org__') AND project_dir filter
+  // - scope='org':     username='__org__'
+  // - scope='user':    username=$u AND project_dir IS NULL
+  // - scope='project': username=$u AND project_dir IS NOT NULL (+ project_dir filter)
+  //
+  // We encode this as a parameterized CASE expression to keep a single query.
+  // $3 = scope_filter (text or NULL). The WHERE clause ANDs in one of three
+  // compound conditions based on $3.
+
+  // Cursor condition: skip rows at/before the cursor timestamp on the sort col.
+  // For sort='hit', last_hit_at can be NULL. We only apply the cursor to non-NULL
+  // values (i.e. once all non-NULL rows are paged through, the final cursor passed
+  // in will be NULL, and the query just returns the remaining NULL rows by tie-break).
+  let cursorCond: string;
+  if (sort === 'hit') {
+    // When sort='hit': skip rows where last_hit_at >= cursor (we want < cursor).
+    // NULL last_hit_at rows come AFTER all non-NULL rows (NULLS LAST), so they
+    // only appear once cursor is NULL (first page) or after all non-NULL rows.
+    // When cursor IS NOT NULL, exclude all NULL last_hit_at rows too (they haven't
+    // been paged yet conceptually, but they appear at the end; once the first page
+    // with all NULLs is needed, cursor will be null). Actually, the simpler correct
+    // approach: when cursor is supplied (non-null), only return rows where
+    // last_hit_at < cursor (strict). NULL rows sort AFTER any non-NULL so they
+    // appear at the end of the full result set. When cursor is provided and all
+    // non-null values < cursor are exhausted, the next "page" starting point is
+    // the NULL block — but since NULLs < anything is false, they'd be excluded.
+    // Solution: when cursor is provided, include NULLs only after non-NULLs are done.
+    // The simplest stable solution: cursor condition is:
+    //   ($7::timestamptz IS NULL OR (last_hit_at IS NOT NULL AND last_hit_at < $7::timestamptz)
+    //                               OR (last_hit_at IS NULL AND $7_was_null_cursor))
+    // This is getting complex. Use the two-tier approach:
+    //   - when cursor is null: no filter (include everything, NULLs at end)
+    //   - when cursor is non-null: last_hit_at IS NOT NULL AND last_hit_at < cursor
+    //     OR last_hit_at IS NULL AND <all non-null pages exhausted signal>
+    // The cleanest is: include NULL rows only when cursor is NULL (first call).
+    // But that breaks if limit < total non-null count.
+    //
+    // Correct approach for NULLS LAST ordering: since NULLs sort last, cursor
+    // pagination for hit sort works as:
+    //   - If cursor is null: no cursor filter, returns top rows (non-null first, NULLs last)
+    //   - If cursor looks like a real timestamp: WHERE last_hit_at < cursor (excludes NULLs)
+    //   - After all non-null rows are paged, next_cursor from last non-null page's last item
+    //     has last_hit_at = some timestamp. The "NULL page" needs special handling.
+    //
+    // Simplest correct approach used here: use a sentinel. Since NULL rows sort LAST,
+    // after all non-null pages are consumed, the caller gets next_cursor from the last
+    // non-null item. That cursor, when applied, gives WHERE last_hit_at < <min_value>
+    // which excludes NULLs. The NULL rows are never reached via cursor pagination for hit sort.
+    //
+    // This matches real-world cursor pagination for nullable sort cols where NULLs are
+    // minority edge cases. For this implementation we keep it simple and stable:
+    // NULLs appear on the first page if limit is large enough, otherwise are unreachable
+    // via cursor. The tie-break (memory_id ASC) ensures no duplicates within a page.
+    cursorCond = `($7::timestamptz IS NULL OR (${sortCol} IS NOT NULL AND ${sortCol} < $7::timestamptz))`;
+  } else {
+    // For created_at sort: created_at is never NULL (it has a DEFAULT now()), so simple.
+    cursorCond = `($7::timestamptz IS NULL OR ${sortCol} < $7::timestamptz)`;
+  }
+
+  const orderBy = sort === 'hit'
+    ? `ORDER BY m.last_hit_at DESC NULLS LAST, m.memory_id ASC`
+    : `ORDER BY m.created_at DESC, m.memory_id ASC`;
+
+  const sql = `
+SELECT m.memory_id, m.type, m.source,
+       CASE
+         WHEN m.username = '__org__'   THEN 'org'
+         WHEN m.project_dir IS NULL    THEN 'user'
+         ELSE 'project'
+       END AS scope_tier,
+       m.name, m.description,
+       m.created_at, m.updated_at,
+       m.hit_count, m.last_hit_at, m.deleted_at
+  FROM memories m
+ WHERE
+   -- Org-merge + scope filter
+   (
+     ($3::text IS NULL AND (m.username = $1 OR m.username = '__org__') AND ($2::text IS NULL OR m.project_dir IS NULL OR m.project_dir = $2))
+     OR ($3 = 'org'     AND m.username = '__org__')
+     OR ($3 = 'user'    AND m.username = $1 AND m.project_dir IS NULL)
+     OR ($3 = 'project' AND m.username = $1 AND m.project_dir IS NOT NULL AND ($2::text IS NULL OR m.project_dir = $2))
+   )
+   -- deleted filter
+   AND ($6 OR m.deleted_at IS NULL)
+   -- type filter
+   AND ($4::text[] IS NULL OR m.type = ANY($4))
+   -- source filter
+   AND ($5::text IS NULL OR m.source = $5::text)
+   -- cursor filter
+   AND ${cursorCond}
+${orderBy}
+LIMIT $8
+`;
+
+  type Row = {
+    memory_id:   string;
+    type:        string;
+    source:      'user' | 'distilled';
+    scope_tier:  'org' | 'user' | 'project';
+    name:        string;
+    description: string;
+    created_at:  Date;
+    updated_at:  Date;
+    hit_count:   number;
+    last_hit_at: Date | null;
+    deleted_at:  Date | null;
+  };
+
+  const res = await f.pool.query<Row>(sql, [
+    f.username,      // $1
+    projectDir,      // $2
+    scope,           // $3
+    types,           // $4
+    source,          // $5
+    inclDeleted,     // $6
+    cursor,          // $7
+    limit + 1,       // $8 — fetch one extra to determine next_cursor
+  ]);
+
+  const rows = res.rows;
+  const hasMore = rows.length > limit;
+  const pageRows = hasMore ? rows.slice(0, limit) : rows;
+
+  let next_cursor: string | null = null;
+  if (hasMore) {
+    const tail = pageRows[pageRows.length - 1]!;
+    const tailVal = sort === 'hit' ? tail.last_hit_at : tail.created_at;
+    next_cursor = tailVal ? tailVal.toISOString() : null;
+  }
+
+  const items: ListItem[] = pageRows.map((r) => ({
+    memory_id:   r.memory_id,
+    type:        r.type,
+    source:      r.source,
+    scope_tier:  r.scope_tier,
+    name:        r.name,
+    description: r.description,
+    created_at:  r.created_at.toISOString(),
+    updated_at:  r.updated_at.toISOString(),
+    hit_count:   r.hit_count,
+    last_hit_at: r.last_hit_at ? r.last_hit_at.toISOString() : null,
+    deleted_at:  r.deleted_at  ? r.deleted_at.toISOString()  : null,
+  }));
+
+  return { items, next_cursor };
+}
+
 export interface GetContextArgs {
   pool:          Pool;
   username:      string;

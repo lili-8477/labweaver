@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runMigrations } from "../src/migrate.js";
 import { insertMemoryRow } from "../src/distiller-repo.js";
 import { contentHash } from "../src/content-hash.js";
-import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext, updateMemory, restoreMemory } from "../src/memory-repo.js";
+import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext, updateMemory, restoreMemory, listMemories } from "../src/memory-repo.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 let pg: StartedPostgreSqlContainer;
@@ -1028,5 +1028,197 @@ describe("restoreMemory", () => {
       username: "alice", project_dir: "-w-p", query: QUERY, limit: 10,
     });
     expect(afterRestore.map((h) => h.memory_id)).toContain(id);
+  });
+});
+
+// ─── helpers for listMemories tests ────────────────────────────────────────
+
+// Seed a memory and backdate its created_at so ordering is deterministic.
+async function seedAt2(args: SeedArgs, createdAt: Date): Promise<string> {
+  const id = await seedMemory(args);
+  await pool.query(
+    `UPDATE memories SET created_at = $1 WHERE memory_id = $2`,
+    [createdAt.toISOString(), id],
+  );
+  return id;
+}
+
+describe("listMemories", () => {
+  // Fixtures: 3 org rows, 5 user rows, 7 project rows = 15 total
+  // Seeds 900–914 are reserved for this suite.
+  const BASE = new Date("2025-01-01T00:00:00Z").getTime();
+
+  async function seedAll(): Promise<{
+    orgIds:     string[];
+    userIds:    string[];
+    projectIds: string[];
+  }> {
+    const orgIds: string[]     = [];
+    const userIds: string[]    = [];
+    const projectIds: string[] = [];
+
+    for (let i = 0; i < 3; i++) {
+      orgIds.push(await seedAt2(
+        { username: "__org__", project_dir: null, body: `org-body-${i}`, seed: 900 + i },
+        new Date(BASE + i * 60_000),
+      ));
+    }
+    for (let i = 0; i < 5; i++) {
+      userIds.push(await seedAt2(
+        { username: "alice", project_dir: null, body: `user-body-${i}`, seed: 903 + i },
+        new Date(BASE + (3 + i) * 60_000),
+      ));
+    }
+    for (let i = 0; i < 7; i++) {
+      projectIds.push(await seedAt2(
+        { username: "alice", project_dir: "-w-list", body: `project-body-${i}`, seed: 908 + i },
+        new Date(BASE + (8 + i) * 60_000),
+      ));
+    }
+    return { orgIds, userIds, projectIds };
+  }
+
+  it("default: returns all 15 sorted by created_at DESC", async () => {
+    const { orgIds, userIds, projectIds } = await seedAll();
+    const allIds = [...orgIds, ...userIds, ...projectIds];
+
+    const result = await listMemories({
+      pool,
+      username:    "alice",
+      project_dir: null,
+      limit:       200,
+    });
+
+    expect(result.next_cursor).toBeNull();
+    expect(result.items).toHaveLength(15);
+
+    // Verify descending created_at order
+    const ts = result.items.map((x) => new Date(x.created_at).getTime());
+    for (let i = 1; i < ts.length; i++) {
+      expect(ts[i]!).toBeLessThanOrEqual(ts[i - 1]!);
+    }
+
+    // All 15 ids present
+    const returnedIds = result.items.map((x) => x.memory_id);
+    for (const id of allIds) {
+      expect(returnedIds).toContain(id);
+    }
+  });
+
+  it("scope='project' returns exactly the 7 project rows", async () => {
+    const { projectIds } = await seedAll();
+
+    const result = await listMemories({
+      pool,
+      username:    "alice",
+      project_dir: null,
+      scope:       'project',
+      limit:       200,
+    });
+
+    expect(result.items).toHaveLength(7);
+    const returnedIds = result.items.map((x) => x.memory_id);
+    for (const id of projectIds) {
+      expect(returnedIds).toContain(id);
+    }
+    // Confirm scope_tier is 'project' for all
+    for (const item of result.items) {
+      expect(item.scope_tier).toBe('project');
+    }
+  });
+
+  it("source='user' filter returns only user-sourced rows", async () => {
+    await seedAll();
+    // Also insert a distilled row
+    const distId = await pool.query<{ memory_id: string }>(
+      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash)
+       VALUES (gen_random_uuid(), 'alice', NULL, 'observation', 'distilled', 'distilled-list', 'distilled-desc',
+               'distilled body for list test', $1)
+       RETURNING memory_id`,
+      [contentHash({ body: "distilled-listdistilled body for list test", promptVersion: 99 })],
+    );
+    const distMemId = distId.rows[0]!.memory_id;
+
+    const result = await listMemories({
+      pool,
+      username:    "alice",
+      project_dir: null,
+      source:      'user',
+      limit:       200,
+    });
+
+    const returnedIds = result.items.map((x) => x.memory_id);
+    expect(returnedIds).not.toContain(distMemId);
+    for (const item of result.items) {
+      expect(item.source).toBe('user');
+    }
+  });
+
+  it("include_deleted=true adds soft-deleted rows to result", async () => {
+    const { userIds } = await seedAll();
+    // Soft-delete one user row
+    const targetId = userIds[0]!;
+    await pool.query("UPDATE memories SET deleted_at = now() WHERE memory_id = $1", [targetId]);
+
+    const withoutDeleted = await listMemories({
+      pool,
+      username:        "alice",
+      project_dir:     null,
+      include_deleted: false,
+      limit:           200,
+    });
+    expect(withoutDeleted.items.map((x) => x.memory_id)).not.toContain(targetId);
+
+    const withDeleted = await listMemories({
+      pool,
+      username:        "alice",
+      project_dir:     null,
+      include_deleted: true,
+      limit:           200,
+    });
+    expect(withDeleted.items.map((x) => x.memory_id)).toContain(targetId);
+    const deletedItem = withDeleted.items.find((x) => x.memory_id === targetId)!;
+    expect(deletedItem.deleted_at).not.toBeNull();
+  });
+
+  it("pagination round-trip: limit=5 cursor-follow equals single limit=200 query (set equality)", async () => {
+    // Use all 15 rows seeded by seedAll
+    await seedAll();
+
+    // Single-page reference
+    const reference = await listMemories({
+      pool,
+      username:    "alice",
+      project_dir: null,
+      limit:       200,
+    });
+    const referenceIds = reference.items.map((x) => x.memory_id);
+    expect(referenceIds).toHaveLength(15);
+
+    // Paginate with limit=5
+    const collected: string[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const page = await listMemories({
+        pool,
+        username:    "alice",
+        project_dir: null,
+        limit:       5,
+        cursor:      cursor ?? undefined,
+      });
+      for (const item of page.items) {
+        collected.push(item.memory_id);
+      }
+      cursor = page.next_cursor;
+      pages++;
+      // Safety: should never take more than 4 pages for 15 rows with limit=5
+      expect(pages).toBeLessThanOrEqual(4);
+    } while (cursor !== null);
+
+    // Set equality: same ids, no duplicates, no gaps
+    expect(collected).toHaveLength(15);
+    expect(new Set(collected).size).toBe(15);
+    expect(new Set(collected)).toEqual(new Set(referenceIds));
   });
 });

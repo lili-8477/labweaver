@@ -10,6 +10,7 @@ import type {
   getContext,
   updateMemory,
   restoreMemory,
+  listMemories,
 } from "./memory-repo.js";
 
 // DI seam: production wires real repo functions; tests pass vi.fn stubs. Pool
@@ -27,6 +28,7 @@ export interface MemoryApiDeps {
     getContext:       typeof getContext;
     updateMemory:     typeof updateMemory;
     restoreMemory:    typeof restoreMemory;
+    listMemories:     typeof listMemories;
   };
 }
 
@@ -83,6 +85,23 @@ const UpdateBody = z.object({
 });
 
 const RestoreBody = z.object({ actor: z.string().min(1) });
+
+// Querystring schema for GET /memory/list. Uses coerce.boolean/coerce.number
+// for the same reason TimelineQuery does: querystrings arrive as strings.
+// `type` arrives as repeated ?type=foo&type=bar → zod array of strings.
+const ListQuery = z.object({
+  username:        z.string().min(1),
+  project_dir:     z.string().optional(),
+  scope:           z.enum(['org', 'user', 'project']).optional(),
+  type:            z.union([z.string(), z.array(z.string())]).transform((v) =>
+    typeof v === 'string' ? [v] : v
+  ).optional(),
+  source:          z.enum(['user', 'distilled']).optional(),
+  include_deleted: z.coerce.boolean().optional(),
+  sort:            z.enum(['created', 'hit']).optional(),
+  limit:           z.coerce.number().int().positive().max(200).optional(),
+  cursor:          z.string().datetime().optional(),
+});
 
 export function buildApp(deps: MemoryApiDeps): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -149,6 +168,30 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
       budget_tokens: q.budget_tokens ?? 2000,
     });
     return ctx;
+  });
+
+  // GET /memory/list — paginated listing with optional filters. Registered
+  // BEFORE GET /memory/:id so fastify's router matches the literal "list"
+  // segment before the dynamic :id wildcard.
+  app.get("/memory/list", async (req, reply) => {
+    const parsed = ListQuery.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "validation failed", issues: parsed.error.issues };
+    }
+    const q = parsed.data;
+    return await deps.repo.listMemories({
+      pool:            deps.pool,
+      username:        q.username,
+      project_dir:     q.project_dir ?? null,
+      scope:           q.scope,
+      type:            q.type,
+      source:          q.source,
+      include_deleted: q.include_deleted,
+      sort:            q.sort,
+      limit:           q.limit,
+      cursor:          q.cursor,
+    });
   });
 
   // POST /memory/write — /memorize-style user-authored memory. Returns
