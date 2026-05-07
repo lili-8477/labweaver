@@ -10,6 +10,7 @@ import FileTree from '@/components/files/FileTree.vue'
 import FileViewer from '@/components/files/FileViewer.vue'
 import NotebookEditor from '@/components/notebook/NotebookEditor.vue'
 import AgentPanel from '@/components/agents/AgentPanel.vue'
+import MemoryPanel from '@/components/memory/MemoryPanel.vue'
 import { useNotebookStore } from '@/stores/notebook'
 
 const conn = useConnectionStore()
@@ -17,7 +18,7 @@ const chat = useChatStore()
 const files = useFileStore()
 const nb = useNotebookStore()
 
-type RightPanel = 'none' | 'files' | 'notebook' | 'agents'
+type RightPanel = 'none' | 'files' | 'notebook' | 'agents' | 'memory'
 
 const STORAGE_KEY = 'bioflow-layout'
 interface LayoutState {
@@ -155,6 +156,12 @@ const connStatus = computed(() => {
         >Agents</button>
         <button
           class="tb-btn"
+          :class="{ active: rightPanel === 'memory' }"
+          @click="togglePanel('memory')"
+          title="Memory"
+        >Memory</button>
+        <button
+          class="tb-btn"
           :class="{ active: rightPanel === 'files' }"
           @click="togglePanel('files')"
           title="Files"
@@ -208,6 +215,7 @@ const connStatus = computed(() => {
           <FileTree v-if="rightPanel === 'files'" @open-file="handleFileOpen" />
           <NotebookEditor v-else-if="rightPanel === 'notebook'" />
           <AgentPanel v-else-if="rightPanel === 'agents'" />
+          <MemoryPanel v-else-if="rightPanel === 'memory'" />
         </aside>
       </template>
     </div>
