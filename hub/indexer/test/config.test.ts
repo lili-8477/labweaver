@@ -3,7 +3,7 @@ import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("reads PG_URL and applies defaults", () => {
-    const cfg = loadConfig({ PG_URL: "postgres://u@h/d", ANTHROPIC_API_KEY: "sk-ant-test" });
+    const cfg = loadConfig({ PG_URL: "postgres://u@h/d" });
     expect(cfg.pgUrl).toBe("postgres://u@h/d");
     expect(cfg.workspacesRoot).toBe("/workspaces");
     expect(cfg.maxConcurrentFiles).toBe(8);
@@ -37,7 +37,7 @@ describe("loadConfig", () => {
   });
 
   it("rejects non-numeric MAX_CONCURRENT_FILES", () => {
-    expect(() => loadConfig({ PG_URL: "x", ANTHROPIC_API_KEY: "sk-ant-test", MAX_CONCURRENT_FILES: "abc" }))
+    expect(() => loadConfig({ PG_URL: "x", MAX_CONCURRENT_FILES: "abc" }))
       .toThrow(/MAX_CONCURRENT_FILES/);
   });
 });
