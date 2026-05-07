@@ -21,7 +21,8 @@ import { ChatsRepo } from "./chats-repo.js";
 import { loadDbConfig } from "./db-config.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
 import { NatsBus } from "./nats-bus.js";
-import { RpcRouter } from "./rpc.js";
+import { ShareRpcClient } from "./share-rpc.js";
+import { RpcRouter, type RpcDeps } from "./rpc.js";
 import { importSidecar } from "./sidecar-import.js";
 import { startUploadServer } from "./upload-http.js";
 
@@ -70,6 +71,13 @@ async function main(): Promise<void> {
     console.warn("[adapter] MEMORY_API_URL not set — memory_* RPCs will be unavailable");
   }
 
+  const shareClient = memoryApiUrl
+    ? new ShareRpcClient(memoryApiUrl, dbCfg.username)
+    : null;
+  if (!shareClient) {
+    console.warn("[adapter] MEMORY_API_URL not set — share_* RPCs will be unavailable");
+  }
+
   await bus.connect();
   console.log(`[adapter] connected to NATS ${servers}, service_id=${serviceId.slice(0, 12)}...`);
 
@@ -89,7 +97,8 @@ async function main(): Promise<void> {
       60_000,
     ),
     memory: memoryClient,
-  });
+    share: shareClient,
+  } as RpcDeps & { share: ShareRpcClient | null });
 
   await bus.serve((method, params) => router.dispatch(method, params));
   console.log("[adapter] serving RPCs");
