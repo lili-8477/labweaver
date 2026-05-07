@@ -1,4 +1,5 @@
 // bioFlow Memory Service — MIT License
+// Adapter RPCs wrap responses as {success: true, ...}; extract the data payload in get/search/audit
 
 import { natsService } from './nats'
 import type {
@@ -88,16 +89,16 @@ export const memoryService = {
    * Get a single memory detail including body, facets, and full audit history.
    */
   get: async (id: string): Promise<MemoryDetail> => {
-    const result = await natsService.invoke('memory_get', { memory_id: id }) as MemoryDetail
-    return result
+    const result = await natsService.invoke('memory_get', { memory_id: id }) as { success: true; memory: MemoryDetail }
+    return result.memory
   },
 
   /**
    * Search memories by full-text query.
    */
   search: async (p: SearchParams): Promise<MemorySearchHit[]> => {
-    const result = await natsService.invoke('memory_search', p as unknown as Record<string, unknown>) as MemorySearchHit[]
-    return result
+    const result = await natsService.invoke('memory_search', p as unknown as Record<string, unknown>) as { success: true; hits: MemorySearchHit[] }
+    return result.hits
   },
 
   /**
@@ -136,7 +137,7 @@ export const memoryService = {
    * Get the audit trail for a memory.
    */
   audit: async (id: string): Promise<MemoryAuditEntry[]> => {
-    const result = await natsService.invoke('memory_audit', { memory_id: id }) as MemoryAuditEntry[]
-    return result
+    const result = await natsService.invoke('memory_audit', { memory_id: id }) as { success: true; rows: MemoryAuditEntry[] }
+    return result.rows
   },
 } as const
