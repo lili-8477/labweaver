@@ -12,6 +12,7 @@ import { readSessionMessages } from "./history.js";
 import { KernelBridge, type IOPubEvent } from "./kernel.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
 import { NotebookManager } from "./notebook-rpc.js";
+import { ShareRpcClient } from "./share-rpc.js";
 import type { StreamEvent } from "./types.js";
 
 export interface RpcDeps {
@@ -33,6 +34,8 @@ export interface RpcDeps {
   kernelCullCheckIntervalMs?: number;
   /** Memory API client. null when MEMORY_API_URL is not configured. */
   memory: MemoryRpcClient | null;
+  /** Share API client. null when MEMORY_API_URL is not configured. */
+  share: ShareRpcClient | null;
 }
 
 export class RpcRouter {
@@ -330,6 +333,47 @@ export class RpcRouter {
           params.memory_id as string,
           params.limit as number | undefined,
         );
+        return { success: true, ...(res as object) };
+      }
+
+      case "share_submit": {
+        if (!this.deps.share) throw new Error("share api not configured");
+        const res = await this.deps.share.submit(
+          params as Parameters<ShareRpcClient["submit"]>[0],
+        );
+        return { success: true, ...(res as object) };
+      }
+
+      case "share_list": {
+        if (!this.deps.share) throw new Error("share api not configured");
+        const res = await this.deps.share.list(
+          params as Parameters<ShareRpcClient["list"]>[0],
+        );
+        return { success: true, ...(res as object) };
+      }
+
+      case "share_get": {
+        if (!this.deps.share) throw new Error("share api not configured");
+        const res = await this.deps.share.get(params.share_id as string);
+        return { success: true, share: res };
+      }
+
+      case "share_decide": {
+        if (!this.deps.share) throw new Error("share api not configured");
+        const { share_id, ...body } = params as { share_id: string; decision: "approve" | "reject"; comment?: string };
+        const res = await this.deps.share.decide(share_id, body);
+        return { success: true, ...(res as object) };
+      }
+
+      case "share_withdraw": {
+        if (!this.deps.share) throw new Error("share api not configured");
+        const res = await this.deps.share.withdraw(params.share_id as string);
+        return { success: true, ...(res as object) };
+      }
+
+      case "share_capabilities": {
+        if (!this.deps.share) throw new Error("share api not configured");
+        const res = await this.deps.share.capabilities();
         return { success: true, ...(res as object) };
       }
 

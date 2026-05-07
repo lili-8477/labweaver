@@ -98,7 +98,7 @@ async function main(): Promise<void> {
     ),
     memory: memoryClient,
     share: shareClient,
-  } as RpcDeps & { share: ShareRpcClient | null });
+  });
 
   await bus.serve((method, params) => router.dispatch(method, params));
   console.log("[adapter] serving RPCs");
