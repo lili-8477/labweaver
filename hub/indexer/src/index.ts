@@ -23,6 +23,7 @@ import {
   restoreMemory,
   listMemories,
   getAuditTrail,
+  getMetrics,
 } from "./memory-repo.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -112,6 +113,7 @@ async function main(): Promise<void> {
       restoreMemory,
       listMemories,
       getAuditTrail,
+      getMetrics,
     },
   });
   await app.listen({ port: cfg.memoryApiPort, host: "0.0.0.0" });

@@ -22,6 +22,7 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
   restoreMemory:    ReturnType<typeof vi.fn>;
   listMemories:     ReturnType<typeof vi.fn>;
   getAuditTrail:    ReturnType<typeof vi.fn>;
+  getMetrics:       ReturnType<typeof vi.fn>;
 } } {
   const repo = {
     searchMemories:   vi.fn(async (): Promise<SearchHit[]>     => []),
@@ -34,6 +35,16 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
     restoreMemory:    vi.fn(async (): Promise<{ ok: boolean; reason?: 'not_found' | 'forbidden' | 'not_deleted' }> => ({ ok: true })),
     listMemories:     vi.fn(async (): Promise<{ items: ListItem[]; next_cursor: string | null }> => ({ items: [], next_cursor: null })),
     getAuditTrail:    vi.fn(async (): Promise<{ rows: never[] } | { error: 'not_found' | 'forbidden' }> => ({ rows: [] })),
+    getMetrics:       vi.fn(async (): Promise<{ memories_total: number; memories_by_type: Record<string, number>; memories_by_source: { user: number; distilled: number }; memories_soft_deleted: number; embedder_queue_depth: number; embedder_queue_oldest: string | null; distill_cursor_lag_seconds_max: number; audit_log_size: number }> => ({
+      memories_total: 0,
+      memories_by_type: {},
+      memories_by_source: { user: 0, distilled: 0 },
+      memories_soft_deleted: 0,
+      embedder_queue_depth: 0,
+      embedder_queue_oldest: null,
+      distill_cursor_lag_seconds_max: 0,
+      audit_log_size: 0,
+    })),
   };
   const deps: MemoryApiDeps = {
     pool: {} as Pool,
@@ -583,6 +594,30 @@ describe("memory-api", () => {
       expect(res.statusCode).toBe(400);
       expect(res.json()).toMatchObject({ error: "validation failed", issues: expect.any(Array) });
       expect(depsBag.repo.getAuditTrail).not.toHaveBeenCalled();
+    });
+  });
+
+  // ────────────────────────────── /memory/metrics ──────────────────────────
+
+  describe("GET /memory/metrics", () => {
+    it("returns metrics from repo.getMetrics", async () => {
+      const mockMetrics = {
+        memories_total: 10,
+        memories_by_type: { observation: 5, feedback: 3, insight: 2 },
+        memories_by_source: { user: 7, distilled: 3 },
+        memories_soft_deleted: 2,
+        embedder_queue_depth: 5,
+        embedder_queue_oldest: "2026-05-07T10:00:00Z",
+        distill_cursor_lag_seconds_max: 120.5,
+        audit_log_size: 25,
+      };
+      depsBag.repo.getMetrics = vi.fn(async () => mockMetrics);
+
+      const res = await app.inject({ method: "GET", url: "/memory/metrics" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual(mockMetrics);
+      expect(depsBag.repo.getMetrics).toHaveBeenCalledTimes(1);
+      expect(depsBag.repo.getMetrics).toHaveBeenCalledWith(depsBag.deps.pool);
     });
   });
 });

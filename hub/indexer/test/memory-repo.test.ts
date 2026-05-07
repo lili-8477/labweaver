@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runMigrations } from "../src/migrate.js";
 import { insertMemoryRow } from "../src/distiller-repo.js";
 import { contentHash } from "../src/content-hash.js";
-import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext, updateMemory, restoreMemory, listMemories, getAuditTrail } from "../src/memory-repo.js";
+import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext, updateMemory, restoreMemory, listMemories, getAuditTrail, getMetrics } from "../src/memory-repo.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 let pg: StartedPostgreSqlContainer;
@@ -1323,5 +1323,164 @@ describe("listMemories", () => {
     expect(collected).toHaveLength(15);
     expect(new Set(collected).size).toBe(15);
     expect(new Set(collected)).toEqual(new Set(referenceIds));
+  });
+
+  it("getMetrics returns correct totals and breakdowns", async () => {
+    // Seed fixture: 4 live rows (2 user, 2 distilled), 1 soft-deleted
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // User-authored memory: type "observation"
+      const memId1 = await insertMemoryRow(client, {
+        username:          "alice",
+        project_dir:       null,
+        source:            "user",
+        type:              "observation",
+        source_session_id: null,
+        name:              "user-mem-1",
+        description:       "desc",
+        body:              "body",
+        facets:            {},
+        content_hash:      contentHash({ body: "body", promptVersion: 0 }),
+      });
+
+      // User-authored memory: type "feedback"
+      const memId2 = await insertMemoryRow(client, {
+        username:          "bob",
+        project_dir:       null,
+        source:            "user",
+        type:              "feedback",
+        source_session_id: null,
+        name:              "user-mem-2",
+        description:       "desc",
+        body:              "body",
+        facets:            {},
+        content_hash:      contentHash({ body: "body2", promptVersion: 0 }),
+      });
+
+      // Distilled memory: type "session_summary"
+      const memId3 = await insertMemoryRow(client, {
+        username:          "alice",
+        project_dir:       null,
+        source:            "distilled",
+        type:              "session_summary",
+        source_session_id: "550e8400-e29b-41d4-a716-446655440001",
+        name:              "distilled-mem-1",
+        description:       "desc",
+        body:              "body",
+        facets:            {},
+        content_hash:      contentHash({ body: "body3", promptVersion: 1 }),
+      });
+
+      // Distilled memory: type "reference"
+      const memId4 = await insertMemoryRow(client, {
+        username:          "bob",
+        project_dir:       null,
+        source:            "distilled",
+        type:              "reference",
+        source_session_id: "550e8400-e29b-41d4-a716-446655440002",
+        name:              "distilled-mem-2",
+        description:       "desc",
+        body:              "body",
+        facets:            {},
+        content_hash:      contentHash({ body: "body4", promptVersion: 1 }),
+      });
+
+      // Soft-deleted memory
+      const memId5 = await insertMemoryRow(client, {
+        username:          "alice",
+        project_dir:       null,
+        source:            "user",
+        type:              "feedback",
+        source_session_id: null,
+        name:              "deleted-mem",
+        description:       "desc",
+        body:              "body",
+        facets:            {},
+        content_hash:      contentHash({ body: "body5", promptVersion: 0 }),
+      });
+      await client.query("UPDATE memories SET deleted_at = now() WHERE memory_id = $1", [memId5]);
+
+      // Get the chunk IDs that were auto-created by insertMemoryRow
+      const chunks = await client.query<{ memory_id: string; chunk_id: string }>(
+        `SELECT memory_id, chunk_id FROM memory_chunks WHERE memory_id IN ($1, $2, $3)`,
+        [memId1, memId2, memId3],
+      );
+      const chunkMap = new Map(chunks.rows.map((r) => [r.memory_id, r.chunk_id]));
+      const chunk1Id = chunkMap.get(memId1);
+      const chunk2Id = chunkMap.get(memId2);
+      const chunk3Id = chunkMap.get(memId3);
+
+      // Update enqueued_at times to simulate different enqueue times (insertMemoryRow already added them to queue)
+      if (chunk1Id && chunk2Id && chunk3Id) {
+        await client.query(
+          `UPDATE embedder_queue SET enqueued_at = now() - interval '10 seconds' WHERE chunk_id = $1`,
+          [chunk1Id],
+        );
+        await client.query(
+          `UPDATE embedder_queue SET enqueued_at = now() - interval '5 seconds' WHERE chunk_id = $1`,
+          [chunk2Id],
+        );
+        // chunk3 has current time by default
+      }
+
+      // Add distill cursor for one user
+      await client.query(
+        `INSERT INTO memory_distill_cursor (username, last_seen_session_last_active)
+         VALUES ('alice', now() - interval '30 seconds'),
+                ('bob', now())`,
+      );
+
+      // Add some audit log entries
+      await client.query(
+        `INSERT INTO memory_audit_log (memory_id, actor, action, before, after)
+         VALUES ($1, 'alice', 'write', NULL, $2),
+                ($3, 'bob', 'write', NULL, $4)`,
+        [memId1, JSON.stringify({ type: "observation" }), memId2, JSON.stringify({ type: "feedback" })],
+      );
+
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    // Test getMetrics
+    const metrics = await getMetrics(pool);
+
+    // Assertions
+    expect(metrics.memories_total).toBe(4); // 4 live (not soft-deleted)
+    expect(metrics.memories_soft_deleted).toBe(1);
+
+    // By type: observation (1 user), feedback (1 user + 1 deleted), session_summary (1 distilled), reference (1 distilled)
+    expect(metrics.memories_by_type).toEqual({
+      observation: 1,
+      feedback: 1, // only live ones
+      session_summary: 1,
+      reference: 1,
+    });
+
+    // By source: 2 user live, 2 distilled
+    expect(metrics.memories_by_source).toEqual({
+      user: 2,
+      distilled: 2,
+    });
+
+    // We created 5 memories, each with one chunk auto-inserted into embedder_queue
+    expect(metrics.embedder_queue_depth).toBe(5);
+    expect(metrics.embedder_queue_oldest).not.toBeNull();
+    // Verify it's a valid ISO string
+    expect(typeof metrics.embedder_queue_oldest).toBe("string");
+    const queueOldestDate = new Date(metrics.embedder_queue_oldest!);
+    expect(queueOldestDate.getTime()).toBeLessThan(Date.now());
+
+    // distill_cursor_lag_seconds_max should be ~30 seconds for alice's cursor
+    expect(metrics.distill_cursor_lag_seconds_max).toBeGreaterThanOrEqual(25);
+    expect(metrics.distill_cursor_lag_seconds_max).toBeLessThanOrEqual(35);
+
+    expect(metrics.audit_log_size).toBe(2);
   });
 });

@@ -12,6 +12,7 @@ import type {
   restoreMemory,
   listMemories,
   getAuditTrail,
+  getMetrics,
 } from "./memory-repo.js";
 
 // DI seam: production wires real repo functions; tests pass vi.fn stubs. Pool
@@ -31,6 +32,7 @@ export interface MemoryApiDeps {
     restoreMemory:    typeof restoreMemory;
     listMemories:     typeof listMemories;
     getAuditTrail:    typeof getAuditTrail;
+    getMetrics:       typeof getMetrics;
   };
 }
 
@@ -114,6 +116,10 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
   const app = Fastify({ logger: false });
 
   app.get("/healthz", async () => ({ ok: true }));
+
+  // GET /memory/metrics — debug surface returning metrics across memory,
+  // embedder_queue, and audit_log. No params, no auth (private docker network).
+  app.get("/memory/metrics", async () => deps.repo.getMetrics(deps.pool));
 
   // POST /memory/search — hybrid retrieval (vector + FTS). Body validated by
   // SearchBody; ISO `since` is converted to Date at the boundary.

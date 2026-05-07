@@ -1012,3 +1012,75 @@ export async function getContext(args: GetContextArgs): Promise<MemoryContext> {
 
   return { system_prompt: parts.join(""), memory_ids: ids };
 }
+
+export async function getMetrics(pool: Pool): Promise<{
+  memories_total: number;
+  memories_by_type: Record<string, number>;
+  memories_by_source: { user: number; distilled: number };
+  memories_soft_deleted: number;
+  embedder_queue_depth: number;
+  embedder_queue_oldest: string | null;
+  distill_cursor_lag_seconds_max: number;
+  audit_log_size: number;
+}> {
+  type MetricsRow = {
+    memories_total:              string;
+    memories_soft_deleted:       string;
+    embedder_queue_depth:        string;
+    embedder_queue_oldest:       Date | null;
+    distill_cursor_lag_seconds_max: string;
+    audit_log_size:              string;
+  };
+
+  const metricsRes = await pool.query<MetricsRow>(
+    `SELECT
+       (SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL) AS memories_total,
+       (SELECT COUNT(*) FROM memories WHERE deleted_at IS NOT NULL) AS memories_soft_deleted,
+       (SELECT COUNT(*) FROM embedder_queue) AS embedder_queue_depth,
+       (SELECT enqueued_at FROM embedder_queue ORDER BY enqueued_at ASC LIMIT 1) AS embedder_queue_oldest,
+       (SELECT COALESCE(MAX(EXTRACT(EPOCH FROM (now() - last_seen_session_last_active))), 0)
+          FROM memory_distill_cursor) AS distill_cursor_lag_seconds_max,
+       (SELECT COUNT(*) FROM memory_audit_log) AS audit_log_size`,
+  );
+
+  const metricsRow = metricsRes.rows[0]!;
+
+  type TypeSourceRow = {
+    type:   string;
+    source: string;
+    n:      string;
+  };
+
+  const typeSourceRes = await pool.query<TypeSourceRow>(
+    `SELECT type, source, COUNT(*) AS n
+       FROM memories
+      WHERE deleted_at IS NULL
+      GROUP BY type, source`,
+  );
+
+  const memories_by_type: Record<string, number> = {};
+  const memories_by_source: { user: number; distilled: number } = { user: 0, distilled: 0 };
+
+  for (const row of typeSourceRes.rows) {
+    const count = parseInt(row.n, 10);
+    memories_by_type[row.type] = (memories_by_type[row.type] ?? 0) + count;
+    if (row.source === "user" || row.source === "distilled") {
+      memories_by_source[row.source] += count;
+    }
+  }
+
+  return {
+    memories_total: parseInt(metricsRow.memories_total, 10),
+    memories_by_type,
+    memories_by_source,
+    memories_soft_deleted: parseInt(metricsRow.memories_soft_deleted, 10),
+    embedder_queue_depth: parseInt(metricsRow.embedder_queue_depth, 10),
+    embedder_queue_oldest: metricsRow.embedder_queue_oldest
+      ? metricsRow.embedder_queue_oldest.toISOString()
+      : null,
+    distill_cursor_lag_seconds_max: Math.round(
+      parseFloat(metricsRow.distill_cursor_lag_seconds_max) * 100,
+    ) / 100,
+    audit_log_size: parseInt(metricsRow.audit_log_size, 10),
+  };
+}
