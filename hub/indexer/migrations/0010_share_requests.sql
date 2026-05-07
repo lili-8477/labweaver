@@ -7,19 +7,19 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE share_requests (
-  share_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  artifact_kind   text NOT NULL CHECK (artifact_kind IN ('memory', 'skill', 'folder')),
-  artifact_ref    text NOT NULL,
-  snapshot_meta   jsonb NOT NULL,
-  requester       text NOT NULL,
-  reviewer        text NOT NULL,
-  status          text NOT NULL DEFAULT 'pending'
-                  CHECK (status IN ('pending', 'approved', 'rejected', 'withdrawn')),
-  requester_note  text,
-  review_comment  text,
-  promotion_result jsonb,
-  created_at      timestamptz NOT NULL DEFAULT now(),
-  decided_at      timestamptz
+  share_id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  artifact_kind    TEXT NOT NULL CHECK (artifact_kind IN ('memory', 'skill', 'folder')),
+  artifact_ref     TEXT NOT NULL,
+  snapshot_meta    JSONB NOT NULL,
+  requester        TEXT NOT NULL,
+  reviewer         TEXT NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'approved', 'rejected', 'withdrawn')),
+  requester_note   TEXT,
+  review_comment   TEXT,
+  promotion_result JSONB,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_at       TIMESTAMPTZ
 );
 
 CREATE INDEX share_requests_status_created_idx
