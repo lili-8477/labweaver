@@ -16,7 +16,6 @@ describe("loadConfig", () => {
   it("overrides from env", () => {
     const cfg = loadConfig({
       PG_URL: "postgres://x",
-      ANTHROPIC_API_KEY: "sk-ant-test",
       WORKSPACES_ROOT: "/tmp/w",
       MAX_CONCURRENT_FILES: "2",
       MAX_PASS_BYTES: "1024",
