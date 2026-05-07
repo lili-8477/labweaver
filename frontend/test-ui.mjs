@@ -200,6 +200,60 @@ async function main() {
   console.log(`Folder upload button count: ${folderBtnCount}`);
   if (folderBtnCount === 0) errors.push('Folder upload button not found in toolbar');
 
+  // ================================================
+  // MEMORY PANEL TESTS
+  // ================================================
+
+  // Open Memory panel
+  await page.locator('.tb-btn:has-text("Memory")').click();
+  await page.waitForTimeout(2000);
+
+  // ================================================
+  // TEST: Memory list (basic load)
+  // ================================================
+  console.log('\n=== Test: Memory list ===');
+  const memoryRowCount = await page.locator('.memory-row').count();
+  console.log(`Memory rows loaded: ${memoryRowCount}`);
+
+  if (memoryRowCount > 0) {
+    // ================================================
+    // TEST: Memory detail (click first row)
+    // ================================================
+    console.log('\n=== Test: Memory detail ===');
+    const firstMemoryName = await page.locator('.memory-row').first().locator('.row-name').textContent();
+    console.log(`First memory name: "${firstMemoryName?.trim()}"`);
+
+    await page.locator('.memory-row').first().click();
+    await page.waitForTimeout(1000);
+    await page.screenshot({ path: '/tmp/ss-mem-2-detail.png' });
+
+    // Assert detail name matches list-item name
+    const detailVisible = await page.locator('.memory-detail').isVisible();
+    console.log(`Memory detail visible: ${detailVisible}`);
+    if (!detailVisible) errors.push('Memory detail did not become visible after clicking row');
+
+    const detailName = await page.locator('.memory-detail .memory-name').textContent();
+    console.log(`Detail memory name: "${detailName?.trim()}"`);
+    if (detailName?.trim() !== firstMemoryName?.trim()) {
+      errors.push(`Memory detail name mismatch: list="${firstMemoryName?.trim()}" detail="${detailName?.trim()}"`);
+    }
+
+    // ================================================
+    // TEST: Mine scope tab
+    // ================================================
+    console.log('\n=== Test: Mine scope tab ===');
+    await page.locator('.scope-tab:has-text("Mine")').click();
+    await page.waitForTimeout(1000);
+    const mineRowCount = await page.locator('.memory-row').count();
+    console.log(`Rows after Mine filter: ${mineRowCount}`);
+    await page.screenshot({ path: '/tmp/ss-mem-3-mine.png' });
+  } else {
+    console.log('No memory rows loaded; skipping detail and filter tests.');
+  }
+
+  // Screenshot after opening Memory panel (list view)
+  await page.screenshot({ path: '/tmp/ss-mem-1-list.png' });
+
   if (errors.length > 0) {
     console.log('\nERRORS:');
     for (const e of errors) console.log(`  - ${e}`);
