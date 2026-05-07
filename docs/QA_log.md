@@ -100,3 +100,43 @@ So:
 - The same trap applies to `docker cp` in reverse — copying *over* a bind-mounted file inside the container won't propagate to the host either, because the container's overlay shadows the bind source.
 
 This burned roughly 15 minutes of upload-feature debugging today; the symptom (`405 Method Not Allowed` on `PUT /upload/...`) led me on a wild goose chase through frontend XHR code, nginx variable resolution, and adapter method handling before the inode mismatch became visible.
+
+---
+
+## 2026-05-07 — How does the bioflow agent memory system work end-to-end?
+
+**Q:** Summarize how memory system works.
+
+**A:** Three layers, each owned by one process. Capture is server-side (no per-event hooks); retrieval has three surfaces (agent MCP, SessionStart hook, frontend panel); audit + soft-delete + restore are all transactional.
+
+**Capture — two paths, both write through the same `insertMemoryRow` helper in `hub/indexer/src/distiller-repo.ts`.**
+
+1. *Distillation (auto).* `distiller.ts` polls `sessions WHERE last_active < now() - 5min` every 60 s, streams JSONL via `path-decode.ts` + `transcript-reader.ts`, calls `claude-haiku-4-5` with a versioned prompt, writes one `session_summary` + 0–N `observation` rows. Idempotent by `(username, project_dir, type, content_hash)` UNIQUE.
+2. *User writes.* `/memorize` (chat slash command) → `bioflow-memory` MCP server (`mcp-memory/src/index.ts`) → adapter NATS RPC `memory_write` → `POST /memory/write` → `writeUserMemory()`. Frontend panel writes go through the same NATS-RPC bridge.
+
+**Storage — Postgres, migrations 0006–0009.**
+
+| Table | Purpose |
+|---|---|
+| `memories` | One row per memory: `(memory_id, username, project_dir, type, source, name, description, body, content_hash, hit_count, last_hit_at, deleted_at, ...)`. UNIQUE on `(username, project_dir, type, content_hash)`. |
+| `memory_chunks` | One row per chunk: `content`, `tsv` (FTS), `embedding vector(384)`. HNSW + GIN indexes. |
+| `memory_facets` | Open `(key, value)` tags: gene/dataset/tool/pipeline/file. |
+| `embedder_queue` | Work queue. Indexer's embedder loop polls 64 chunks every 5 s, batches them to the `claude-bioflow-embedder` Python sidecar (bge-small-en-v1.5), writes vectors back. |
+| `memory_distill_cursor` | Per-user `last_seen_session_last_active` watermark. |
+| `memory_audit_log` (sub-phase C) | Every mutation appends a row in the *same transaction*. JSONB `before`/`after`. FK CASCADE. |
+
+Scope tier is computed: `username='__org__'` → org, `project_dir IS NULL` → user, else project. No separate scope column.
+
+**Retrieval — three surfaces.**
+
+1. *Agent (in-session).* MCP tools `memory_search/get/timeline/write/forget` over stdio. Search returns `{memory_id, snippet ≤200 chars, score}` only — agent calls `get` on demand. Token-efficient pattern from claude-mem.
+2. *SessionStart hook.* `memory_session_start.sh` curls `GET /memory/context?username=&project_path=&budget_tokens=2000`. Server runs scope×popularity×recency ranking (no FTS), packs ≤50 memories until budget hits, returns one `system_prompt` string. Hook stdout is injected as system context by Claude Code.
+3. *Frontend Memory panel.* `MemoryPanel.vue` → pinia store → `memoryService` → adapter NATS RPC `memory_search/get/list/write/update/forget/restore/audit` → `MemoryRpcClient` HTTP → `memory-api.ts`. Frontend never sees `username`; the adapter injects its trusted `process.env.USERNAME`.
+
+**Search ranking** (`searchMemories` in `memory-repo.ts`): hybrid SQL — `0.7×vector_cosine + 0.3×ts_rank`, then multiplied by scope-specificity (`project=1.20, user=1.10, org=1.00`), popularity (`1 + ln(1+hit_count)×0.05`), and recency (`exp(-age_seconds / (90 days))`). Embedder down → FTS-only fallback. Returned IDs get `hit_count++` in a follow-up `UPDATE`.
+
+**Audit + soft-delete (sub-phase C).** Every mutation is `pool.connect → BEGIN → SELECT FOR UPDATE → checks → UPDATE → appendAudit(action, before, after) → COMMIT`. Negative paths ROLLBACK without auditing. Soft-delete sets `deleted_at`; default reads filter it out. Restore clears it. Per-memory audit trail is owner-only (`GET /memory/:id/audit`). `GET /memory/metrics` returns counts/queue/cursor lag for ops debugging.
+
+**Trust model.** `USERNAME` is the tenant key, set by `add-user.sh` from the workspace prefix, never user-controlled at runtime. The frontend carries no username; the adapter injects it. The memory-api itself has no auth (private docker network, same model as the postgres bridge in Phase 2). Org writes are operator-only — the MCP tool surface excludes `scope:'org'`.
+
+**Out of scope (deferred):** paid embeddings (swap `EMBEDDER_URL`), subagent-scoped memory, cross-memory audit explorer, bulk forget, editing distilled rows.
