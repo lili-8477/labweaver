@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
+// NOTE: loadFirstPage() is intentionally NOT called here.
+// MemoryPanel.vue owns the mount lifecycle for the memory feature.
 import { useMemoryStore } from '@/stores/memory'
 import type { MemoryListItem } from '@/types'
 
@@ -45,7 +47,6 @@ watch(() => store.cursor, (cur) => {
 })
 
 onMounted(() => {
-  if (store.items.length === 0) store.loadFirstPage()
   connectObserver()
 })
 
