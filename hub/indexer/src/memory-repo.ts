@@ -496,6 +496,100 @@ export async function forgetMemory(args: ForgetMemoryArgs): Promise<{ ok: boolea
   }
 }
 
+export async function updateMemory(args: {
+  pool:        Pool;
+  actor:       string;
+  memoryId:    string;
+  name:        string;
+  description: string;
+  body:        string;
+}): Promise<{ ok: boolean; reason?: 'not_found' | 'forbidden' | 'distilled' }> {
+  const client = await args.pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Lock the row and capture pre-state for ownership check and audit.
+    const sel = await client.query<{
+      username:    string;
+      source:      string;
+      name:        string;
+      description: string;
+      body:        string;
+    }>(
+      `SELECT username, source, name, description, body
+         FROM memories
+        WHERE memory_id = $1
+        FOR UPDATE`,
+      [args.memoryId],
+    );
+
+    if (sel.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: 'not_found' };
+    }
+
+    const row = sel.rows[0]!;
+
+    if (row.username !== args.actor) {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: 'forbidden' };
+    }
+
+    if (row.source !== 'user') {
+      await client.query("ROLLBACK");
+      return { ok: false, reason: 'distilled' };
+    }
+
+    // Match writeUserMemory's hash recipe exactly: promptVersion=0, body=`${name}\n${body}`.
+    const hash = contentHash({
+      body:          `${args.name}\n${args.body}`,
+      promptVersion: 0,
+    });
+
+    await client.query(
+      `UPDATE memories
+          SET name        = $1,
+              description = $2,
+              body        = $3,
+              content_hash = $4,
+              updated_at  = now()
+        WHERE memory_id = $5`,
+      [args.name, args.description, args.body, hash, args.memoryId],
+    );
+
+    // Delete old chunks and re-insert one chunk with the new body, embedding=NULL.
+    await client.query(
+      `DELETE FROM memory_chunks WHERE memory_id = $1`,
+      [args.memoryId],
+    );
+    const chunk = await client.query<{ chunk_id: string }>(
+      `INSERT INTO memory_chunks (memory_id, chunk_idx, content)
+       VALUES ($1, 0, $2) RETURNING chunk_id`,
+      [args.memoryId, args.body],
+    );
+    await client.query(
+      `INSERT INTO embedder_queue (chunk_id) VALUES ($1) ON CONFLICT DO NOTHING`,
+      [chunk.rows[0]!.chunk_id],
+    );
+
+    await appendAudit(client, {
+      memory_id: args.memoryId,
+      actor:     args.actor,
+      action:    'update',
+      before:    { name: row.name, description: row.description, body: row.body },
+      after:     { name: args.name, description: args.description, body: args.body },
+    });
+
+    await client.query("COMMIT");
+    return { ok: true };
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 export interface GetContextArgs {
   pool:          Pool;
   username:      string;

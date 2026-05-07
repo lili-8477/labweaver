@@ -17,6 +17,7 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
   writeUserMemory:  ReturnType<typeof vi.fn>;
   forgetMemory:     ReturnType<typeof vi.fn>;
   getContext:       ReturnType<typeof vi.fn>;
+  updateMemory:     ReturnType<typeof vi.fn>;
 } } {
   const repo = {
     searchMemories:   vi.fn(async (): Promise<SearchHit[]>     => []),
@@ -25,6 +26,7 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
     writeUserMemory:  vi.fn(async (): Promise<{ memory_id: string | null }> => ({ memory_id: "m-1" })),
     forgetMemory:     vi.fn(async (): Promise<{ ok: boolean }> => ({ ok: true })),
     getContext:       vi.fn(async (): Promise<MemoryContext>   => ({ system_prompt: "", memory_ids: [] })),
+    updateMemory:     vi.fn(async (): Promise<{ ok: boolean; reason?: 'not_found' | 'forbidden' | 'distilled' }> => ({ ok: true })),
   };
   const deps: MemoryApiDeps = {
     pool: {} as Pool,
@@ -309,6 +311,91 @@ describe("memory-api", () => {
       expect(res.statusCode).toBe(400);
       expect(res.json()).toMatchObject({ error: "validation failed", issues: expect.any(Array) });
       expect(depsBag.repo.getContext).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─────────────────────────── PUT /memory/:id ────────────────────────────────
+
+  describe("PUT /memory/:id", () => {
+    const validPayload = {
+      actor:       "alice",
+      name:        "updated name",
+      description: "updated description",
+      body:        "updated body text",
+    };
+
+    it("happy path: calls updateMemory and returns {ok:true}", async () => {
+      depsBag.repo.updateMemory.mockResolvedValueOnce({ ok: true });
+      const res = await app.inject({
+        method:  "PUT",
+        url:     "/memory/abc-123",
+        payload: validPayload,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true });
+      expect(depsBag.repo.updateMemory).toHaveBeenCalledTimes(1);
+      const arg = depsBag.repo.updateMemory.mock.calls[0]![0];
+      expect(arg.actor).toBe("alice");
+      expect(arg.memoryId).toBe("abc-123");
+      expect(arg.name).toBe("updated name");
+      expect(arg.description).toBe("updated description");
+      expect(arg.body).toBe("updated body text");
+      expect(arg.pool).toBe(depsBag.deps.pool);
+    });
+
+    it("404 when repo returns not_found", async () => {
+      depsBag.repo.updateMemory.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+      const res = await app.inject({
+        method:  "PUT",
+        url:     "/memory/missing-id",
+        payload: validPayload,
+      });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({ error: "memory not found" });
+    });
+
+    it("403 when repo returns forbidden", async () => {
+      depsBag.repo.updateMemory.mockResolvedValueOnce({ ok: false, reason: "forbidden" });
+      const res = await app.inject({
+        method:  "PUT",
+        url:     "/memory/other-users-id",
+        payload: validPayload,
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: "not the owner" });
+    });
+
+    it("403 when repo returns distilled", async () => {
+      depsBag.repo.updateMemory.mockResolvedValueOnce({ ok: false, reason: "distilled" });
+      const res = await app.inject({
+        method:  "PUT",
+        url:     "/memory/distilled-id",
+        payload: validPayload,
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: "distilled memories are read-only" });
+    });
+
+    it("400 when actor is missing", async () => {
+      const res = await app.inject({
+        method:  "PUT",
+        url:     "/memory/abc-123",
+        payload: { name: "n", description: "d", body: "b" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: "validation failed", issues: expect.any(Array) });
+      expect(depsBag.repo.updateMemory).not.toHaveBeenCalled();
+    });
+
+    it("400 when body is missing", async () => {
+      const res = await app.inject({
+        method:  "PUT",
+        url:     "/memory/abc-123",
+        payload: { actor: "alice", name: "n", description: "d" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ error: "validation failed", issues: expect.any(Array) });
+      expect(depsBag.repo.updateMemory).not.toHaveBeenCalled();
     });
   });
 });

@@ -8,6 +8,7 @@ import type {
   writeUserMemory,
   forgetMemory,
   getContext,
+  updateMemory,
 } from "./memory-repo.js";
 
 // DI seam: production wires real repo functions; tests pass vi.fn stubs. Pool
@@ -23,6 +24,7 @@ export interface MemoryApiDeps {
     writeUserMemory:  typeof writeUserMemory;
     forgetMemory:     typeof forgetMemory;
     getContext:       typeof getContext;
+    updateMemory:     typeof updateMemory;
   };
 }
 
@@ -69,6 +71,13 @@ const ContextQuery = z.object({
   username:      z.string().min(1),
   project_path:  z.string().min(1),
   budget_tokens: z.coerce.number().int().positive().max(100000).optional(),
+});
+
+const UpdateBody = z.object({
+  actor:       z.string().min(1),
+  name:        z.string().min(1),
+  description: z.string(),
+  body:        z.string().min(1),
 });
 
 export function buildApp(deps: MemoryApiDeps): FastifyInstance {
@@ -174,6 +183,29 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
       username: b.username,
       memoryId: b.memory_id,
     });
+  });
+
+  // PUT /memory/:id — edit a user-authored memory's name/description/body.
+  // Rejects distilled rows (403) and non-owner edits (403). Registered BEFORE
+  // GET /memory/:id to match fastify's route-registration convention in this file.
+  app.put<{ Params: { id: string } }>("/memory/:id", async (req, reply) => {
+    const parsed = UpdateBody.safeParse(req.body);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: 'validation failed', issues: parsed.error.issues };
+    }
+    const r = await deps.repo.updateMemory({
+      pool:        deps.pool,
+      actor:       parsed.data.actor,
+      memoryId:    req.params.id,
+      name:        parsed.data.name,
+      description: parsed.data.description,
+      body:        parsed.data.body,
+    });
+    if (!r.ok && r.reason === 'not_found') { reply.code(404); return { error: 'memory not found' }; }
+    if (!r.ok && r.reason === 'forbidden')  { reply.code(403); return { error: 'not the owner' }; }
+    if (!r.ok && r.reason === 'distilled')  { reply.code(403); return { error: 'distilled memories are read-only' }; }
+    return { ok: true };
   });
 
   // GET /memory/:id — must be registered AFTER literal /memory/* routes

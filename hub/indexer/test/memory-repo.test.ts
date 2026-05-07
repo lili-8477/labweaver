@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runMigrations } from "../src/migrate.js";
 import { insertMemoryRow } from "../src/distiller-repo.js";
 import { contentHash } from "../src/content-hash.js";
-import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext } from "../src/memory-repo.js";
+import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext, updateMemory } from "../src/memory-repo.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 let pg: StartedPostgreSqlContainer;
@@ -782,5 +782,152 @@ describe("getContext", () => {
     });
     expect(ctx.memory_ids).toContain(matchingId);
     expect(ctx.memory_ids).not.toContain(otherProjectId);
+  });
+});
+
+describe("updateMemory", () => {
+  it("happy path: updates name/description/body, recomputes content_hash, re-queues chunk", async () => {
+    const id = await seedMemory({
+      username: "alice", project_dir: null,
+      body: "original body text", seed: 700,
+    });
+
+    // Capture the original content_hash and chunk_id
+    const before = await pool.query<{ content_hash: Buffer; name: string }>(
+      `SELECT content_hash, name FROM memories WHERE memory_id = $1`,
+      [id],
+    );
+    const origHash = before.rows[0]!.content_hash;
+
+    const res = await updateMemory({
+      pool,
+      actor: "alice",
+      memoryId: id,
+      name: "updated name",
+      description: "updated description",
+      body: "updated body text",
+    });
+    expect(res).toEqual({ ok: true });
+
+    // Row fields updated
+    const after = await pool.query<{ name: string; description: string; body: string; content_hash: Buffer }>(
+      `SELECT name, description, body, content_hash FROM memories WHERE memory_id = $1`,
+      [id],
+    );
+    expect(after.rows[0]!.name).toBe("updated name");
+    expect(after.rows[0]!.description).toBe("updated description");
+    expect(after.rows[0]!.body).toBe("updated body text");
+    // content_hash must differ from original
+    expect(Buffer.compare(after.rows[0]!.content_hash, origHash)).not.toBe(0);
+
+    // Chunk embedding is NULL (queued, not yet re-embedded)
+    const chunk = await pool.query<{ embedding: unknown | null }>(
+      `SELECT embedding FROM memory_chunks WHERE memory_id = $1`,
+      [id],
+    );
+    expect(chunk.rowCount).toBe(1);
+    expect(chunk.rows[0]!.embedding).toBeNull();
+
+    // embedder_queue row exists for the new chunk
+    const queue = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM embedder_queue
+        WHERE chunk_id IN (SELECT chunk_id FROM memory_chunks WHERE memory_id = $1)`,
+      [id],
+    );
+    expect(queue.rows[0]!.count).toBe("1");
+
+    // audit row was written with action='update' and correct before/after
+    const audit = await pool.query<{ action: string; before: unknown; after: unknown }>(
+      `SELECT action, before, after FROM memory_audit_log
+        WHERE memory_id = $1 AND action = 'update'`,
+      [id],
+    );
+    expect(audit.rowCount).toBe(1);
+    expect(audit.rows[0]!.action).toBe("update");
+    const auditBefore = audit.rows[0]!.before as Record<string, unknown>;
+    const auditAfter  = audit.rows[0]!.after  as Record<string, unknown>;
+    expect(auditBefore.name).toBe("seed-700");
+    expect(auditBefore.body).toBe("original body text");
+    expect(auditAfter.name).toBe("updated name");
+    expect(auditAfter.body).toBe("updated body text");
+  });
+
+  it("non-owner: returns {ok:false, reason:'forbidden'}", async () => {
+    const id = await seedMemory({
+      username: "bob", project_dir: null,
+      body: "bob's private note", seed: 701,
+    });
+    const res = await updateMemory({
+      pool,
+      actor: "alice",
+      memoryId: id,
+      name: "hacked",
+      description: "hacked",
+      body: "hacked body",
+    });
+    expect(res).toEqual({ ok: false, reason: "forbidden" });
+
+    // Row must be untouched
+    const row = await pool.query<{ name: string }>(
+      `SELECT name FROM memories WHERE memory_id = $1`,
+      [id],
+    );
+    expect(row.rows[0]!.name).toBe("seed-701");
+  });
+
+  it("distilled row: returns {ok:false, reason:'distilled'}", async () => {
+    // Insert a distilled memory directly (seedMemory always uses source='user')
+    const distId = await pool.query<{ memory_id: string }>(
+      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash)
+       VALUES (gen_random_uuid(), 'alice', NULL, 'observation', 'distilled', 'distilled-name', 'distilled-desc',
+               'distilled body', $1)
+       RETURNING memory_id`,
+      [contentHash({ body: "distilled-namedistilled body", promptVersion: 1 })],
+    );
+    const distMemoryId = distId.rows[0]!.memory_id;
+
+    const res = await updateMemory({
+      pool,
+      actor: "alice",
+      memoryId: distMemoryId,
+      name: "new name",
+      description: "new desc",
+      body: "new body",
+    });
+    expect(res).toEqual({ ok: false, reason: "distilled" });
+  });
+
+  it("not_found: returns {ok:false, reason:'not_found'} for a missing id", async () => {
+    const res = await updateMemory({
+      pool,
+      actor: "alice",
+      memoryId: "00000000-0000-0000-0000-000000000000",
+      name: "x",
+      description: "y",
+      body: "z",
+    });
+    expect(res).toEqual({ ok: false, reason: "not_found" });
+  });
+
+  it("audit log grows by exactly one per successful update", async () => {
+    const id = await seedMemory({
+      username: "alice", project_dir: null,
+      body: "audit count check", seed: 702,
+    });
+
+    const countBefore = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM memory_audit_log WHERE memory_id = $1`,
+      [id],
+    );
+    await updateMemory({
+      pool, actor: "alice", memoryId: id,
+      name: "new name A", description: "new desc A", body: "new body A",
+    });
+    const countAfter = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM memory_audit_log WHERE memory_id = $1`,
+      [id],
+    );
+    expect(parseInt(countAfter.rows[0]!.count) - parseInt(countBefore.rows[0]!.count)).toBe(1);
   });
 });
