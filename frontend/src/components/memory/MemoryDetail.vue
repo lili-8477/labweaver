@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useMemoryStore } from '@/stores/memory'
+import { useShareStore } from '@/stores/share'
 
 const store = useMemoryStore()
+const shareStore = useShareStore()
 
 const confirmedThisSession = ref(false)
+const showShareModal = ref(false)
+const shareNote = ref('')
 
 function relTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
@@ -58,6 +62,27 @@ function handleRestore() {
   }
   store.restore(store.selected.memory_id)
 }
+
+function openShareModal() {
+  if (!store.selected) return
+  if (store.selected.deleted_at !== null) return
+  shareNote.value = ''
+  showShareModal.value = true
+}
+
+async function submitShare() {
+  if (!store.selected) return
+  try {
+    await shareStore.submit({
+      kind: 'memory',
+      ref: store.selected.memory_id,
+      note: shareNote.value.trim() || undefined,
+    })
+    showShareModal.value = false
+  } catch {
+    // store.error already set by the store; modal stays open so user can retry or cancel
+  }
+}
 </script>
 
 <template>
@@ -66,6 +91,7 @@ function handleRestore() {
   </div>
 
   <div v-else class="memory-detail">
+
     <div class="detail-scroll">
 
       <!-- Header -->
@@ -169,6 +195,14 @@ function handleRestore() {
         @click="store.startEdit()"
       >Edit</button>
       <button
+        class="btn-action"
+        :disabled="store.selected.deleted_at !== null"
+        :title="store.selected.deleted_at !== null
+                  ? 'Cannot share a deleted memory'
+                  : 'Share with the org for review'"
+        @click="openShareModal"
+      >Share</button>
+      <button
         v-if="store.selected.deleted_at === null"
         class="btn-action btn-danger"
         @click="handleForget"
@@ -178,6 +212,29 @@ function handleRestore() {
         class="btn-action btn-restore"
         @click="handleRestore"
       >Restore</button>
+    </div>
+  </div>
+
+  <!-- Share modal — rendered only when toggled. Sibling to .memory-detail so its
+       fixed-position overlay isn't constrained by the panel column. -->
+  <div v-if="showShareModal" class="share-modal-overlay" @click.self="showShareModal = false">
+    <div class="share-modal" role="dialog" aria-labelledby="share-modal-title">
+      <h3 id="share-modal-title">Share with the org?</h3>
+      <p class="modal-meta">
+        This sends the memory to <strong>{{ shareStore.capabilities.manager_username ?? 'the manager' }}</strong>
+        for review. You can withdraw while it's pending.
+      </p>
+      <textarea
+        v-model="shareNote"
+        class="modal-textarea"
+        rows="4"
+        maxlength="500"
+        placeholder="Optional: why is this worth sharing? (≤500 chars)"
+      />
+      <div class="modal-actions">
+        <button class="btn-secondary" @click="showShareModal = false">Cancel</button>
+        <button class="btn-primary" @click="submitShare">Submit</button>
+      </div>
     </div>
   </div>
 </template>
@@ -292,4 +349,37 @@ function handleRestore() {
 .btn-danger:hover { background: color-mix(in oklch, var(--danger) 22%, transparent); }
 .btn-restore { background: var(--success-soft); color: var(--success); border-color: color-mix(in oklch, var(--success) 30%, transparent); }
 .btn-restore:hover { background: color-mix(in oklch, var(--success) 22%, transparent); }
+
+.share-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.45);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+.share-modal {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  max-width: 480px; width: calc(100% - var(--space-6));
+  display: flex; flex-direction: column; gap: var(--space-3);
+}
+.share-modal h3 {
+  margin: 0; font-size: var(--text-lg); color: var(--text-primary);
+}
+.modal-meta {
+  font-size: var(--text-sm); color: var(--text-secondary); margin: 0;
+}
+.modal-textarea {
+  width: 100%; resize: vertical;
+  font-family: var(--font-mono); font-size: var(--text-sm);
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-primary);
+  padding: var(--space-2) var(--space-3); line-height: 1.5;
+}
+.modal-textarea:focus { border-color: var(--accent); outline: none; }
+.modal-actions {
+  display: flex; gap: var(--space-2); justify-content: flex-end;
+}
 </style>
