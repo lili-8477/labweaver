@@ -11,14 +11,17 @@ import FileViewer from '@/components/files/FileViewer.vue'
 import NotebookEditor from '@/components/notebook/NotebookEditor.vue'
 import AgentPanel from '@/components/agents/AgentPanel.vue'
 import MemoryPanel from '@/components/memory/MemoryPanel.vue'
+import SharePanel from '@/components/share/SharePanel.vue'
 import { useNotebookStore } from '@/stores/notebook'
+import { useShareStore } from '@/stores/share'
 
 const conn = useConnectionStore()
 const chat = useChatStore()
 const files = useFileStore()
 const nb = useNotebookStore()
+const shareStore = useShareStore()
 
-type RightPanel = 'none' | 'files' | 'notebook' | 'agents' | 'memory'
+type RightPanel = 'none' | 'files' | 'notebook' | 'agents' | 'memory' | 'share'
 
 const STORAGE_KEY = 'bioflow-layout'
 interface LayoutState {
@@ -54,6 +57,7 @@ function persist() {
 onMounted(async () => {
   await chat.loadChats()
   files.loadTree()
+  shareStore.loadCapabilities()
 })
 
 function togglePanel(panel: RightPanel) {
@@ -161,6 +165,15 @@ const connStatus = computed(() => {
           title="Memory"
         >Memory</button>
         <button
+          class="panel-tab tb-btn"
+          :class="{ active: rightPanel === 'share' }"
+          :title="'Share with the org'"
+          @click="togglePanel('share')"
+        >Share<span
+            v-if="shareStore.capabilities.is_manager && shareStore.capabilities.pending_inbox_count > 0"
+            class="panel-tab-badge"
+          >{{ shareStore.capabilities.pending_inbox_count }}</span></button>
+        <button
           class="tb-btn"
           :class="{ active: rightPanel === 'files' }"
           @click="togglePanel('files')"
@@ -216,6 +229,7 @@ const connStatus = computed(() => {
           <NotebookEditor v-else-if="rightPanel === 'notebook'" />
           <AgentPanel v-else-if="rightPanel === 'agents'" />
           <MemoryPanel v-else-if="rightPanel === 'memory'" />
+          <SharePanel v-else-if="rightPanel === 'share'" />
         </aside>
       </template>
     </div>
@@ -383,5 +397,18 @@ const connStatus = computed(() => {
 .resizer-right .fold-handle:hover {
   background: var(--bg-hover);
   color: var(--accent);
+}
+
+.panel-tab-badge {
+  margin-left: 4px;
+  background: var(--accent);
+  color: white;
+  border-radius: var(--radius-pill);
+  padding: 0 6px;
+  font-size: var(--text-2xs);
+  font-weight: var(--fw-semi);
+  display: inline-block;
+  min-width: 16px;
+  text-align: center;
 }
 </style>
