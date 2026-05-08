@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { stat } from "node:fs/promises";
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import { insertMemoryRow } from "./distiller-repo.js";
 import { contentHash } from "./content-hash.js";
 import { appendAudit } from "./memory-repo.js";
@@ -392,7 +392,7 @@ export async function decideShareRequest(args: DecideArgs): Promise<DecideResult
     // approve path
     if (row.artifact_kind === "skill") {
       const result = await approveSkillShareRequest({
-        client, row, comment: args.comment,
+        row,
         workspacesRoot:    args.workspacesRoot,
         shareSnapshotsDir: args.shareSnapshotsDir,
       });
@@ -400,8 +400,17 @@ export async function decideShareRequest(args: DecideArgs): Promise<DecideResult
         await client.query("ROLLBACK");
         return result;
       }
-      // approveSkillShareRequest is responsible for issuing UPDATE + COMMIT.
-      return result;
+      // FS op (extractSkillTarball) ran inside the row-lock window — acceptable
+      // for small skills. The lock is released by COMMIT below.
+      await client.query(
+        `UPDATE share_requests
+            SET status = 'approved', decided_at = now(),
+                review_comment = $1, promotion_result = $2
+          WHERE share_id = $3`,
+        [args.comment ?? null, result.promotion_result, args.shareId],
+      );
+      await client.query("COMMIT");
+      return { ok: true, status: "approved", promotion_result: result.promotion_result };
     }
     if (row.artifact_kind !== "memory") {
       await client.query("ROLLBACK");
@@ -501,13 +510,14 @@ export async function decideShareRequest(args: DecideArgs): Promise<DecideResult
 }
 
 async function approveSkillShareRequest(args: {
-  client:             PoolClient;
   row:                ShareRow;
-  comment?:           string;
   workspacesRoot:     string;
   shareSnapshotsDir:  string;
-}): Promise<DecideResult> {
-  const { client, row } = args;
+}): Promise<
+  | { ok: true; promotion_result: Record<string, unknown> }
+  | { ok: false; reason: "promotion_failed" | "collision"; detail?: string }
+> {
+  const { row } = args;
 
   // Validate snapshot shape.
   const meta = row.snapshot_meta as Record<string, unknown>;
@@ -518,7 +528,7 @@ async function approveSkillShareRequest(args: {
   ) {
     return { ok: false, reason: "promotion_failed", detail: "snapshot_meta missing root_name/manifest/files" };
   }
-  const rootName = meta.root_name as string;
+  const rootName = meta.root_name;
 
   // Refuse traversal in stored root_name (defence in depth — submit guards too).
   const sharedSkills = path.join(args.workspacesRoot, "shared", "skills");
@@ -527,14 +537,13 @@ async function approveSkillShareRequest(args: {
     return { ok: false, reason: "promotion_failed", detail: "snapshot root_name is invalid" };
   }
 
-  // Collision check.
+  // Collision check — anything at this path (dir, file, symlink) is a collision.
   try {
-    const st = await stat(destDir);
-    if (st.isDirectory()) {
-      return { ok: false, reason: "collision", detail: `shared/skills/${rootName} already exists` };
-    }
+    await stat(destDir);
+    return { ok: false, reason: "collision", detail: `shared/skills/${rootName} already exists` };
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    // ENOENT — proceed with extraction
   }
 
   const tarPath = path.join(args.shareSnapshotsDir, `${row.share_id}.tar.gz`);
@@ -550,15 +559,7 @@ async function approveSkillShareRequest(args: {
     copied_files:  written,
   };
 
-  await client.query(
-    `UPDATE share_requests
-        SET status = 'approved', decided_at = now(),
-            review_comment = $1, promotion_result = $2
-      WHERE share_id = $3`,
-    [args.comment ?? null, promotion_result, row.share_id],
-  );
-  await client.query("COMMIT");
-  return { ok: true, status: "approved", promotion_result };
+  return { ok: true, promotion_result };
 }
 
 // ─── 5. withdrawShareRequest ────────────────────────────────────────────────
