@@ -72,4 +72,19 @@ export const shareService = {
       actor_username: result.actor_username,
     };
   },
+
+  /**
+   * Phase 2: fetch a single file from a frozen skill snapshot via the adapter
+   * HTTP proxy. Used by ShareDetail's "click a file to preview" UX. Returns
+   * the file body as text — the indexer route caps the file size implicitly
+   * (skills are small; folders defer to phase 3).
+   */
+  fetchSnapshotFile: async (id: string, relPath: string): Promise<string> => {
+    const url = `/share-snapshot/${encodeURIComponent(id)}/file?path=${encodeURIComponent(relPath)}`;
+    const r = await fetch(url, { credentials: 'include' });
+    if (!r.ok) {
+      throw new Error(`snapshot file fetch failed (HTTP ${r.status})`);
+    }
+    return await r.text();
+  },
 } as const;

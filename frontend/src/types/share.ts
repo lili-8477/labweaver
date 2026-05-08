@@ -25,3 +25,16 @@ export interface ShareCapabilities {
   pending_inbox_count: number;
   actor_username: string;
 }
+
+// Phase 2: skill snapshot shape inside snapshot_meta when artifact_kind='skill'.
+export interface SkillSnapshotFile {
+  path:       string;     // POSIX-style, relative to the skill dir
+  sha256:     string;
+  size_bytes: number;
+}
+
+export interface SkillSnapshotMeta {
+  root_name: string;                 // basename of the skill folder
+  manifest:  string;                 // SKILL.md contents
+  files:     SkillSnapshotFile[];
+}
