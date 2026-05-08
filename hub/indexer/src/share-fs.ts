@@ -8,17 +8,15 @@
 import { createHash } from "node:crypto";
 import {
   createReadStream,
-  createWriteStream,
 } from "node:fs";
 import {
+  lstat,
   mkdir,
   readFile,
   readdir,
   realpath,
-  stat,
 } from "node:fs/promises";
 import * as path from "node:path";
-import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { create, extract, t, type ReadEntry } from "tar";
 
@@ -54,9 +52,11 @@ export async function walkSkillFiles(skillDir: string): Promise<SkillFileEntry[]
     for (const it of items) {
       if (IGNORE_BASENAMES.has(it.name)) continue;
       const abs = path.join(dir, it.name);
-      // Symlink hardening: require the resolved path stays under the skill root.
+      // Symlink guard: lstat reports the link itself, not its target.
+      // Symlinks are skipped entirely — skill folders must be self-contained.
       let st;
-      try { st = await stat(abs); } catch { continue; }
+      try { st = await lstat(abs); } catch { continue; }
+      if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) {
         stack.push(abs);
       } else if (st.isFile()) {

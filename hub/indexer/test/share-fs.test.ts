@@ -59,6 +59,22 @@ describe("walkSkillFiles", () => {
     const r = await walkSkillFiles(skill);
     expect(r.map(f => f.path)).toEqual(["SKILL.md"]);
   });
+  it("does not follow symlinks (treats them as not-files-not-dirs)", async () => {
+    const skill   = path.join(root, "s");
+    const outside = path.join(root, "outside");
+    await mkdir(path.join(outside, "secret"), { recursive: true });
+    await writeFile(path.join(outside, "secret", "leaked.txt"), "leaked\n");
+    await writeFile(path.join(outside, "leaked-file.txt"), "also leaked\n");
+
+    await mkdir(skill, { recursive: true });
+    await writeFile(path.join(skill, "SKILL.md"), "ok");
+    // Two symlinks: one to a directory, one to a file. Both must be ignored.
+    await symlink(path.join(outside, "secret"),          path.join(skill, "escape-dir"));
+    await symlink(path.join(outside, "leaked-file.txt"), path.join(skill, "escape-file"));
+
+    const r = await walkSkillFiles(skill);
+    expect(r.map(f => f.path)).toEqual(["SKILL.md"]);
+  });
 });
 
 describe("readSkillManifest", () => {
