@@ -40,12 +40,13 @@ export async function listUserSkills(home: string): Promise<SkillSummary[]> {
 
 function extractDescription(manifest: string): string {
   // YAML frontmatter between leading "---" lines. Look for `description:` only.
-  // Anything fancier (multi-line, quoted, escapes) we treat as opaque and
-  // surface as empty — the manager's review UI shows the full manifest.
-  const fmMatch = manifest.match(/^---\n([\s\S]*?)\n---\n/);
-  if (!fmMatch) return "";
-  const fm = fmMatch[1];
-  const dm = fm.match(/^description:\s*(.+?)\s*$/m);
-  if (!dm) return "";
-  return dm[1].replace(/^['"]|['"]$/g, "");
+  // Anything fancier (multi-line, quoted, escapes, CRLF line endings) we treat as
+  // opaque and surface as empty — the manager's review UI shows the full manifest.
+  const fmMatch = manifest.match(/^---\n(?<fm>[\s\S]*?)\n---\n/);
+  const fm = fmMatch?.groups?.fm;
+  if (!fm) return "";
+  const dm = fm.match(/^description:\s*(?<val>.+?)\s*$/m);
+  const val = dm?.groups?.val;
+  if (!val) return "";
+  return val.replace(/^['"]|['"]$/g, "");
 }
