@@ -109,7 +109,6 @@ services:
       EMBEDDER_BATCH_SIZE: "64"
       EMBEDDER_INTERVAL_MS: "5000"
       MEMORY_ORG_MANAGER: li86
-      SHARE_SNAPSHOTS_DIR: /workspaces/shared/.share-snapshots
     volumes:
       - ./workspaces:/workspaces
     depends_on:

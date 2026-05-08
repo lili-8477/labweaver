@@ -40,6 +40,7 @@ async function main(): Promise<void> {
   const logger = pino({ level: cfg.logLevel });
 
   await mkdir(cfg.shareSnapshotsDir, { recursive: true });
+  logger.info({ dir: cfg.shareSnapshotsDir }, "share snapshots dir ready");
 
   const pool = new Pool({ connectionString: cfg.pgUrl, max: Math.max(10, cfg.maxConcurrentFiles * 2) });
 
