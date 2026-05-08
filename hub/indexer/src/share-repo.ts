@@ -173,6 +173,9 @@ async function submitSkillShareRequest(args: SubmitArgs): Promise<SubmitResult> 
     return { ok: false, reason: "invalid_ref" };
   }
 
+  // TOCTOU note: stat → walk → pack are not atomic. A racing user could swap a
+  // symlink mid-flight; tarball would contain the post-swap tree while files[]
+  // describes the pre-swap tree. Acceptable for the single-tenant container model.
   let st;
   try {
     st = await stat(resolved);

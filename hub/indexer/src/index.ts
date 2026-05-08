@@ -111,7 +111,9 @@ async function main(): Promise<void> {
   });
   await app.register(shareRoutesPlugin({
     pool,
-    manager: cfg.memoryOrgManager,
+    manager:           cfg.memoryOrgManager,
+    workspacesRoot:    cfg.workspacesRoot,
+    shareSnapshotsDir: cfg.shareSnapshotsDir,
     repo: {
       submitShareRequest,
       listShareRequests,

@@ -11,8 +11,10 @@ import type {
 } from './share-repo.js';
 
 export interface ShareApiDeps {
-  pool:    Pool;
-  manager: string | null;
+  pool:               Pool;
+  manager:            string | null;
+  workspacesRoot:     string;
+  shareSnapshotsDir:  string;
   repo: {
     submitShareRequest:   typeof submitShareRequest;
     listShareRequests:    typeof listShareRequests;
@@ -70,27 +72,34 @@ export function shareRoutesPlugin(deps: ShareApiDeps) {
       }
       const b = parsed.data;
       const result = await deps.repo.submitShareRequest({
-        pool:      deps.pool,
-        manager:   deps.manager,
-        requester: b.requester,
-        kind:      b.kind,
-        ref:       b.ref,
-        note:      b.note,
+        pool:              deps.pool,
+        manager:           deps.manager,
+        requester:         b.requester,
+        kind:              b.kind,
+        ref:               b.ref,
+        note:              b.note,
+        workspacesRoot:    deps.workspacesRoot,
+        shareSnapshotsDir: deps.shareSnapshotsDir,
       });
       if (result.ok) {
         return { share_id: result.share_id };
       }
-      if (result.reason === 'no_manager') {
-        reply.code(503);
-        return { error: 'sharing disabled' };
+      switch (result.reason) {
+        case 'no_manager':
+          reply.code(503); return { error: 'sharing disabled' };
+        case 'not_implemented':
+          reply.code(501); return { error: `kind ${b.kind} not yet implemented` };
+        case 'forbidden':
+          reply.code(403); return { error: 'source not found or not owned by requester' };
+        case 'invalid_ref':
+          reply.code(400); return { error: 'invalid ref' };
+        case 'source_not_found':
+          reply.code(404); return { error: 'source not found', detail: result.detail };
+        case 'missing_manifest':
+          reply.code(400); return { error: 'skill is missing SKILL.md' };
+        case 'snapshot_failed':
+          reply.code(500); return { error: 'snapshot failed', detail: result.detail };
       }
-      if (result.reason === 'not_implemented') {
-        reply.code(501);
-        return { error: `kind ${b.kind} not yet implemented` };
-      }
-      // forbidden
-      reply.code(403);
-      return { error: 'source not found or not owned by requester' };
     });
 
     // GET /share/list — registered BEFORE GET /share/:id so fastify's radix

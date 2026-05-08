@@ -36,7 +36,7 @@ function makeDeps(): { deps: ShareApiDeps; repo: Record<string, ReturnType<typeo
       actor_username:      'li86',
     })),
   };
-  const deps: ShareApiDeps = { pool: {} as Pool, manager: 'li86', repo: repo as ShareApiDeps['repo'] };
+  const deps: ShareApiDeps = { pool: {} as Pool, manager: 'li86', workspacesRoot: '/tmp/unused', shareSnapshotsDir: '/tmp/unused', repo: repo as ShareApiDeps['repo'] };
   return { deps, repo };
 }
 
