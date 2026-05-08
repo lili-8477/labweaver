@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useShareStore } from '@/stores/share'
+import { shareService } from '@/services/share'
+import type { SkillSnapshotMeta } from '@/types/share'
 
 const store = useShareStore()
 
@@ -87,6 +89,31 @@ async function withdraw() {
   if (!confirm('Withdraw this share request?')) return
   await store.withdraw(store.selected.share_id)
 }
+
+// ── Skill snapshot ────────────────────────────────────────────────────────────
+
+const skillSnap = computed<SkillSnapshotMeta | null>(() => {
+  if (!store.selected || store.selected.artifact_kind !== 'skill') return null
+  return store.selected.snapshot_meta as SkillSnapshotMeta
+})
+
+const filePreview = ref<{ path: string; body: string } | null>(null)
+
+async function openFile(relPath: string) {
+  if (!store.selected) return
+  try {
+    const body = await shareService.fetchSnapshotFile(store.selected.share_id, relPath)
+    filePreview.value = { path: relPath, body }
+  } catch (e) {
+    filePreview.value = { path: relPath, body: `failed to load: ${(e as Error).message}` }
+  }
+}
+
+function humanSize(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
 </script>
 
 <template>
@@ -149,10 +176,32 @@ async function withdraw() {
         </div>
       </section>
 
-      <!-- ── Skill / folder placeholder ─────────────────────────── -->
-      <section v-else-if="store.selected.artifact_kind !== 'memory'" class="detail-section">
+      <!-- ── Skill snapshot preview ────────────────────────────── -->
+      <section v-else-if="store.selected.artifact_kind === 'skill' && skillSnap" class="detail-section">
+        <h3 class="section-label">Manifest (SKILL.md)</h3>
+        <pre class="manifest-body">{{ skillSnap.manifest }}</pre>
+
+        <h3 class="section-label" style="margin-top: var(--space-4)">Files</h3>
+        <ul class="file-list">
+          <li v-for="f in skillSnap.files" :key="f.path">
+            <button class="file-row" @click="openFile(f.path)">
+              <span class="file-path">{{ f.path }}</span>
+              <span class="file-size">{{ humanSize(f.size_bytes) }}</span>
+            </button>
+          </li>
+        </ul>
+
+        <div v-if="filePreview" class="file-preview">
+          <h4 class="section-label">{{ filePreview.path }}</h4>
+          <pre class="manifest-body">{{ filePreview.body }}</pre>
+          <button class="close-preview" @click="filePreview = null">Close</button>
+        </div>
+      </section>
+
+      <!-- ── Folder placeholder (phase 3) ─────────────────────── -->
+      <section v-else-if="store.selected.artifact_kind === 'folder'" class="detail-section">
         <p class="preview-unavailable">
-          Snapshot preview not available for {{ store.selected.artifact_kind }} requests in phase 1.
+          Folder preview not available yet — coming in phase 3.
         </p>
       </section>
 
@@ -328,4 +377,30 @@ async function withdraw() {
   border-color: var(--border);
 }
 .btn-withdraw:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* Skill snapshot preview */
+.manifest-body {
+  white-space: pre-wrap; word-break: break-word;
+  font-family: var(--font-mono); font-size: 0.92em;
+  background: var(--code-bg); border: 1px solid var(--border-soft);
+  border-radius: var(--radius); padding: var(--space-3) var(--space-4);
+  color: var(--text-primary); line-height: 1.55; margin: 0 0 var(--space-2);
+  max-height: 240px; overflow: auto;
+}
+.file-list { list-style: none; padding: 0; margin: 0; }
+.file-row {
+  width: 100%; display: flex; justify-content: space-between; align-items: center;
+  padding: var(--space-1) var(--space-2); border: 1px solid var(--border-soft);
+  border-radius: var(--radius); margin-bottom: 2px; background: var(--bg-secondary);
+  cursor: pointer; font-family: var(--font-mono); font-size: var(--text-xs);
+  text-align: left;
+}
+.file-row:hover { background: var(--bg-hover); }
+.file-path { color: var(--text-primary); }
+.file-size { color: var(--text-muted); }
+.file-preview { margin-top: var(--space-3); }
+.close-preview {
+  padding: 2px 8px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--bg-secondary); cursor: pointer; font-size: var(--text-2xs);
+}
 </style>
