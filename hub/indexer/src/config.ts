@@ -15,8 +15,10 @@ export interface Config {
   embedderIntervalMs:   number;
   memoryApiPort:        number;
   memoryOrgManager:     string | null;
-  shareSnapshotsDir:    string;
-  shareMaxFolderBytes:  number;
+  shareSnapshotsDir:          string;
+  shareMaxFolderBytes:        number;
+  shareSnapshotTtlDays:       number;
+  shareCleanupIntervalHours:  number;
 }
 
 function parseIntVar(env: Record<string, string | undefined>, name: string, fallback: number): number {
@@ -49,7 +51,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const shareSnapshotsDir = env.SHARE_SNAPSHOTS_DIR && env.SHARE_SNAPSHOTS_DIR.length > 0
     ? env.SHARE_SNAPSHOTS_DIR
     : `${env.WORKSPACES_ROOT ?? "/workspaces"}/shared/.share-snapshots`;
-  const shareMaxFolderBytes = parseIntVar(env, "SHARE_MAX_FOLDER_BYTES", 100 * 1024 * 1024);
+  const shareMaxFolderBytes       = parseIntVar(env, "SHARE_MAX_FOLDER_BYTES",        100 * 1024 * 1024);
+  const shareSnapshotTtlDays      = parseIntVar(env, "SHARE_SNAPSHOT_TTL_DAYS",      30);
+  const shareCleanupIntervalHours = parseIntVar(env, "SHARE_CLEANUP_INTERVAL_HOURS", 24);
   return {
     pgUrl,
     workspacesRoot: env.WORKSPACES_ROOT ?? "/workspaces",
@@ -65,5 +69,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     memoryOrgManager,
     shareSnapshotsDir,
     shareMaxFolderBytes,
+    shareSnapshotTtlDays,
+    shareCleanupIntervalHours,
   };
 }

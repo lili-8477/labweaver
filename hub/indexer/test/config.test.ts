@@ -94,4 +94,14 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ PG_URL: 'postgres://x', SHARE_MAX_FOLDER_BYTES: 'huge' }))
       .toThrow(/integer/);
   });
+
+  it('shareSnapshotTtlDays defaults to 30', () => {
+    const cfg = loadConfig({ PG_URL: 'postgres://x' });
+    expect(cfg.shareSnapshotTtlDays).toBe(30);
+  });
+
+  it('shareCleanupIntervalHours defaults to 24 and reads env override', () => {
+    const cfg = loadConfig({ PG_URL: 'postgres://x', SHARE_CLEANUP_INTERVAL_HOURS: '6' });
+    expect(cfg.shareCleanupIntervalHours).toBe(6);
+  });
 });
