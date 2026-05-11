@@ -4,6 +4,7 @@ dist/
 .DS_Store
 hub/workspaces/*/
 !hub/workspaces/shared/
+hub/workspaces/shared/projects/
 hub/htpasswd
 hub/users.md
 hub/postgres-data/
