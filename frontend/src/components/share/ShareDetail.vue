@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useShareStore } from '@/stores/share'
 import { shareService } from '@/services/share'
 import type { SkillSnapshotMeta, FolderSnapshotMeta } from '@/types/share'
@@ -56,6 +56,9 @@ const promotionText = computed(() => {
   if (store.selected?.artifact_kind === 'skill') {
     return pr.dest_path ? `Installed to ${pr.dest_path}` : 'Skill installed to shared/skills/'
   }
+  if (store.selected?.artifact_kind === 'folder') {
+    return pr.dest_path ? `Promoted to ${pr.dest_path}` : 'Folder promoted to shared/projects/'
+  }
   if (pr.deduped) return `Already in org as memory ${pr.existing_memory_id}`
   return `Promoted to org as memory ${pr.promoted_memory_id}`
 })
@@ -106,6 +109,7 @@ const folderSnap = computed<FolderSnapshotMeta | null>(() => {
 })
 
 const filePreview = ref<{ path: string; body: string } | null>(null)
+watch(() => store.selected?.share_id, () => { filePreview.value = null })
 
 async function openFile(relPath: string) {
   if (!store.selected) return
@@ -358,10 +362,6 @@ function humanSize(n: number): string {
   font-family: var(--font-mono); font-size: var(--text-xs); padding: 2px 8px;
   border-radius: var(--radius-pill); background: var(--bg-tertiary);
   border: 1px solid var(--border-soft); color: var(--text-secondary);
-}
-
-.preview-unavailable {
-  font-size: var(--text-sm); color: var(--text-muted); font-style: italic; margin: 0;
 }
 
 /* Promotion result */

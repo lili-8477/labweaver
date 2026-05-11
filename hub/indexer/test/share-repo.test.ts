@@ -850,6 +850,16 @@ describe("submitShareRequest folder branch", () => {
     expect(r).toEqual({ ok: false, reason: "invalid_ref" });
   });
 
+  it("returns source_not_found when the folder does not exist", async () => {
+    const r = await submitShareRequest({
+      pool, manager: "li86", requester: "alice",
+      kind: "folder", ref: "no-such-project",
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes,
+    });
+    expect(r.ok).toBe(false);
+    expect((r as any).reason).toBe("source_not_found");
+  });
+
   it("rejects folder exceeding maxFolderBytes with oversize", async () => {
     // Use a small cap so we don't have to generate 100MB.
     const r = await submitShareRequest({
