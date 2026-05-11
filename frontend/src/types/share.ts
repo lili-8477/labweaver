@@ -21,7 +21,7 @@ export interface ShareRequest {
 
 export interface ShareCapabilities {
   is_manager: boolean;
-  manager_username: string | null;
+  manager_usernames: string[];
   pending_inbox_count: number;
   actor_username: string;
 }

@@ -13,7 +13,7 @@ export const useShareStore = defineStore('share', () => {
   const selected = ref<ShareRequest | null>(null);
   const capabilities = ref<ShareCapabilities>({
     is_manager: false,
-    manager_username: null,
+    manager_usernames: [],
     pending_inbox_count: 0,
     actor_username: '',
   });

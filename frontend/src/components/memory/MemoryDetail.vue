@@ -6,6 +6,11 @@ import { useShareStore } from '@/stores/share'
 const store = useMemoryStore()
 const shareStore = useShareStore()
 
+const managerLabel = computed(() => {
+  const names = shareStore.capabilities.manager_usernames
+  return names.length === 0 ? 'the manager' : names.join(', ')
+})
+
 const confirmedThisSession = ref(false)
 const showShareModal = ref(false)
 const shareNote = ref('')
@@ -221,7 +226,7 @@ async function submitShare() {
     <div class="share-modal" role="dialog" aria-labelledby="share-modal-title">
       <h3 id="share-modal-title">Share with the org?</h3>
       <p class="modal-meta">
-        This sends the memory to <strong>{{ shareStore.capabilities.manager_username ?? 'the manager' }}</strong>
+        This sends the memory to <strong>{{ managerLabel }}</strong>
         for review. You can withdraw while it's pending.
       </p>
       <textarea

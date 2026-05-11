@@ -67,7 +67,7 @@ export const shareService = {
     const result = await natsService.invoke('share_capabilities', {}) as { success: true } & ShareCapabilities;
     return {
       is_manager: result.is_manager,
-      manager_username: result.manager_username,
+      manager_usernames: result.manager_usernames,
       pending_inbox_count: result.pending_inbox_count,
       actor_username: result.actor_username,
     };
