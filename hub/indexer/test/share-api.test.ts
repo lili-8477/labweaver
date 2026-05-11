@@ -40,7 +40,7 @@ function makeDeps(): { deps: ShareApiDeps; repo: Record<string, ReturnType<typeo
       actor_username:      'li86',
     })),
   };
-  const deps: ShareApiDeps = { pool: {} as Pool, manager: 'li86', workspacesRoot: '/tmp/unused', shareSnapshotsDir: '/tmp/unused', repo: repo as ShareApiDeps['repo'] };
+  const deps: ShareApiDeps = { pool: {} as Pool, manager: 'li86', workspacesRoot: '/tmp/unused', shareSnapshotsDir: '/tmp/unused', shareMaxFolderBytes: 100 * 1024 * 1024, repo: repo as ShareApiDeps['repo'] };
   return { deps, repo };
 }
 
@@ -107,6 +107,18 @@ describe('share-api plugin', () => {
       const res = await app.inject({ method: 'POST', url: '/share/submit', payload: validBody });
       expect(res.statusCode).toBe(403);
       expect(res.json()).toMatchObject({ error: 'source not found or not owned by requester' });
+    });
+
+    it('returns 413 when folder submission exceeds size cap', async () => {
+      depsBag.repo.submitShareRequest.mockResolvedValueOnce({
+        ok: false, reason: 'oversize', detail: 'folder total 200000000 bytes exceeds cap 104857600',
+      });
+      const res = await app.inject({
+        method: 'POST', url: '/share/submit',
+        payload: { requester: 'alice', kind: 'folder', ref: 'big-project' },
+      });
+      expect(res.statusCode).toBe(413);
+      expect(res.json()).toMatchObject({ error: 'folder too large' });
     });
   });
 
@@ -426,11 +438,12 @@ describe('share-api plugin', () => {
       };
       skillRepo = rawRepo;
       const skillDeps: ShareApiDeps = {
-        pool:              {} as Pool,
-        manager:           'li86',
-        workspacesRoot:    tmpDir,
-        shareSnapshotsDir: snapshotsDir,
-        repo:              rawRepo as ShareApiDeps['repo'],
+        pool:                {} as Pool,
+        manager:             'li86',
+        workspacesRoot:      tmpDir,
+        shareSnapshotsDir:   snapshotsDir,
+        shareMaxFolderBytes: 100 * 1024 * 1024,
+        repo:                rawRepo as ShareApiDeps['repo'],
       };
 
       if (skillApp) await skillApp.close();

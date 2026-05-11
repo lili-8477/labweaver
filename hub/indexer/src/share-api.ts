@@ -13,10 +13,11 @@ import type {
 import { extractSingleFile } from './share-fs.js';
 
 export interface ShareApiDeps {
-  pool:               Pool;
-  manager:            string | null;
-  workspacesRoot:     string;
-  shareSnapshotsDir:  string;
+  pool:                Pool;
+  manager:             string | null;
+  workspacesRoot:      string;
+  shareSnapshotsDir:   string;
+  shareMaxFolderBytes: number;          // NEW
   repo: {
     submitShareRequest:   typeof submitShareRequest;
     listShareRequests:    typeof listShareRequests;
@@ -79,14 +80,15 @@ export function shareRoutesPlugin(deps: ShareApiDeps) {
       }
       const b = parsed.data;
       const result = await deps.repo.submitShareRequest({
-        pool:              deps.pool,
-        manager:           deps.manager,
-        requester:         b.requester,
-        kind:              b.kind,
-        ref:               b.ref,
-        note:              b.note,
-        workspacesRoot:    deps.workspacesRoot,
-        shareSnapshotsDir: deps.shareSnapshotsDir,
+        pool:               deps.pool,
+        manager:            deps.manager,
+        requester:          b.requester,
+        kind:               b.kind,
+        ref:                b.ref,
+        note:               b.note,
+        workspacesRoot:     deps.workspacesRoot,
+        shareSnapshotsDir:  deps.shareSnapshotsDir,
+        maxFolderBytes:     deps.shareMaxFolderBytes,
       });
       if (result.ok) {
         return { share_id: result.share_id };
@@ -104,6 +106,8 @@ export function shareRoutesPlugin(deps: ShareApiDeps) {
           reply.code(404); return { error: 'source not found', detail: result.detail };
         case 'missing_manifest':
           reply.code(400); return { error: 'skill is missing SKILL.md' };
+        case 'oversize':
+          reply.code(413); return { error: 'folder too large', detail: result.detail };
         case 'snapshot_failed':
           reply.code(500); return { error: 'snapshot failed', detail: result.detail };
       }
