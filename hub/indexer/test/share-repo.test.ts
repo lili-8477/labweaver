@@ -203,7 +203,7 @@ describe("listShareRequests", () => {
     expect(ids.indexOf(s2)).toBeLessThan(ids.indexOf(s1));
   });
 
-  it("inbox: returns reviewer=actor pending only; empty for non-managers", async () => {
+  it("inbox: returns all pending requests for managers; empty for non-managers", async () => {
     await seedRequest({ requester: ALICE, status: "pending",  reviewer: MANAGER });
     await seedRequest({ requester: ALICE, status: "approved", reviewer: MANAGER });
 
@@ -312,7 +312,7 @@ describe("listShareRequests", () => {
 describe("getShareRequest", () => {
   it("returns row when actor is requester", async () => {
     const shareId = await seedRequest({ requester: ALICE, reviewer: MANAGER });
-    const result = await getShareRequest({ pool, actor: ALICE, shareId });
+    const result = await getShareRequest({ pool, actor: ALICE, shareId, managers: ['li86'] });
     expect("share_id" in result).toBe(true);
     if (!("share_id" in result)) throw new Error("unreachable");
     expect(result.share_id).toBe(shareId);
@@ -320,18 +320,18 @@ describe("getShareRequest", () => {
 
   it("returns row when actor is reviewer", async () => {
     const shareId = await seedRequest({ requester: ALICE, reviewer: MANAGER });
-    const result = await getShareRequest({ pool, actor: MANAGER, shareId });
+    const result = await getShareRequest({ pool, actor: MANAGER, shareId, managers: ['li86'] });
     expect("share_id" in result).toBe(true);
   });
 
   it("returns {error:forbidden} when actor is neither", async () => {
     const shareId = await seedRequest({ requester: ALICE, reviewer: MANAGER });
-    const result = await getShareRequest({ pool, actor: BOB, shareId });
+    const result = await getShareRequest({ pool, actor: BOB, shareId, managers: ['li86'] });
     expect(result).toEqual({ error: "forbidden" });
   });
 
   it("returns {error:not_found} for missing share_id", async () => {
-    const result = await getShareRequest({ pool, actor: ALICE, shareId: randomUUID() });
+    const result = await getShareRequest({ pool, actor: ALICE, shareId: randomUUID(), managers: ['li86'] });
     expect(result).toEqual({ error: "not_found" });
   });
 });
@@ -601,7 +601,7 @@ describe("getShareCapabilities", () => {
     expect(caps.manager_usernames).toEqual([MANAGER]);
   });
 
-  it("manager: is_manager=true, count reflects pending rows where reviewer=actor", async () => {
+  it("manager: is_manager=true, pending_inbox_count is the global pending count", async () => {
     await seedRequest({ requester: ALICE, reviewer: MANAGER, status: "pending" });
     await seedRequest({ requester: BOB,   reviewer: MANAGER, status: "pending" });
     await seedRequest({ requester: ALICE, reviewer: MANAGER, status: "approved" }); // not pending
@@ -962,8 +962,6 @@ describe("multi-manager", () => {
   beforeEach(async () => {
     workspacesRoot    = await mkdtemp(path.join(tmpdir(), "ws-"));
     shareSnapshotsDir = await mkdtemp(path.join(tmpdir(), "snap-"));
-    // Clean share_requests so counts start fresh.
-    await pool.query(`DELETE FROM share_requests`);
   });
 
   /** Helper: insert a pending memory share row using bob as requester, li86+alice as managers. */

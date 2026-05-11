@@ -381,9 +381,10 @@ export async function listShareRequests(args: ListArgs): Promise<ListResult> {
 // ─── 3. getShareRequest ─────────────────────────────────────────────────────
 
 export async function getShareRequest(args: {
-  pool:    Pool;
-  actor:   string;
-  shareId: string;
+  pool:     Pool;
+  actor:    string;
+  shareId:  string;
+  managers: string[];
 }): Promise<ShareRequest | { error: "not_found" | "forbidden" }> {
   const r = await args.pool.query<ShareRow>(
     `SELECT * FROM share_requests WHERE share_id = $1`,
@@ -393,7 +394,7 @@ export async function getShareRequest(args: {
     return { error: "not_found" };
   }
   const row = r.rows[0]!;
-  if (row.requester !== args.actor && row.reviewer !== args.actor) {
+  if (row.requester !== args.actor && !args.managers.includes(args.actor)) {
     return { error: "forbidden" };
   }
   return mapRow(row);
