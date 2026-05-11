@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
-import { mkdtemp, writeFile, access } from "node:fs/promises";
+import { mkdtemp, writeFile, access, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,10 @@ describe("cleanupOldSnapshots", () => {
   beforeEach(async () => {
     snapshotsDir = await mkdtemp(path.join(tmpdir(), "snap-cleanup-"));
     await pool.query(`DELETE FROM share_requests`);
+  });
+
+  afterEach(async () => {
+    await rm(snapshotsDir, { recursive: true, force: true });
   });
 
   /** Insert a share_requests row + optionally a tarball file. */
@@ -100,5 +104,28 @@ describe("cleanupOldSnapshots", () => {
 
     const r = await cleanupOldSnapshots({ pool, snapshotsDir, ttlDays: 30 });
     expect(r).toEqual({ scanned: 3, deleted: 2, missing: 1, errors: 0 });
+  });
+
+  it("throws RangeError for ttlDays < 1", async () => {
+    await expect(cleanupOldSnapshots({ pool, snapshotsDir, ttlDays: 0 }))
+      .rejects.toThrow(RangeError);
+    await expect(cleanupOldSnapshots({ pool, snapshotsDir, ttlDays: -5 }))
+      .rejects.toThrow(/positive integer/);
+  });
+
+  it("cleans tarballs of withdrawn requests too (status-agnostic)", async () => {
+    const decidedAt = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);  // 60 days ago
+    const r = await pool.query<{ share_id: string }>(
+      `INSERT INTO share_requests
+         (artifact_kind, artifact_ref, snapshot_meta, requester, reviewer, status, decided_at)
+       VALUES ('skill', 'x', '{}', 'alice', 'li86', 'withdrawn', $1)
+       RETURNING share_id`,
+      [decidedAt],
+    );
+    const id = r.rows[0]!.share_id;
+    await writeFile(path.join(snapshotsDir, `${id}.tar.gz`), "stub");
+
+    const result = await cleanupOldSnapshots({ pool, snapshotsDir, ttlDays: 30 });
+    expect(result).toEqual({ scanned: 1, deleted: 1, missing: 0, errors: 0 });
   });
 });

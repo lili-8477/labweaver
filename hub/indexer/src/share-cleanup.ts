@@ -27,13 +27,16 @@ export interface CleanupResult {
 }
 
 export async function cleanupOldSnapshots(args: CleanupArgs): Promise<CleanupResult> {
+  if (!Number.isInteger(args.ttlDays) || args.ttlDays < 1) {
+    throw new RangeError(`ttlDays must be a positive integer, got ${args.ttlDays}`);
+  }
   // Skill + folder are the only kinds with on-disk tarballs.
   // Pending rows are excluded by the decided_at IS NOT NULL filter.
   const rows = await args.pool.query<{ share_id: string }>(
     `SELECT share_id FROM share_requests
       WHERE artifact_kind IN ('skill', 'folder')
         AND decided_at IS NOT NULL
-        AND decided_at < now() - ($1 || ' days')::interval`,
+        AND decided_at < now() - make_interval(days => $1)`,
     [args.ttlDays],
   );
 

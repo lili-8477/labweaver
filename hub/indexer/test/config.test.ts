@@ -100,6 +100,11 @@ describe("loadConfig", () => {
     expect(cfg.shareSnapshotTtlDays).toBe(30);
   });
 
+  it('shareSnapshotTtlDays reads SHARE_SNAPSHOT_TTL_DAYS env override', () => {
+    const cfg = loadConfig({ PG_URL: 'postgres://x', SHARE_SNAPSHOT_TTL_DAYS: '7' });
+    expect(cfg.shareSnapshotTtlDays).toBe(7);
+  });
+
   it('shareCleanupIntervalHours defaults to 24 and reads env override', () => {
     const cfg = loadConfig({ PG_URL: 'postgres://x', SHARE_CLEANUP_INTERVAL_HOURS: '6' });
     expect(cfg.shareCleanupIntervalHours).toBe(6);
