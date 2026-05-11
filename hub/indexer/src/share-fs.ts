@@ -61,11 +61,12 @@ export async function walkSkillFiles(skillDir: string): Promise<SkillFileEntry[]
         stack.push(abs);
       } else if (st.isFile()) {
         const rel = path.relative(real, abs).split(path.sep).join("/");
-        const buf = await readFile(abs);
+        const hash = createHash("sha256");
+        await pipeline(createReadStream(abs), hash);
         entries.push({
           path:       rel,
-          sha256:     createHash("sha256").update(buf).digest("hex"),
-          size_bytes: buf.byteLength,
+          sha256:     hash.digest("hex"),
+          size_bytes: st.size,
         });
       }
     }

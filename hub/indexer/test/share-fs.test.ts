@@ -76,6 +76,18 @@ describe("walkSkillFiles", () => {
     const r = await walkSkillFiles(skill);
     expect(r.map(f => f.path)).toEqual(["SKILL.md"]);
   });
+  it("computes the correct sha256 (streaming-equivalent to buffered)", async () => {
+    const skill = path.join(root, "s");
+    await mkdir(skill);
+    // "hello\n" — sha256: 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
+    await writeFile(path.join(skill, "SKILL.md"), "hello\n");
+    const r = await walkSkillFiles(skill);
+    expect(r).toHaveLength(1);
+    expect(r[0]!.sha256).toBe(
+      "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+    );
+    expect(r[0]!.size_bytes).toBe(6);
+  });
 });
 
 describe("readSkillManifest", () => {
