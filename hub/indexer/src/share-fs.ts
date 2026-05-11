@@ -96,12 +96,12 @@ export async function readFolderReadme(folderDir: string): Promise<string | null
   }
 }
 
-/** Tar+gzip the skill directory into destTar. The tarball entries are stored
- *  with paths relative to the skill folder's PARENT, so the top-level entry
- *  is the skill folder name itself. (Symmetric with extractSkillTarball below
- *  which expects to land that folder under shared/skills/.) */
+/** Tar+gzip a directory into destTar. The tarball entries are stored with
+ *  paths relative to the directory's PARENT, so the top-level entry is the
+ *  directory name itself. (Symmetric with extractSkillTarball below which
+ *  expects to land that directory under the appropriate shared/ subtree.) */
 export async function packSkillTarball(opts: {
-  skillDir: string;        // /workspaces/<user>/.claude/skills/<name>
+  skillDir: string;        // absolute path to the directory to pack (skills or projects)
   destTar:  string;        // /workspaces/shared/.share-snapshots/<share_id>.tar.gz
 }): Promise<void> {
   const real = await realpath(opts.skillDir);

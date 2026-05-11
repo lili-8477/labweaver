@@ -821,7 +821,8 @@ describe("submitShareRequest folder branch", () => {
     expect(meta.root_name).toBe("pbmc");
     expect(meta.readme).toMatch(/pbmc analysis/);
     expect(meta.files.map((f) => f.path).sort()).toEqual(["README.md", "notebook.ipynb"]);
-    expect(meta.total_bytes).toBeGreaterThan(0);
+    const expected = Buffer.byteLength('# pbmc analysis\n') + Buffer.byteLength('{"cells":[]}\n');
+    expect(meta.total_bytes).toBe(expected);
   });
 
   it("happy path with no README.md sets readme=null", async () => {
