@@ -2,7 +2,7 @@
 import { ref, computed } from 'vue'
 import { useShareStore } from '@/stores/share'
 import { shareService } from '@/services/share'
-import type { SkillSnapshotMeta } from '@/types/share'
+import type { SkillSnapshotMeta, FolderSnapshotMeta } from '@/types/share'
 
 const store = useShareStore()
 
@@ -98,6 +98,11 @@ async function withdraw() {
 const skillSnap = computed<SkillSnapshotMeta | null>(() => {
   if (!store.selected || store.selected.artifact_kind !== 'skill') return null
   return store.selected.snapshot_meta as SkillSnapshotMeta
+})
+
+const folderSnap = computed<FolderSnapshotMeta | null>(() => {
+  if (!store.selected || store.selected.artifact_kind !== 'folder') return null
+  return store.selected.snapshot_meta as FolderSnapshotMeta
 })
 
 const filePreview = ref<{ path: string; body: string } | null>(null)
@@ -201,11 +206,33 @@ function humanSize(n: number): string {
         </div>
       </section>
 
-      <!-- ── Folder placeholder (phase 3) ─────────────────────── -->
-      <section v-else-if="store.selected.artifact_kind === 'folder'" class="detail-section">
-        <p class="preview-unavailable">
-          Folder preview not available yet — coming in phase 3.
-        </p>
+      <!-- ── Folder snapshot preview ──────────────────────────── -->
+      <section v-else-if="store.selected.artifact_kind === 'folder' && folderSnap" class="detail-section">
+        <div class="snap-meta">
+          <span class="meta-chip">{{ folderSnap.files.length }} files</span>
+          <span class="meta-chip">{{ humanSize(folderSnap.total_bytes) }}</span>
+        </div>
+
+        <template v-if="folderSnap.readme">
+          <h3 class="section-label">README.md</h3>
+          <pre class="manifest-body">{{ folderSnap.readme }}</pre>
+        </template>
+
+        <h3 class="section-label" style="margin-top: var(--space-4)">Files</h3>
+        <ul class="file-list">
+          <li v-for="f in folderSnap.files" :key="f.path">
+            <button class="file-row" @click="openFile(f.path)">
+              <span class="file-path">{{ f.path }}</span>
+              <span class="file-size">{{ humanSize(f.size_bytes) }}</span>
+            </button>
+          </li>
+        </ul>
+
+        <div v-if="filePreview" class="file-preview">
+          <h4 class="section-label">{{ filePreview.path }}</h4>
+          <pre class="manifest-body">{{ filePreview.body }}</pre>
+          <button class="close-preview" @click="filePreview = null">Close</button>
+        </div>
       </section>
 
       <!-- ── Review comment ─────────────────────────────────────── -->

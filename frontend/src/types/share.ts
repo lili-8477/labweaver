@@ -38,3 +38,11 @@ export interface SkillSnapshotMeta {
   manifest:  string;                 // SKILL.md contents
   files:     SkillSnapshotFile[];
 }
+
+// Phase 3: folder snapshot shape inside snapshot_meta when artifact_kind='folder'.
+export interface FolderSnapshotMeta {
+  root_name:   string;
+  readme:      string | null;
+  files:       SkillSnapshotFile[];      // reuse — same {path, sha256, size_bytes}
+  total_bytes: number;
+}

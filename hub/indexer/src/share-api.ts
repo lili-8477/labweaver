@@ -238,9 +238,9 @@ export function shareRoutesPlugin(deps: ShareApiDeps) {
         reply.code(got.error === 'not_found' ? 404 : 403);
         return { error: got.error };
       }
-      if (got.artifact_kind !== 'skill') {
+      if (got.artifact_kind !== 'skill' && got.artifact_kind !== 'folder') {
         reply.code(400);
-        return { error: 'snapshot/file only valid for skill kind' };
+        return { error: 'snapshot/file only valid for skill or folder kinds' };
       }
 
       const tarPath = path.join(deps.shareSnapshotsDir, `${req.params.id}.tar.gz`);

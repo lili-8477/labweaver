@@ -491,5 +491,44 @@ describe('share-api plugin', () => {
       expect(res.statusCode).toBe(404);
       expect(res.json()).toEqual({ error: 'snapshot file not found on disk' });
     });
+
+    it('streams a file from a folder snapshot', async () => {
+      const FOLDER_SHARE_ID = 'sr-folder-snap-1';
+
+      // Create a minimal project folder: p/README.md
+      const folderDir = nodePath.join(tmpDir, 'p');
+      await fsp.mkdir(folderDir, { recursive: true });
+      await fsp.writeFile(nodePath.join(folderDir, 'README.md'), '# project');
+
+      // Pack it into snapshots dir as <FOLDER_SHARE_ID>.tar.gz
+      await packSkillTarball({
+        skillDir: folderDir,
+        destTar:  nodePath.join(snapshotsDir, `${FOLDER_SHARE_ID}.tar.gz`),
+      });
+
+      // Canned folder ShareRequest
+      const folderRequest: ShareRequest = {
+        share_id:         FOLDER_SHARE_ID,
+        artifact_kind:    'folder',
+        artifact_ref:     'p',
+        snapshot_meta:    { root_name: 'p', readme: '# project', files: [], total_bytes: 9 },
+        requester:        'alice',
+        reviewer:         'li86',
+        status:           'pending',
+        requester_note:   null,
+        review_comment:   null,
+        promotion_result: null,
+        created_at:       '2026-01-01T00:00:00.000Z',
+        decided_at:       null,
+      };
+      skillRepo.getShareRequest!.mockResolvedValueOnce({ ...folderRequest });
+
+      const res = await skillApp.inject({
+        method: 'GET',
+        url:    `/share/${FOLDER_SHARE_ID}/snapshot/file?actor=alice&path=p/README.md`,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('project');
+    });
   });
 });
