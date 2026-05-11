@@ -9,6 +9,7 @@ import {
   safeJoin,
   walkSkillFiles,
   readSkillManifest,
+  readFolderReadme,
   packSkillTarball,
   extractSkillTarball,
 } from "./share-fs.js";
@@ -77,6 +78,8 @@ export interface SubmitArgs {
   // Phase 2: required for the skill branch. Memory branch ignores them.
   workspacesRoot:     string;        // e.g. "/workspaces"
   shareSnapshotsDir:  string;        // e.g. "/workspaces/shared/.share-snapshots"
+  // Phase 3: required for the folder branch. Other branches ignore it.
+  maxFolderBytes:     number;        // e.g. 100 * 1024 * 1024
 }
 
 export type SubmitResult =
@@ -88,7 +91,8 @@ export type SubmitResult =
         | "invalid_ref"
         | "source_not_found"
         | "missing_manifest"
-        | "snapshot_failed";
+        | "snapshot_failed"
+        | "oversize";
       detail?: string };
 
 export async function submitShareRequest(args: SubmitArgs): Promise<SubmitResult> {
@@ -97,6 +101,9 @@ export async function submitShareRequest(args: SubmitArgs): Promise<SubmitResult
   }
   if (args.kind === "skill") {
     return await submitSkillShareRequest(args);
+  }
+  if (args.kind === "folder") {
+    return await submitFolderShareRequest(args);
   }
   if (args.kind !== "memory") {
     return { ok: false, reason: "not_implemented" };
@@ -216,6 +223,68 @@ async function submitSkillShareRequest(args: SubmitArgs): Promise<SubmitResult> 
        (share_id, artifact_kind, artifact_ref, snapshot_meta,
         requester, reviewer, requester_note)
      VALUES ($1, 'skill', $2, $3, $4, $5, $6)`,
+    [share_id, args.ref, snapshot_meta, args.requester, args.manager, args.note ?? null],
+  );
+  return { ok: true, share_id };
+}
+
+async function submitFolderShareRequest(args: SubmitArgs): Promise<SubmitResult> {
+  // Resolve <workspaces>/<requester>/local_projects/<ref>; reject traversal.
+  const userProjectsRoot = path.join(args.workspacesRoot, args.requester, "local_projects");
+  const resolved = safeJoin(userProjectsRoot, args.ref);
+  if (resolved === null) {
+    return { ok: false, reason: "invalid_ref" };
+  }
+
+  // TOCTOU note: stat → walk → pack are not atomic. Single-tenant container
+  // model — acceptable. See same note in submitSkillShareRequest.
+  let st;
+  try {
+    st = await stat(resolved);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      return { ok: false, reason: "source_not_found" };
+    }
+    throw e;
+  }
+  if (!st.isDirectory()) {
+    return { ok: false, reason: "source_not_found", detail: "ref is not a directory" };
+  }
+
+  // walkSkillFiles is named historically — it is kind-agnostic. Walks the
+  // tree, hashes contents, returns sorted entries with size_bytes.
+  const files = await walkSkillFiles(resolved);
+  const total_bytes = files.reduce((n, f) => n + f.size_bytes, 0);
+  if (total_bytes > args.maxFolderBytes) {
+    return {
+      ok: false,
+      reason: "oversize",
+      detail: `folder total ${total_bytes} bytes exceeds cap ${args.maxFolderBytes}`,
+    };
+  }
+
+  const readme = await readFolderReadme(resolved);
+
+  const share_id = randomUUID();
+  const tarPath = path.join(args.shareSnapshotsDir, `${share_id}.tar.gz`);
+  try {
+    await packSkillTarball({ skillDir: resolved, destTar: tarPath });
+  } catch (e) {
+    return { ok: false, reason: "snapshot_failed", detail: (e as Error).message };
+  }
+
+  const snapshot_meta: Record<string, unknown> = {
+    root_name: path.basename(resolved),
+    readme,             // null when no README.md at top level
+    files,
+    total_bytes,
+  };
+
+  await args.pool.query(
+    `INSERT INTO share_requests
+       (share_id, artifact_kind, artifact_ref, snapshot_meta,
+        requester, reviewer, requester_note)
+     VALUES ($1, 'folder', $2, $3, $4, $5, $6)`,
     [share_id, args.ref, snapshot_meta, args.requester, args.manager, args.note ?? null],
   );
   return { ok: true, share_id };

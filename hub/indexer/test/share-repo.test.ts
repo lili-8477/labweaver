@@ -141,6 +141,7 @@ describe("submitShareRequest", () => {
       note:      "please share",
       workspacesRoot:    "/tmp/unused",
       shareSnapshotsDir: "/tmp/unused",
+      maxFolderBytes:    100 * 1024 * 1024,
     });
 
     expect(result).toMatchObject({ ok: true });
@@ -167,25 +168,19 @@ describe("submitShareRequest", () => {
 
   it("returns no_manager when manager is null", async () => {
     const ref = await seedMemory({ username: ALICE });
-    const result = await submitShareRequest({ pool, manager: null, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused" });
+    const result = await submitShareRequest({ pool, manager: null, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused", maxFolderBytes: 100 * 1024 * 1024 });
     expect(result).toEqual({ ok: false, reason: "no_manager" });
-  });
-
-  it("returns not_implemented for kind=folder", async () => {
-    const ref = await seedMemory({ username: ALICE });
-    const result = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "folder", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused" });
-    expect(result).toEqual({ ok: false, reason: "not_implemented" });
   });
 
   it("returns forbidden when source memory_id is owned by a different user", async () => {
     const ref = await seedMemory({ username: BOB });
-    const result = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused" });
+    const result = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused", maxFolderBytes: 100 * 1024 * 1024 });
     expect(result).toEqual({ ok: false, reason: "forbidden" });
   });
 
   it("returns forbidden when source memory is soft-deleted", async () => {
     const ref = await seedMemory({ username: ALICE, deleted: true });
-    const result = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused" });
+    const result = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused", maxFolderBytes: 100 * 1024 * 1024 });
     expect(result).toEqual({ ok: false, reason: "forbidden" });
   });
 });
@@ -349,7 +344,7 @@ describe("decideShareRequest", () => {
     const ref = await seedMemory({ username: ALICE, body: "shared content" });
 
     // Submit so snapshot is frozen
-    const sub = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused" });
+    const sub = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused", maxFolderBytes: 100 * 1024 * 1024 });
     expect(sub.ok).toBe(true);
     if (!sub.ok) throw new Error("unreachable");
 
@@ -451,7 +446,7 @@ describe("decideShareRequest", () => {
 
   it("reject memory: status→rejected, review_comment stored, no DB row created in memories", async () => {
     const ref = await seedMemory({ username: ALICE });
-    const sub = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused" });
+    const sub = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused", maxFolderBytes: 100 * 1024 * 1024 });
     expect(sub.ok).toBe(true);
     if (!sub.ok) throw new Error("unreachable");
 
@@ -500,7 +495,7 @@ describe("decideShareRequest", () => {
 
   it("returns already_decided when called twice on the same share_id", async () => {
     const ref = await seedMemory({ username: ALICE });
-    const sub = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused" });
+    const sub = await submitShareRequest({ pool, manager: MANAGER, requester: ALICE, kind: "memory", ref, workspacesRoot: "/tmp/unused", shareSnapshotsDir: "/tmp/unused", maxFolderBytes: 100 * 1024 * 1024 });
     expect(sub.ok).toBe(true);
     if (!sub.ok) throw new Error("unreachable");
 
@@ -646,7 +641,7 @@ describe("submitShareRequest skill branch", () => {
     const r = await submitShareRequest({
       pool, manager: "li86", requester: "alice",
       kind: "skill", ref: "single-cell",
-      workspacesRoot, shareSnapshotsDir,
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes: 100 * 1024 * 1024,
     });
     expect(r).toMatchObject({ ok: true });
     if (!r.ok) throw new Error("type guard");
@@ -671,7 +666,7 @@ describe("submitShareRequest skill branch", () => {
     const r = await submitShareRequest({
       pool, manager: "li86", requester: "alice",
       kind: "skill", ref: "../../etc",
-      workspacesRoot, shareSnapshotsDir,
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes: 100 * 1024 * 1024,
     });
     expect(r).toEqual({ ok: false, reason: "invalid_ref" });
   });
@@ -680,7 +675,7 @@ describe("submitShareRequest skill branch", () => {
     const r = await submitShareRequest({
       pool, manager: "li86", requester: "alice",
       kind: "skill", ref: "no-such-skill",
-      workspacesRoot, shareSnapshotsDir,
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes: 100 * 1024 * 1024,
     });
     expect(r.ok).toBe(false);
     expect((r as any).reason).toBe("source_not_found");
@@ -693,7 +688,7 @@ describe("submitShareRequest skill branch", () => {
     const r = await submitShareRequest({
       pool, manager: "li86", requester: "alice",
       kind: "skill", ref: "no-manifest",
-      workspacesRoot, shareSnapshotsDir,
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes: 100 * 1024 * 1024,
     });
     expect(r.ok).toBe(false);
     expect((r as any).reason).toBe("missing_manifest");
@@ -722,7 +717,7 @@ describe("decideShareRequest skill approve branch", () => {
     const submitR = await submitShareRequest({
       pool, manager: "li86", requester: "alice",
       kind: "skill", ref: "demo",
-      workspacesRoot, shareSnapshotsDir,
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes: 100 * 1024 * 1024,
     });
     expect(submitR.ok).toBe(true);
     if (!submitR.ok) throw new Error("type guard");
@@ -751,7 +746,7 @@ describe("decideShareRequest skill approve branch", () => {
     const submitR = await submitShareRequest({
       pool, manager: "li86", requester: "alice",
       kind: "skill", ref: "demo",
-      workspacesRoot, shareSnapshotsDir,
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes: 100 * 1024 * 1024,
     });
     if (!submitR.ok) throw new Error("setup failed");
 
@@ -773,7 +768,7 @@ describe("decideShareRequest skill approve branch", () => {
     const submitR = await submitShareRequest({
       pool, manager: "li86", requester: "alice",
       kind: "skill", ref: "demo",
-      workspacesRoot, shareSnapshotsDir,
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes: 100 * 1024 * 1024,
     });
     if (!submitR.ok) throw new Error("setup failed");
     // Delete the source.
@@ -786,5 +781,84 @@ describe("decideShareRequest skill approve branch", () => {
       workspacesRoot, shareSnapshotsDir,
     });
     expect(decideR.ok).toBe(true);
+  });
+});
+
+// ─── submitShareRequest folder branch ─────────────────────────────────────────
+
+describe("submitShareRequest folder branch", () => {
+  let workspacesRoot: string;
+  let shareSnapshotsDir: string;
+  const maxFolderBytes = 100 * 1024 * 1024;
+
+  beforeEach(async () => {
+    workspacesRoot    = await mkdtemp(path.join(tmpdir(), "ws-"));
+    shareSnapshotsDir = await mkdtemp(path.join(tmpdir(), "snap-"));
+    // Pre-seed alice's local_projects/pbmc/
+    const proj = path.join(workspacesRoot, "alice", "local_projects", "pbmc");
+    await mkdir(proj, { recursive: true });
+    await writeFile(path.join(proj, "README.md"), "# pbmc analysis\n");
+    await writeFile(path.join(proj, "notebook.ipynb"), '{"cells":[]}\n');
+  });
+
+  it("happy path: packs a tarball and writes a pending folder row", async () => {
+    const r = await submitShareRequest({
+      pool, manager: "li86", requester: "alice",
+      kind: "folder", ref: "pbmc",
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes,
+    });
+    expect(r).toMatchObject({ ok: true });
+    if (!r.ok) throw new Error("type guard");
+
+    const row = (await pool.query(
+      `SELECT artifact_kind, snapshot_meta, status FROM share_requests WHERE share_id=$1`,
+      [r.share_id])).rows[0];
+    expect(row.artifact_kind).toBe("folder");
+    const meta = row.snapshot_meta as {
+      root_name: string; readme: string | null;
+      files: { path: string }[]; total_bytes: number;
+    };
+    expect(meta.root_name).toBe("pbmc");
+    expect(meta.readme).toMatch(/pbmc analysis/);
+    expect(meta.files.map((f) => f.path).sort()).toEqual(["README.md", "notebook.ipynb"]);
+    expect(meta.total_bytes).toBeGreaterThan(0);
+  });
+
+  it("happy path with no README.md sets readme=null", async () => {
+    const proj = path.join(workspacesRoot, "alice", "local_projects", "no-readme");
+    await mkdir(proj, { recursive: true });
+    await writeFile(path.join(proj, "data.csv"), "a,b\n1,2\n");
+    const r = await submitShareRequest({
+      pool, manager: "li86", requester: "alice",
+      kind: "folder", ref: "no-readme",
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error("type guard");
+    const row = (await pool.query(
+      `SELECT snapshot_meta FROM share_requests WHERE share_id=$1`, [r.share_id])).rows[0];
+    expect((row.snapshot_meta as any).readme).toBeNull();
+  });
+
+  it("rejects ../ path traversal with invalid_ref", async () => {
+    const r = await submitShareRequest({
+      pool, manager: "li86", requester: "alice",
+      kind: "folder", ref: "../../etc",
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes,
+    });
+    expect(r).toEqual({ ok: false, reason: "invalid_ref" });
+  });
+
+  it("rejects folder exceeding maxFolderBytes with oversize", async () => {
+    // Use a small cap so we don't have to generate 100MB.
+    const r = await submitShareRequest({
+      pool, manager: "li86", requester: "alice",
+      kind: "folder", ref: "pbmc",
+      workspacesRoot, shareSnapshotsDir,
+      maxFolderBytes: 10,           // 10-byte cap
+    });
+    expect(r.ok).toBe(false);
+    expect((r as any).reason).toBe("oversize");
+    expect((r as any).detail).toMatch(/exceeds cap 10/);
   });
 });
