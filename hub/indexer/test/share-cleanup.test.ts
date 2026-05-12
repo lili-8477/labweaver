@@ -39,7 +39,7 @@ describe("cleanupOldSnapshots", () => {
 
   /** Insert a share_requests row + optionally a tarball file. */
   async function seedRow(opts: {
-    kind: 'skill' | 'folder' | 'memory';
+    kind: 'skill' | 'folder' | 'memory' | 'skill_update';
     decidedDaysAgo: number | null;     // null = still pending
     withTarball: boolean;
   }): Promise<string> {
@@ -105,6 +105,12 @@ describe("cleanupOldSnapshots", () => {
 
     const r = await cleanupOldSnapshots({ pool, snapshotsDir, ttlDays: 30 });
     expect(r).toEqual({ scanned: 3, deleted: 2, missing: 1, errors: 0 });
+  });
+
+  it("cleans skill_update tarballs (treated like skill+folder)", async () => {
+    await seedRow({ kind: 'skill_update', decidedDaysAgo: 60, withTarball: true });
+    const r = await cleanupOldSnapshots({ pool, snapshotsDir, ttlDays: 30 });
+    expect(r).toMatchObject({ scanned: 1, deleted: 1 });
   });
 
   it("throws RangeError for ttlDays < 1", async () => {

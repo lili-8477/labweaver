@@ -34,7 +34,7 @@ export async function cleanupOldSnapshots(args: CleanupArgs): Promise<CleanupRes
   // Pending rows are excluded by the decided_at IS NOT NULL filter.
   const rows = await args.pool.query<{ share_id: string }>(
     `SELECT share_id FROM share_requests
-      WHERE artifact_kind IN ('skill', 'folder')
+      WHERE artifact_kind IN ('skill', 'folder', 'skill_update')
         AND decided_at IS NOT NULL
         AND decided_at < now() - make_interval(days => $1)`,
     [args.ttlDays],

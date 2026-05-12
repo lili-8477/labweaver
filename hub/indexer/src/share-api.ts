@@ -32,7 +32,7 @@ export interface ShareApiDeps {
 
 const SubmitBody = z.object({
   requester: z.string().min(1),
-  kind:      z.enum(['memory', 'skill', 'folder']),
+  kind:      z.enum(['memory', 'skill', 'folder', 'skill_update']),
   ref:       z.string().min(1),
   note:      z.string().max(500).optional(),
 });
@@ -239,7 +239,7 @@ export function shareRoutesPlugin(deps: ShareApiDeps) {
         reply.code(got.error === 'not_found' ? 404 : 403);
         return { error: got.error };
       }
-      if (got.artifact_kind !== 'skill' && got.artifact_kind !== 'folder') {
+      if (got.artifact_kind !== 'skill' && got.artifact_kind !== 'folder' && got.artifact_kind !== 'skill_update') {
         reply.code(400);
         return { error: 'snapshot/file only valid for skill or folder kinds' };
       }
