@@ -53,7 +53,7 @@ const facetChips = computed(() => {
 const promotionText = computed(() => {
   const pr = store.selected?.promotion_result as any
   if (!pr) return null
-  if (store.selected?.artifact_kind === 'skill') {
+  if (store.selected?.artifact_kind === 'skill' || store.selected?.artifact_kind === 'skill_update') {
     return pr.dest_path ? `Installed to ${pr.dest_path}` : 'Skill installed to shared/skills/'
   }
   if (store.selected?.artifact_kind === 'folder') {
@@ -99,7 +99,8 @@ async function withdraw() {
 // ── Skill snapshot ────────────────────────────────────────────────────────────
 
 const skillSnap = computed<SkillSnapshotMeta | null>(() => {
-  if (!store.selected || store.selected.artifact_kind !== 'skill') return null
+  const kind = store.selected?.artifact_kind
+  if (!store.selected || (kind !== 'skill' && kind !== 'skill_update')) return null
   return store.selected.snapshot_meta as SkillSnapshotMeta
 })
 
@@ -150,7 +151,7 @@ function humanSize(n: number): string {
         <div class="header-meta">
           <span class="badge" :class="`status-${store.selected.status}`">{{ store.selected.status }}</span>
           <span class="meta-sep">·</span>
-          <span class="meta-item">{{ store.selected.artifact_kind }}</span>
+          <span class="meta-item">{{ store.selected.artifact_kind === 'skill_update' ? 'skill update' : store.selected.artifact_kind }}</span>
           <span class="meta-sep">·</span>
           <span class="meta-item">requested by <strong>{{ store.selected.requester }}</strong></span>
           <span class="meta-sep">·</span>
@@ -189,7 +190,7 @@ function humanSize(n: number): string {
       </section>
 
       <!-- ── Skill snapshot preview ────────────────────────────── -->
-      <section v-else-if="store.selected.artifact_kind === 'skill' && skillSnap" class="detail-section">
+      <section v-else-if="(store.selected.artifact_kind === 'skill' || store.selected.artifact_kind === 'skill_update') && skillSnap" class="detail-section">
         <h3 class="section-label">Manifest (SKILL.md)</h3>
         <pre class="manifest-body">{{ skillSnap.manifest }}</pre>
 

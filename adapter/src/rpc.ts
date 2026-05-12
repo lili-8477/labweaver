@@ -13,6 +13,7 @@ import { KernelBridge, type IOPubEvent } from "./kernel.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
 import { NotebookManager } from "./notebook-rpc.js";
 import { ShareRpcClient } from "./share-rpc.js";
+import { listOrgSkills } from "./org-skills-rpc.js";
 import { listUserSkills } from "./skills-rpc.js";
 import type { StreamEvent } from "./types.js";
 
@@ -380,6 +381,11 @@ export class RpcRouter {
 
       case "skills_list": {
         const skills = await listUserSkills(this.deps.home);
+        return { success: true, skills };
+      }
+
+      case "org_skills_list": {
+        const skills = await listOrgSkills(this.deps.workspaceRoot);
         return { success: true, skills };
       }
 

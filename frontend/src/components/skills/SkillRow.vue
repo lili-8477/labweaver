@@ -1,22 +1,27 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import type { SkillSummary } from '@/types/skills'
 import { useSkillsStore } from '@/stores/skills'
 
-defineProps<{ skill: SkillSummary }>()
+const props = defineProps<{ skill: SkillSummary }>()
 
-const showModal = ref(false)
-const note      = ref('')
+const showModal  = ref(false)
+const note       = ref('')
 const submitting = ref(false)
-const errorMsg  = ref('')
+const errorMsg   = ref('')
 
-const skills = useSkillsStore()
+const skills   = useSkillsStore()
+const isUpdate = computed(() => skills.isOrgSkill(props.skill.name))
 
 async function onSubmit(name: string) {
   submitting.value = true
   errorMsg.value = ''
   try {
-    await skills.submitShare(name, note.value || undefined)
+    if (isUpdate.value) {
+      await skills.submitUpdate(name, note.value || undefined)
+    } else {
+      await skills.submitShare(name, note.value || undefined)
+    }
     showModal.value = false
     note.value = ''
   } catch (e) {
@@ -33,14 +38,20 @@ async function onSubmit(name: string) {
       <div class="skill-name">{{ skill.name }}</div>
       <div v-if="skill.description" class="skill-desc">{{ skill.description }}</div>
     </div>
-    <button class="btn-share" @click="showModal = true">Share</button>
+    <button class="btn-share" @click="showModal = true">{{ isUpdate ? 'Submit update' : 'Share' }}</button>
   </div>
 
   <Teleport to="body">
     <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
       <div class="modal">
-        <h3>Share <strong>{{ skill.name }}</strong> with the org?</h3>
-        <p v-if="skill.description" class="modal-desc">{{ skill.description }}</p>
+        <h3 v-if="isUpdate">Submit update to <strong>{{ skill.name }}</strong></h3>
+        <h3 v-else>Share <strong>{{ skill.name }}</strong> with the org?</h3>
+        <p v-if="isUpdate" class="modal-desc">
+          This will atomically replace the existing org skill at
+          <code>/workspace/shared/skills/{{ skill.name }}</code>
+          when the manager approves.
+        </p>
+        <p v-else-if="skill.description" class="modal-desc">{{ skill.description }}</p>
         <textarea v-model="note" rows="3" placeholder="Why are you sharing this? (optional)" />
         <p v-if="errorMsg" class="modal-error">{{ errorMsg }}</p>
         <div class="modal-actions">
