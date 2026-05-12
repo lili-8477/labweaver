@@ -29,6 +29,7 @@ function statusClass(status: ShareStatus): string {
     approved: 'status-approved',
     rejected: 'status-rejected',
     withdrawn: 'status-withdrawn',
+    auto_rejected: 'status-auto_rejected',
   }
   return map[status]
 }
@@ -203,6 +204,8 @@ function snapshotName(item: ShareRequest): string {
 .status-approved  { background: var(--success-soft);  color: var(--success); }
 .status-rejected  { background: var(--danger-soft);   color: var(--danger); }
 .status-withdrawn { background: var(--bg-tertiary);   color: var(--text-muted); }
+.status-auto_rejected { background: var(--bg-tertiary); color: var(--text-muted);
+                        font-style: italic; }
 
 /* Loading */
 .loading-row {

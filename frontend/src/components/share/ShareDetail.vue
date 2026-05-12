@@ -329,6 +329,8 @@ function humanSize(n: number): string {
 .status-approved  { background: var(--success-soft);  color: var(--success); }
 .status-rejected  { background: var(--danger-soft);   color: var(--danger); }
 .status-withdrawn { background: var(--bg-tertiary);   color: var(--text-muted); }
+.status-auto_rejected { background: var(--bg-tertiary); color: var(--text-muted);
+                        font-style: italic; }
 
 .note {
   font-size: var(--text-sm); color: var(--text-secondary);

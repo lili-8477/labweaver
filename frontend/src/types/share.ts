@@ -1,6 +1,6 @@
 // frontend/src/types/share.ts
 export type ArtifactKind = 'memory' | 'skill' | 'folder';
-export type ShareStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn';
+export type ShareStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn' | 'auto_rejected';
 
 export interface ShareRequest {
   share_id: string;
