@@ -184,6 +184,10 @@ export function shareRoutesPlugin(deps: ShareApiDeps) {
         reply.code(409);
         return { error: `already ${result.detail}` };
       }
+      if (result.reason === 'target_not_found') {
+        reply.code(404);
+        return { error: 'target not found', detail: result.detail };
+      }
       if (result.reason === 'collision') {
         reply.code(422);
         return { error: 'name collision', detail: result.detail };

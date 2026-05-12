@@ -7,6 +7,7 @@ import {
   readSkillManifest,
   packSkillTarball,
   extractSkillTarball,
+  atomicReplaceSkillDir,    // NEW
 } from "./share-fs.js";
 import type { SubmitArgs, SubmitResult, ShareRow, DecideResult } from "./share-repo.js";
 
@@ -180,4 +181,68 @@ export async function approveSkillShareRequest(args: {
   };
 
   return { ok: true, promotion_result };
+}
+
+export async function approveSkillUpdateShareRequest(args: {
+  row:                ShareRow;
+  workspacesRoot:     string;
+  shareSnapshotsDir:  string;
+}): Promise<
+  | { ok: true; promotion_result: Record<string, unknown> }
+  | { ok: false; reason: "promotion_failed" | "target_not_found"; detail?: string }
+> {
+  const { row } = args;
+
+  const meta = row.snapshot_meta as Record<string, unknown>;
+  if (
+    typeof meta.root_name !== "string" ||
+    typeof meta.manifest  !== "string" ||
+    !Array.isArray(meta.files)
+  ) {
+    return { ok: false, reason: "promotion_failed", detail: "snapshot_meta missing root_name/manifest/files" };
+  }
+  const rootName = meta.root_name;
+
+  const sharedSkills = path.join(args.workspacesRoot, "shared", "skills");
+  const targetDir = safeJoin(sharedSkills, rootName);
+  if (targetDir === null) {
+    return { ok: false, reason: "promotion_failed", detail: "snapshot root_name is invalid" };
+  }
+
+  // Target must still exist (admin could have rm'd it between submit and approve).
+  try {
+    const st = await stat(targetDir);
+    if (!st.isDirectory()) {
+      return { ok: false, reason: "target_not_found", detail: `${targetDir} exists but is not a directory` };
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      return { ok: false, reason: "target_not_found",
+               detail: `target ${targetDir} no longer exists; submit as new skill instead` };
+    }
+    throw e;
+  }
+
+  const tarPath = path.join(args.shareSnapshotsDir, `${row.share_id}.tar.gz`);
+  let written: string[];
+  try {
+    written = await atomicReplaceSkillDir({
+      srcTar:           tarPath,
+      sharedSkillsDir:  sharedSkills,
+      name:             rootName,
+      shareId:          row.share_id,
+    });
+  } catch (e) {
+    return { ok: false, reason: "promotion_failed",
+             detail: `atomic replace failed: ${(e as Error).message}` };
+  }
+
+  return {
+    ok: true,
+    promotion_result: {
+      dest_path:    targetDir,
+      copied_files: written,
+      replaced:     true,
+    },
+  };
 }

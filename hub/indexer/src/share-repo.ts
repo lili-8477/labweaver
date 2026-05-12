@@ -7,6 +7,7 @@ import {
   submitSkillShareRequest,
   approveSkillShareRequest,
   submitSkillUpdateShareRequest,
+  approveSkillUpdateShareRequest,   // NEW
 } from "./share-repo-skill.js";
 import {
   submitFolderShareRequest,
@@ -302,12 +303,14 @@ export interface DecideArgs {
 
 export type DecideResult =
   | { ok: true; status: ShareStatus; promotion_result?: Record<string, unknown> }
-  | { ok: false; reason:
+  | { ok: false;
+      reason:
         | "not_found"
         | "forbidden"
         | "already_decided"
         | "promotion_failed"
-        | "collision";
+        | "collision"
+        | "target_not_found";        // NEW
       detail?: string };
 
 export async function decideShareRequest(args: DecideArgs): Promise<DecideResult> {
@@ -358,6 +361,26 @@ export async function decideShareRequest(args: DecideArgs): Promise<DecideResult
       }
       // FS op (extractSkillTarball) ran inside the row-lock window — acceptable
       // for small skills. The lock is released by COMMIT below.
+      await client.query(
+        `UPDATE share_requests
+            SET status = 'approved', decided_at = now(),
+                review_comment = $1, promotion_result = $2
+          WHERE share_id = $3`,
+        [args.comment ?? null, result.promotion_result, args.shareId],
+      );
+      await client.query("COMMIT");
+      return { ok: true, status: "approved", promotion_result: result.promotion_result };
+    }
+    if (row.artifact_kind === "skill_update") {
+      const result = await approveSkillUpdateShareRequest({
+        row,
+        workspacesRoot:    args.workspacesRoot,
+        shareSnapshotsDir: args.shareSnapshotsDir,
+      });
+      if (!result.ok) {
+        await client.query("ROLLBACK");
+        return result;
+      }
       await client.query(
         `UPDATE share_requests
             SET status = 'approved', decided_at = now(),

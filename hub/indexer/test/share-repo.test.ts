@@ -1025,6 +1025,72 @@ describe("decideShareRequest folder approve branch", () => {
   });
 });
 
+// ─── decideShareRequest skill_update approve branch ───────────────────────────
+
+describe("decideShareRequest skill_update approve branch", () => {
+  let workspacesRoot: string;
+  let shareSnapshotsDir: string;
+  const maxFolderBytes = 100 * 1024 * 1024;
+
+  beforeEach(async () => {
+    workspacesRoot    = await mkdtemp(path.join(tmpdir(), "ws-"));
+    shareSnapshotsDir = await mkdtemp(path.join(tmpdir(), "snap-"));
+    // existing org skill v1
+    const orgSkill = path.join(workspacesRoot, "shared", "skills", "demo");
+    await mkdir(orgSkill, { recursive: true });
+    await writeFile(path.join(orgSkill, "SKILL.md"), "v1");
+    await writeFile(path.join(orgSkill, "old.py"), "v=1");
+    // alice's source — v2
+    const skill = path.join(workspacesRoot, "alice", ".claude", "skills", "demo");
+    await mkdir(skill, { recursive: true });
+    await writeFile(path.join(skill, "SKILL.md"), "v2");
+    await writeFile(path.join(skill, "new.py"), "v=2");
+  });
+
+  it("approves and atomically replaces the existing org skill", async () => {
+    const submitR = await submitShareRequest({
+      pool, managers: ["li86"], requester: "alice",
+      kind: "skill_update", ref: "demo",
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes,
+    });
+    if (!submitR.ok) throw new Error("setup failed");
+
+    const decideR = await decideShareRequest({
+      pool, actor: "li86", managers: ["li86"],
+      shareId: submitR.share_id, decision: "approve", comment: "ship v2",
+      workspacesRoot, shareSnapshotsDir,
+    });
+    expect(decideR.ok).toBe(true);
+
+    // New content present, old content gone.
+    const { readFile } = await import("node:fs/promises");
+    expect(await readFile(path.join(workspacesRoot, "shared", "skills", "demo", "SKILL.md"), "utf8")).toBe("v2");
+    expect(await readFile(path.join(workspacesRoot, "shared", "skills", "demo", "new.py"), "utf8")).toBe("v=2");
+    await expect(readFile(path.join(workspacesRoot, "shared", "skills", "demo", "old.py"), "utf8"))
+      .rejects.toThrow();
+  });
+
+  it("returns target_not_found when org skill was deleted between submit and approve", async () => {
+    const submitR = await submitShareRequest({
+      pool, managers: ["li86"], requester: "alice",
+      kind: "skill_update", ref: "demo",
+      workspacesRoot, shareSnapshotsDir, maxFolderBytes,
+    });
+    if (!submitR.ok) throw new Error("setup failed");
+    // Admin removes the org skill before the manager approves.
+    const { rm } = await import("node:fs/promises");
+    await rm(path.join(workspacesRoot, "shared", "skills", "demo"), { recursive: true });
+
+    const decideR = await decideShareRequest({
+      pool, actor: "li86", managers: ["li86"],
+      shareId: submitR.share_id, decision: "approve",
+      workspacesRoot, shareSnapshotsDir,
+    });
+    expect(decideR.ok).toBe(false);
+    expect((decideR as any).reason).toBe("target_not_found");
+  });
+});
+
 // ─── multi-manager ────────────────────────────────────────────────────────────
 
 describe("multi-manager", () => {
