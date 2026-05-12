@@ -140,3 +140,69 @@ Scope tier is computed: `username='__org__'` → org, `project_dir IS NULL` → 
 **Trust model.** `USERNAME` is the tenant key, set by `add-user.sh` from the workspace prefix, never user-controlled at runtime. The frontend carries no username; the adapter injects it. The memory-api itself has no auth (private docker network, same model as the postgres bridge in Phase 2). Org writes are operator-only — the MCP tool surface excludes `scope:'org'`.
 
 **Out of scope (deferred):** paid embeddings (swap `EMBEDDER_URL`), subagent-scoped memory, cross-memory audit explorer, bulk forget, editing distilled rows.
+
+## 2026-05-11 — Running scbench in claude-bioflow
+
+**Q:** I want to run the benchmark https://github.com/latchbio/scbench in my bioflow platform. How should I proceed?
+
+**A:** scbench is an agentic-eval harness — 394 graded scRNA-seq tasks (only 7 canonical ones public; rest withheld to prevent training contamination). Each task ships an `.h5ad` + prompt + deterministic grader; the agent writes `eval_answer.json` and the runner grades it. It has a CLI (`scbench run --agent minisweagent --model anthropic/claude-opus-4-7`) and an `EvalRunner` API with a pluggable `agent_function(task_prompt, work_dir) → dict`.
+
+Strategic question: what does "run it on bioflow" mean? Three flavors of integration, from easiest to most informative:
+
+1. **Bundled agent (smoke test).** `pip install -e scbench` inside a user container, run canonical tasks with `--agent minisweagent`. Validates the image's bio stack (`pantheon-agents-sc` already has scanpy + R/Seurat/scDblFinder). Does not exercise the platform — only model + their loop.
+2. **Custom `agent_function` via Anthropic SDK directly** with bioflow's tool surface. Tests tooling choices, still skips the NATS/adapter/UX path.
+3. **`agent_function` that dispatches into the adapter over NATS** — claude-bioflow becomes the agent under test, scbench is the outer driver. Exercises session lifecycle, hooks, MCP-memory, kernel bridge. Most informative, most plumbing.
+
+Suggested order: do (1) as a 30-min smoke test in `claude-bioflow-li86`, then decide if (2) or (3) earns its complexity.
+
+Two integration gotchas either way:
+
+- **`work_dir` / cwd alignment** — agent must write `eval_answer.json` into the runner-supplied `work_dir`. Bioflow sessions default cwd to `/workspace` or `local_projects/<proj>/`. Easiest: make `work_dir` a subdir of `local_projects/scbench-runs/<task-id>/` so the agent's `Write` lands there.
+- **Dataset cache** — `.h5ad` snapshots are downloaded; cache on the bind-mounted workspace, not `/tmp`, or every container recreate re-downloads.
+
+For the full 394 set (vs. 7 canonical), contact LatchBio.
+
+## 2026-05-11 — Does scbench run automatically or do I drive it from the UI?
+
+**Q:** When I run a scbench eval, does the test run automatically, or do I tell the agent to do it in the bioflow UI?
+
+**A:** Automatic. `scbench run --agent minisweagent --model anthropic/...` is a self-contained loop: parse task → `latch cp` data → spawn `minisweagent` (calls Anthropic API directly with bash/python tools in a sandbox) → write `eval_answer.json` → grade. **No NATS, no bioflow adapter, no UI session.** The bioflow container's only role is providing the bio stack (scanpy/R/etc.) that the agent's bash tool uses.
+
+The three integration flavors from the earlier entry map to how much of bioflow is exercised:
+
+| Flavor | Driver | Agent loop | UI? | Tests |
+|---|---|---|---|---|
+| (1) `--agent minisweagent` | scbench CLI | minisweagent → Anthropic API | No | Model + image bio stack |
+| (2) Custom `agent_function` | scbench CLI | Your Python → Anthropic SDK | No | Model + your tools |
+| (3) `agent_function` over NATS | scbench CLI | RPC → bioflow adapter → Claude Code session | No (programmatic) | Full bioflow stack |
+
+A "manual UI" side experiment — pasting the task prompt into a bioflow chat and eyeballing the answer — is possible but isn't a scbench mode; the runner won't grade it.
+
+## 2026-05-11 — How scbench tasks are designed
+
+**Q:** I would like to learn more about how the tasks are designed.
+
+**A:** Every task is one JSON file with four logical parts: identity (`id`), prompt (`task` — self-contained, including the exact JSON schema the agent must write to `eval_answer.json`), inputs (`data_node` Latch URIs), and a deterministic grader (`type`+`config`). Plus author-only `notes` and a `metadata` block.
+
+The grader is the design bottleneck. Only answer-shapes that fit one of five families can become tasks:
+
+| Grader | Answer | Pass test | Trade-off |
+|---|---|---|---|
+| `numeric_tolerance` | float(s)/int(s) | every field within abs/rel tolerance | cheapest signal; flattens biology to a number |
+| `multiple_choice` | string from a set | exact match | useful for interpretation questions, no nuance |
+| `label_set_jaccard` | set of labels | Jaccard ≥ pass_threshold (e.g. 0.8) | tolerates partial credit; threshold is brittle |
+| `marker_gene_precision_recall` | gene list | P@K, R@K ≥ threshold | realistic for DE/marker tasks; sensitive to gene-symbol spelling |
+| `distribution_comparison` | proportions | distribution distance < tol | cell-type fractions, batch tests |
+
+Free-form scientific judgment isn't gradable here. This is a deliberate trade — code graders are cheap, stable, reproducible (vs LLM-judges which drift and cost per grade).
+
+`metadata.eval_type` is the design axis between judgment and adherence:
+
+- **`scientific`** — prompt asks for a judgment call (e.g. *"choose conservative QC thresholds"*). Grader is a tolerance window around an expert answer. Tests biological judgment.
+- **`procedural`** — prompt prescribes a recipe step-by-step (PCA components, Leiden resolution, k for kNN). Grader checks the recipe's expected output. Tests faithful execution. The snrna celltyping task we ran is procedural; both Sonnet and Opus failed at Jaccard 0.714 because the prescribed `Leiden res=0.6 + cluster-majority-vote` genuinely cannot surface Macrophage/Mural — author seemingly knew this (notes: *"dataset may lack some labels"*) and set `pass_threshold=0.8` to allow exactly one missing label, no more.
+
+`metadata.time_horizon` (small/medium/large) is a tool-turn budget proxy. Tolerance tuning is the hardest authoring step (note in the QC task: *"Threshold set to 1.5% of the total cells to allow for some variation"* — explicit expert-variance calibration).
+
+Public/private split: 30 canonical tasks are public, 364 are withheld to prevent training contamination. Published leaderboard numbers (Opus 4.6 = 52.8%) are over the full 394 — observed pass/fail on the canonical 30 is **not** representative; they're the showpieces.
+
+Repo refs: `docs/specification.md` (JSON spec), `docs/adding_evals.md` (authoring), `paper/main.pdf` (rationale), `scbench/types.py` (`TestCase` model), `latch_eval_tools/graders/` (implementations).
