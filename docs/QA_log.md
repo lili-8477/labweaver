@@ -206,3 +206,13 @@ Free-form scientific judgment isn't gradable here. This is a deliberate trade �
 Public/private split: 30 canonical tasks are public, 364 are withheld to prevent training contamination. Published leaderboard numbers (Opus 4.6 = 52.8%) are over the full 394 — observed pass/fail on the canonical 30 is **not** representative; they're the showpieces.
 
 Repo refs: `docs/specification.md` (JSON spec), `docs/adding_evals.md` (authoring), `paper/main.pdf` (rationale), `scbench/types.py` (`TestCase` model), `latch_eval_tools/graders/` (implementations).
+
+## 2026-05-12 — `grub-reboot` vs `grub-set-default`
+
+**Q:** what is grub reboot for
+
+**A:** `grub-reboot` stages a **one-shot** boot override. It writes `next_entry=X` into `/boot/grub/grubenv`; GRUB consumes that on the next boot and clears it, so subsequent boots return to `GRUB_DEFAULT`.
+
+Contrast with `grub-set-default`, which writes `saved_entry` and persists until changed. Use `grub-reboot` when you want to boot a non-default kernel *once* — e.g. temporarily falling back to 6.8.0-110 because the running 6.8.0-111 has no matching `linux-modules-nvidia-590` package yet. Auto-updates can later put you back on the newest kernel without a manual revert.
+
+Caveat: requires `GRUB_DEFAULT=saved` (or equivalent) in `/etc/default/grub`. Ubuntu defaults to this; a hardcoded `GRUB_DEFAULT=0` silently ignores the override.
