@@ -30,6 +30,21 @@ Every new task lives in its own project folder under `/workspace/local_projects/
 
 Create the folder on the first action of a new task and stage all subsequent work there — do not scatter files at the `local_projects/` root or mix them with other projects'. Editable Python source lives in `/workspace/local_projects/<project>/repo/` (see "Installing Python packages" below).
 
+## Project README
+
+Every project ships a `README.md` at its root (`local_projects/<project>/README.md`). Write it at the end of each significant milestone so a future reader — or a future you — can pick up the project cold without re-running anything. Update in place; don't append revision logs.
+
+Required sections, in order:
+
+| Section | Content |
+| --- | --- |
+| `## Task` | One paragraph: what was asked, dataset(s) used, pipeline name. Reference `progress.md` for full step-by-step state. |
+| `## Results` | Key tables and figures with paths (e.g. `results/markers/top_markers.csv`, `results/figures/umap_celltype.png`). State the headline numbers inline (n_cells, n_clusters, top hits, effect sizes) so the README is informative without opening artifacts. |
+| `## Biological insights` | What the analysis actually *says*. Cell types identified, pathways enriched, conditions that differ, surprises worth flagging. Skip this section only when the task is purely technical (format conversion, smoke test, etc.) — say so explicitly rather than leaving it blank. |
+| `## Dependencies` | Pinned versions sufficient to reproduce. Python: list the imported libs with versions (`/venv/bin/pip show <pkg>` or a curated subset of `pip freeze`). R: `packageVersion("<pkg>")` for each used. External tools (samtools, bwa, …) with their `--version`. GPU vs CPU mode. List only what was actually used. |
+
+Don't pad with TODO / "future work" / "limitations" sections — if it's worth doing, do it; if not, leave it out. The README is documentation of what shipped, not a wishlist.
+
 ## Code conventions
 
 - Python: prefer scanpy + anndata; tag analysis steps with `adata.uns["step_log"]`.
