@@ -55,7 +55,12 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const dirInput = ref<HTMLInputElement | null>(null)
 const uploadTargetDir = ref<string>('')        // dest for the toolbar button picker
 
-const newItemPath = ref('')
+// Inline "new file/folder" form. The base dir is locked (shown as a
+// non-editable prefix) so users can't accidentally write to the workspace
+// root — which is a tmpfs above the bind mounts and triggers EXDEV on
+// rename. `newItemName` is the only editable portion.
+const newItemBaseDir = ref('')
+const newItemName = ref('')
 const showNewInput = ref(false)
 const newItemType = ref<'file' | 'directory'>('file')
 
@@ -264,25 +269,40 @@ function handleClick(fe: FlatEntry) {
 }
 
 async function createItem() {
-  if (!newItemPath.value.trim()) return
+  const name = newItemName.value.trim().replace(/^\/+/, '')
+  if (!name) return
+  const path = joinPath(newItemBaseDir.value, name)
   if (newItemType.value === 'directory') {
-    await files.createDirectory(newItemPath.value.trim())
+    await files.createDirectory(path)
   } else {
-    await files.createFile(newItemPath.value.trim())
+    await files.createFile(path)
   }
   showNewInput.value = false
-  newItemPath.value = ''
-  dirChildren.value.clear()
-  await files.loadTree()
+  newItemName.value = ''
+  await revealAndRefreshDir(parentOf(path))
 }
 
 function startNewItemIn(fe: FlatEntry, kind: 'file' | 'directory') {
   const parent = fe.entry.type === 'directory' ? fe.path : parentOf(fe.path)
   newItemType.value = kind
-  newItemPath.value = parent ? `${parent}/` : ''
+  newItemBaseDir.value = parent
+  newItemName.value = ''
   showNewInput.value = true
   if (parent && fe.entry.type === 'directory' && !expandedDirs.value.has(parent)) {
     toggleDir(parent)
+  }
+}
+
+// Toolbar "+" / folder buttons: default new items to local_projects/.
+// Workspace root is a tmpfs overlay above the bind mounts, so a folder
+// created there can't be `rename()`d into local_projects/ later (EXDEV).
+function startNewItemAtDefault(kind: 'file' | 'directory') {
+  newItemType.value = kind
+  newItemBaseDir.value = DEFAULT_DROP_DIR
+  newItemName.value = ''
+  showNewInput.value = true
+  if (!expandedDirs.value.has(DEFAULT_DROP_DIR)) {
+    toggleDir(DEFAULT_DROP_DIR)
   }
 }
 
@@ -330,20 +350,30 @@ function dropDirFor(path: string | null): string {
   return parentOf(path) || DEFAULT_DROP_DIR
 }
 
-function refreshAfterUpload(destDir: string) {
-  // Reload the destination dir's listing so the new file appears.
+/** Reload every level from the root down to `destDir`, then ensure `destDir`
+ *  is expanded. Used after uploads / new-item creation so the new entry is
+ *  visible without the user having to click refresh or hand-expand parents.
+ *  An upload of `foo/a.txt` into `local_projects/` may have created both
+ *  `local_projects/foo/` and the file inside it, so every level below
+ *  `destDir` is busted and re-fetched, not just the leaf. */
+async function revealAndRefreshDir(destDir: string) {
   if (destDir === '') {
-    files.loadTree()
+    await files.loadTree()
     return
   }
-  // For a sub-dir, drop the cached children and re-toggle if expanded.
-  dirChildren.value.delete(destDir)
-  dirChildren.value = new Map(dirChildren.value)
-  if (expandedDirs.value.has(destDir)) {
-    // Force re-fetch by collapsing then re-expanding.
-    expandedDirs.value.delete(destDir)
-    toggleDir(destDir)
+  const segs = destDir.split('/')
+  for (let i = 1; i <= segs.length; i++) {
+    const dir = segs.slice(0, i).join('/')
+    dirChildren.value.delete(dir)
+    expandedDirs.value.delete(dir)
+    dirChildren.value = new Map(dirChildren.value)
+    expandedDirs.value = new Set(expandedDirs.value)
+    await toggleDir(dir)
   }
+}
+
+function refreshAfterUpload(destDir: string) {
+  void revealAndRefreshDir(destDir)
 }
 
 function queueOne(file: File, destDir: string) {
@@ -529,8 +559,8 @@ function fmtBytes(n: number): string {
       <div class="tree-actions">
         <button class="icon-btn" @click="refresh()" title="Refresh">&#8635;</button>
         <button class="icon-btn" @click="openFilePicker()" title="Upload (max 2 GB)">&#x2B06;</button>
-        <button class="icon-btn" @click="showNewInput = true; newItemType = 'file'" title="New File">+</button>
-        <button class="icon-btn" @click="showNewInput = true; newItemType = 'directory'" title="New Folder">&#128193;</button>
+        <button class="icon-btn" @click="startNewItemAtDefault('file')" title="New File">+</button>
+        <button class="icon-btn" @click="startNewItemAtDefault('directory')" title="New Folder">&#128193;</button>
       </div>
     </div>
 
@@ -550,9 +580,10 @@ function fmtBytes(n: number): string {
     />
 
     <div v-if="showNewInput" class="new-item">
+      <span v-if="newItemBaseDir" class="new-item-prefix" :title="newItemBaseDir + '/'">{{ newItemBaseDir }}/</span>
       <input
-        v-model="newItemPath"
-        :placeholder="newItemType === 'file' ? 'filename.py' : 'dirname/'"
+        v-model="newItemName"
+        :placeholder="newItemType === 'file' ? 'filename.py' : 'dirname'"
         @keyup.enter="createItem"
         @keyup.escape="showNewInput = false"
         autofocus
@@ -721,10 +752,19 @@ function fmtBytes(n: number): string {
 .icon-btn.sm { width: 24px; height: 24px; font-size: 0.9em; }
 
 .new-item {
-  display: flex; gap: 4px; padding: 8px 16px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 4px;
+  padding: 8px 16px; border-bottom: 1px solid var(--border);
+}
+.new-item-prefix {
+  flex-shrink: 1; min-width: 0; max-width: 50%;
+  padding: 4px 0 4px 4px; color: var(--text-muted);
+  font-family: var(--font-mono); font-size: 0.85em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; text-align: left;
+  user-select: none;
 }
 .new-item input {
-  flex: 1; padding: 4px 8px; background: var(--bg-primary);
+  flex: 1; min-width: 0; padding: 4px 8px; background: var(--bg-primary);
   border: 1px solid var(--accent); border-radius: 4px;
   color: var(--text-primary); font-family: var(--font-mono); font-size: 0.85em;
 }
