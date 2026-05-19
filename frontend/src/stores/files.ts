@@ -15,6 +15,11 @@ export const useFileStore = defineStore('files', () => {
     size?: number
   } | null>(null)
 
+  // h5ad viewer uses its own state slot so it doesn't collide with the
+  // text/binary FileViewer overlay. The viewer doesn't pre-load content
+  // (those files are HDF5 and big) — backend reads on demand.
+  const openH5ad = ref<{ path: string; size?: number } | null>(null)
+
   async function loadTree(subDir?: string) {
     loading.value = true
     try {
@@ -130,9 +135,18 @@ export const useFileStore = defineStore('files', () => {
     openFile.value = null
   }
 
+  function openH5adFile(path: string, size?: number) {
+    openH5ad.value = { path, size }
+  }
+
+  function closeH5ad() {
+    openH5ad.value = null
+  }
+
   return {
-    tree, loading, openFile,
+    tree, loading, openFile, openH5ad,
     loadTree, readFile, writeFile, createFile,
-    createDirectory, deletePath, movePath, closeFile,
+    createDirectory, deletePath, movePath,
+    closeFile, openH5adFile, closeH5ad,
   }
 })

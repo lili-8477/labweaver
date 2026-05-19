@@ -8,6 +8,7 @@ import ChatPanel from '@/components/chat/ChatPanel.vue'
 import ModelSelect from '@/components/layout/ModelSelect.vue'
 import FileTree from '@/components/files/FileTree.vue'
 import FileViewer from '@/components/files/FileViewer.vue'
+import H5adViewer from '@/components/files/H5adViewer.vue'
 import NotebookEditor from '@/components/notebook/NotebookEditor.vue'
 import AgentPanel from '@/components/agents/AgentPanel.vue'
 import MemoryPanel from '@/components/memory/MemoryPanel.vue'
@@ -81,6 +82,10 @@ function handleFileOpen(path: string) {
   if (path.endsWith('.ipynb')) {
     nb.openNotebook(path)
     rightPanel.value = 'notebook'
+  } else if (path.endsWith('.h5ad')) {
+    // h5ad: open the interactive viewer instead of trying to read HDF5
+    // bytes as text. Backend introspects on demand.
+    files.openH5adFile(path)
   } else {
     files.readFile(path)
   }
@@ -247,6 +252,9 @@ const connStatus = computed(() => {
 
     <!-- File viewer overlay -->
     <FileViewer v-if="files.openFile" />
+
+    <!-- h5ad viewer overlay (single-cell / spatial AnnData) -->
+    <H5adViewer v-if="files.openH5ad" />
   </div>
 </template>
 

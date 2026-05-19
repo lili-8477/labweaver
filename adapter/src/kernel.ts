@@ -153,6 +153,14 @@ export class KernelBridge {
     // clobber a freshly-incremented counter.
 
     const stdout = this.proc.stdout!;
+    // Force utf-8 decoding before readline. Without this, Node 20's
+    // readline over a child-process pipe in Buffer mode splits very long
+    // lines (~>200 KB) at internal buffer boundaries — `sc.pl.violin` and
+    // any other plot that produces an inline base64 PNG emits a single
+    // ~300 KB JSON line, which got chopped into two unparseable pieces
+    // and the cell's display_data + execute_reply were dropped, leaving
+    // the frontend cell stuck on "running".
+    stdout.setEncoding("utf8");
     const rl = createInterface({ input: stdout });
     rl.on("line", (line) => this.handleEvent(line));
 

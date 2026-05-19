@@ -9,6 +9,7 @@ import { runTurn } from "./claude.js";
 import { AbortRegistry, ChatMutexRegistry } from "./concurrency.js";
 import { FileManager } from "./fs-rpc.js";
 import { readSessionMessages } from "./history.js";
+import { H5adService } from "./h5ad-rpc.js";
 import { KernelBridge, type IOPubEvent } from "./kernel.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
 import { NotebookManager } from "./notebook-rpc.js";
@@ -44,6 +45,7 @@ export class RpcRouter {
   private chats: ChatsRepo;
   private files: FileManager;
   private notebooks: NotebookManager;
+  private h5ad: H5adService;
   private mutexes = new ChatMutexRegistry();
   private aborts = new AbortRegistry();
 
@@ -67,6 +69,14 @@ export class RpcRouter {
       kernelFactory,
       kernelSessionPrefix,
     );
+    // h5ad viewer reuses the same kernel-factory contract (Python child
+    // process, iopub republished to NATS) but pins a single session id so
+    // the AnnData cache survives across plot calls.
+    this.h5ad = new H5adService({
+      serviceId: deps.serviceId,
+      workspaceRoot: deps.workspaceRoot,
+      kernelFactory,
+    });
   }
 
   private settingsPath(): string {
@@ -124,6 +134,7 @@ export class RpcRouter {
   abortAll(): void {
     this.aborts.abortAll();
     this.notebooks.shutdownAll();
+    this.h5ad.shutdown();
   }
 
   async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -449,6 +460,23 @@ export class RpcRouter {
       case "org_skills_list": {
         const skills = await listOrgSkills(this.deps.workspaceRoot);
         return { success: true, skills };
+      }
+
+      case "h5ad_introspect": {
+        const p = params.path as string;
+        if (!p || typeof p !== "string") throw new Error("path required");
+        const res = await this.h5ad.introspect(p);
+        return { success: true, ...res };
+      }
+
+      case "h5ad_plot": {
+        const p = params.path as string;
+        const kind = params.kind as "qc" | "embedding" | "spatial";
+        if (!p || typeof p !== "string") throw new Error("path required");
+        if (!kind) throw new Error("kind required");
+        const plotParams = (params.params as Record<string, unknown>) ?? {};
+        const res = await this.h5ad.plot(p, kind, plotParams);
+        return { success: true, ...res };
       }
 
       default:
