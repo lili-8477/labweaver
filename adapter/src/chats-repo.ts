@@ -6,6 +6,10 @@ export interface ChatRow {
   session_id: string | null;
   name: string;
   active_agent: string | null;
+  /** Workspace-relative project dir (e.g. "local_projects/foo-1a2b") or null
+   *  for chats that aren't bound to a project. When set, the agent cd's here
+   *  and harness lookups read this dir's progress.md. */
+  project_dir: string | null;
   created_at: string;
   last_used_at: string;
   deleted_at: string | null;
@@ -16,6 +20,9 @@ export interface ChatInfo {
   name: string;
   last_activity_date: string;
   project_name: string;
+  /** Same as ChatRow.project_dir — included so the UI can show the binding
+   *  without a second round-trip. */
+  project_dir: string | null;
   active_agent: string | null;
 }
 
@@ -39,7 +46,7 @@ export class ChatsRepo {
 
   async read(chatId: string): Promise<ChatRow | null> {
     const r = await this.pool.query(
-      `SELECT chat_id, username, session_id, name, active_agent,
+      `SELECT chat_id, username, session_id, name, active_agent, project_dir,
               created_at, last_used_at, deleted_at
        FROM chats
        WHERE chat_id = $1 AND username = $2 AND deleted_at IS NULL`,
@@ -53,6 +60,7 @@ export class ChatsRepo {
       session_id: row.session_id,
       name: row.name,
       active_agent: row.active_agent,
+      project_dir: row.project_dir,
       created_at: row.created_at.toISOString(),
       last_used_at: row.last_used_at.toISOString(),
       deleted_at: row.deleted_at ? row.deleted_at.toISOString() : null,
@@ -66,6 +74,7 @@ export class ChatsRepo {
          COALESCE(NULLIF(c.name, 'New chat'), s.title, s.first_user_text, c.name) AS name,
          c.last_used_at   AS last_used_at,
          c.active_agent   AS active_agent,
+         c.project_dir    AS project_dir,
          COALESCE(s.project_display, '') AS project_name
        FROM chats c
        LEFT JOIN sessions s ON s.session_id = c.session_id
@@ -81,6 +90,7 @@ export class ChatsRepo {
       name: row.name,
       last_activity_date: row.last_used_at.toISOString(),
       project_name: row.project_name,
+      project_dir: row.project_dir,
       active_agent: row.active_agent,
     }));
   }
@@ -90,6 +100,17 @@ export class ChatsRepo {
       `UPDATE chats SET name = $3, last_used_at = now()
        WHERE chat_id = $1 AND username = $2 AND deleted_at IS NULL`,
       [chatId, this.username, name],
+    );
+  }
+
+  /** Bind a chat to a project directory. Pass null to unbind. The path is
+   *  expected to be workspace-relative (no leading slash, no `..`). The RPC
+   *  layer normalizes before calling — we trust the caller here. */
+  async setProjectDir(chatId: string, projectDir: string | null): Promise<void> {
+    await this.pool.query(
+      `UPDATE chats SET project_dir = $3
+       WHERE chat_id = $1 AND username = $2 AND deleted_at IS NULL`,
+      [chatId, this.username, projectDir],
     );
   }
 

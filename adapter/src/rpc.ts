@@ -8,7 +8,7 @@ import { ChatsRepo } from "./chats-repo.js";
 import { runTurn } from "./claude.js";
 import { AbortRegistry, ChatMutexRegistry } from "./concurrency.js";
 import { FileManager } from "./fs-rpc.js";
-import { readSessionMessages } from "./history.js";
+import { readSessionMessages, type LegacyMessage } from "./history.js";
 import { H5adService } from "./h5ad-rpc.js";
 import { KernelBridge, type IOPubEvent } from "./kernel.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
@@ -259,14 +259,24 @@ export class RpcRouter {
       }
 
       case "get_harness_progress": {
-        // Two ways to find the right progress.md:
-        //   1. project_name matches a local_projects/<dir>/progress.md (works
-        //      for drop-created chats where chat-name === project-dir name).
-        //   2. Fallback: the most-recently-modified progress.md anywhere under
-        //      local_projects/. Covers the typed-prompt flow where the chat
-        //      keeps its default name but tick-bootstrap picks a project slug
-        //      from the user's message.
-        // Returns the matched project name so the UI can show it.
+        // Resolution order — first hit wins, no cross-session fallback:
+        //   1. chat_id → chats.project_dir            (explicit, persisted binding)
+        //   2. chat_id → local_projects/<chat.name>/  (legacy: drop-created
+        //      chats from before the project_dir column existed still have
+        //      name === dir, so we read by name. If found, persist as
+        //      project_dir so the next call hits path #1.)
+        //   3. chat_id → scan message history for local_projects/<slug>/
+        //      mentions. Catches typed-prompt chats whose name doesn't
+        //      match the bootstrap-picked slug (e.g. chat "Run PBMC3k…"
+        //      bound implicitly to local_projects/pbmc-smoke/). Persists
+        //      the inferred binding too.
+        //   4. project_name param → local_projects/<name>/  (manual override
+        //      from the UI, e.g. before a chat is selected).
+        //
+        // We deliberately removed the old "most-recently-modified within 6h"
+        // global fallback. It let chat A see chat B's plan whenever B's run
+        // was the most recent activity in the workspace — the exact
+        // cross-session leak the user wanted gone.
         const projectsRoot = path.join(this.deps.workspaceRoot, "local_projects");
 
         const tryPath = async (p: string): Promise<string | null> => {
@@ -274,50 +284,148 @@ export class RpcRouter {
           catch { return null; }
         };
 
-        const projectName = (params.project_name as string | undefined)?.trim();
+        const isSafeProjectDir = (d: string): boolean => {
+          // Workspace-relative, no traversal, no leading slash. We don't
+          // require the local_projects/ prefix — a binding outside that root
+          // is unusual but not invalid (e.g. a shared folder), and the
+          // workspace-root check below catches escapes.
+          if (!d || d.startsWith("/")) return false;
+          if (d.includes("..")) return false;
+          if (d.startsWith(".")) return false;
+          return true;
+        };
+
+        const resolveInWorkspace = (rel: string): string | null => {
+          const abs = path.resolve(this.deps.workspaceRoot, rel);
+          if (!abs.startsWith(this.deps.workspaceRoot + path.sep) && abs !== this.deps.workspaceRoot) {
+            return null;
+          }
+          return abs;
+        };
+
+        const chatIdParam = (params.chat_id as string | undefined)?.trim();
+        const projectNameParam = (params.project_name as string | undefined)?.trim();
+
         let raw: string | null = null;
-        let matchedProject: string | null = null;
+        let matchedDir: string | null = null;     // workspace-relative
+        let matchedDisplay: string | null = null; // last path segment for the UI
 
-        // Path #1: by name.
-        if (projectName && !projectName.includes("/") && !projectName.startsWith(".")) {
-          raw = await tryPath(path.join(projectsRoot, projectName, "progress.md"));
-          if (raw != null) matchedProject = projectName;
-        }
-
-        // Path #2: most-recently-modified progress.md as a fallback. We only
-        // consider files modified in the last 6h so a stale project from
-        // weeks ago doesn't masquerade as the active one.
-        if (raw == null) {
-          let dirs: string[] = [];
-          try {
-            dirs = await fs.readdir(projectsRoot);
-          } catch {
-            return { success: true, exists: false, progress: null, project_name: null };
-          }
-          const cutoff = Date.now() - 6 * 60 * 60 * 1000;
-          let best: { name: string; mtime: number } | null = null;
-          for (const d of dirs) {
-            if (d.startsWith(".") || d.startsWith("_")) continue;
-            const p = path.join(projectsRoot, d, "progress.md");
-            const st = await fs.stat(p).catch(() => null);
-            if (!st || st.mtimeMs < cutoff) continue;
-            if (!best || st.mtimeMs > best.mtime) best = { name: d, mtime: st.mtimeMs };
-          }
-          if (best) {
-            raw = await tryPath(path.join(projectsRoot, best.name, "progress.md"));
-            if (raw != null) matchedProject = best.name;
+        // Path #1: explicit binding.
+        let chatRow = chatIdParam ? await this.chats.read(chatIdParam) : null;
+        if (chatRow?.project_dir && isSafeProjectDir(chatRow.project_dir)) {
+          const abs = resolveInWorkspace(chatRow.project_dir);
+          if (abs) {
+            raw = await tryPath(path.join(abs, "progress.md"));
+            if (raw != null) {
+              matchedDir = chatRow.project_dir;
+              matchedDisplay = path.basename(chatRow.project_dir);
+            }
           }
         }
 
+        // Path #2: legacy name-match for chats with no explicit binding.
+        // Once found, persist so the agent's cwd picks it up too.
+        if (raw == null && chatRow && !chatRow.project_dir) {
+          const name = chatRow.name?.trim();
+          if (name && !name.includes("/") && !name.startsWith(".") && name !== "New chat") {
+            const rel = `local_projects/${name}`;
+            const abs = resolveInWorkspace(rel);
+            if (abs) {
+              raw = await tryPath(path.join(abs, "progress.md"));
+              if (raw != null) {
+                matchedDir = rel;
+                matchedDisplay = name;
+                // Fire-and-forget: backfill the binding so subsequent calls
+                // (and runChat's cwd) use the explicit path.
+                this.chats.setProjectDir(chatRow.chat_id, rel).catch((e) => {
+                  console.warn(`[rpc] backfill project_dir for ${chatRow!.chat_id}:`, e);
+                });
+              }
+            }
+          }
+        }
+
+        // Path #3: history-scan inference. The agent (especially
+        // tick-bootstrap) routinely echoes the absolute project path back
+        // to the user — "Created project at /workspace/local_projects/foo".
+        // For chats with no explicit binding and no name match, count
+        // local_projects/<slug>/ mentions across the session JSONL and
+        // bind to the most-mentioned slug whose progress.md exists.
+        //
+        // The scan is expensive (file read + regex over all messages) but
+        // only runs ONCE per chat — once we persist via setProjectDir,
+        // path #1 catches it forever after. We cap at 500 messages so a
+        // pathologically long chat doesn't tie up the RPC thread.
+        if (raw == null && chatRow && !chatRow.project_dir) {
+          const inferred = await inferProjectDirFromHistory(
+            this.deps.home,
+            this.deps.defaultProjectCwd,
+            this.deps.workspaceRoot,
+            chatRow.session_id ?? chatRow.chat_id,
+          );
+          if (inferred) {
+            raw = await tryPath(path.join(projectsRoot, inferred, "progress.md"));
+            if (raw != null) {
+              matchedDir = `local_projects/${inferred}`;
+              matchedDisplay = inferred;
+              this.chats.setProjectDir(chatRow.chat_id, matchedDir).catch((e) => {
+                console.warn(`[rpc] backfill (history-inferred) project_dir for ${chatRow!.chat_id}:`, e);
+              });
+            }
+          }
+        }
+
+        // Path #4: manual project_name (no chat context, e.g. a future
+        // "browse plans" view). Pure name lookup, no binding side-effects.
+        if (raw == null && projectNameParam &&
+            !projectNameParam.includes("/") && !projectNameParam.startsWith(".")) {
+          const rel = `local_projects/${projectNameParam}`;
+          const abs = resolveInWorkspace(rel);
+          if (abs) {
+            raw = await tryPath(path.join(abs, "progress.md"));
+            if (raw != null) {
+              matchedDir = rel;
+              matchedDisplay = projectNameParam;
+            }
+          }
+        }
+
         if (raw == null) {
-          return { success: true, exists: false, progress: null, project_name: null };
+          return { success: true, exists: false, progress: null, project_name: null, project_dir: null };
         }
         return {
           success: true,
           exists: true,
           progress: parseProgressMd(raw),
-          project_name: matchedProject,
+          project_name: matchedDisplay,
+          project_dir: matchedDir,
         };
+      }
+
+      case "set_chat_project_dir": {
+        // Workspace-relative path or empty string to unbind. Validated here
+        // so a malformed value never reaches the DB or the agent's cwd.
+        const chatId = (params.chat_id as string)?.trim();
+        if (!chatId) throw new Error("chat_id required");
+        const raw = (params.project_dir as string | undefined)?.trim() ?? "";
+        let projectDir: string | null = null;
+        if (raw !== "") {
+          if (raw.startsWith("/") || raw.includes("..") || raw.startsWith(".")) {
+            throw new Error("project_dir must be a safe workspace-relative path");
+          }
+          const abs = path.resolve(this.deps.workspaceRoot, raw);
+          if (!abs.startsWith(this.deps.workspaceRoot + path.sep)) {
+            throw new Error("project_dir escapes workspace");
+          }
+          // Don't require the dir to exist yet — drop-to-project calls this
+          // immediately after createDirectory, and the order of the two
+          // calls is racy across NATS round-trips. The binding is just a
+          // pointer; runChat handles a missing dir by falling back to the
+          // default cwd.
+          projectDir = raw.replace(/\/+$/, "");
+        }
+        await this.chats.setProjectDir(chatId, projectDir);
+        return { success: true, project_dir: projectDir };
       }
 
       case "set_active_agent": {
@@ -488,6 +596,12 @@ export class RpcRouter {
     const chat = await this.chats.read(chatId);
     if (!chat) throw new Error(`chat not found: ${chatId}`);
 
+    // cwd stays at defaultProjectCwd even when the chat is bound to a
+    // project. Claude Code stores session JSONL under
+    // ~/.claude/projects/<encoded-cwd>/<session>.jsonl — switching cwd
+    // mid-chat would fragment history (old turns in one dir, new turns in
+    // another) and break message reads. The agent learns the project from
+    // the kickoff prompt and tick-bootstrap output, not cwd.
     const mutex = this.mutexes.get(chatId);
     const run = mutex.tryRun(async () => {
       const ac = this.aborts.register(chatId);
@@ -569,6 +683,66 @@ export interface ParsedProgress {
 }
 
 const STEP_LINE_RE = /^-\s*([☑☐])\s*(?:\(reviewed\)\s*)?(\S+)(?:\s+(.*))?$/u;
+
+// Match a local_projects/<slug> reference in message content. Slug rules
+// mirror tick-bootstrap's slugifier (lowercase kebab + dataset accessions)
+// plus a defensive cap on length so we don't capture pathological junk.
+// We tolerate optional /workspace/ prefix and either / or end-of-token
+// terminator so "local_projects/foo," and "local_projects/foo/data/x.h5"
+// both yield "foo".
+const PROJECT_REF_RE = /(?:^|[\s"'`])(?:\/workspace\/)?local_projects\/([a-z0-9][a-z0-9._-]{0,63})(?=[\s/"'`,)\]]|$)/giu;
+
+/**
+ * Scan a chat's session history for `local_projects/<slug>/` mentions and
+ * return the slug that (a) appears most often and (b) has an existing
+ * progress.md. Returns null if nothing matches. Caps at 500 messages.
+ *
+ * Used as a one-shot inference for chats with no DB binding and no
+ * chat-name match — the result is persisted so the scan only runs once.
+ */
+async function inferProjectDirFromHistory(
+  home: string,
+  cwd: string,
+  workspaceRoot: string,
+  sessionId: string,
+): Promise<string | null> {
+  let messages: LegacyMessage[] = [];
+  try {
+    messages = await readSessionMessages(home, cwd, sessionId);
+  } catch {
+    return null;
+  }
+  if (messages.length === 0) return null;
+  // Walk newest-to-oldest so we early-exit on the first viable hit, which
+  // is typically the most recent agent/user reference to the project.
+  const counts = new Map<string, number>();
+  const considered = messages.slice(-500);
+  for (const m of considered) {
+    const content = typeof m.content === "string" ? m.content : "";
+    if (!content) continue;
+    PROJECT_REF_RE.lastIndex = 0;
+    let mm: RegExpExecArray | null;
+    while ((mm = PROJECT_REF_RE.exec(content)) != null) {
+      const slug = mm[1];
+      // mm[1] is technically string|undefined under strict TS; the regex
+      // always has the capture group, but humour the type system.
+      if (!slug) continue;
+      // Skip dotted/underscored special dirs (.chat-attachments, _starter_pipelines).
+      if (slug.startsWith(".") || slug.startsWith("_")) continue;
+      counts.set(slug, (counts.get(slug) ?? 0) + 1);
+    }
+  }
+  if (counts.size === 0) return null;
+
+  // Tie-break: the slug with the most mentions whose progress.md exists.
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [slug] of ranked) {
+    const candidate = path.join(workspaceRoot, "local_projects", slug, "progress.md");
+    const ok = await fs.stat(candidate).then((s) => s.isFile()).catch(() => false);
+    if (ok) return slug;
+  }
+  return null;
+}
 
 export function parseProgressMd(raw: string): ParsedProgress {
   // Walk the file once, tracking which top-level section we're in. Plan and

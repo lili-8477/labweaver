@@ -54,6 +54,10 @@ export interface ChatInfo {
   last_activity_date?: string
   running?: boolean
   project_name?: string
+  /** Workspace-relative project directory bound to this chat (e.g.
+   *  "local_projects/foo-1a2b"). When set, the agent cd's here and harness
+   *  progress is read from <project_dir>/progress.md. Null = unbound. */
+  project_dir?: string | null
 }
 
 export interface ChatMessage {

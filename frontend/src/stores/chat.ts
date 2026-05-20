@@ -436,17 +436,26 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function refreshHarnessProgress() {
-    // Pass the chat name as a hint; the adapter falls back to the most
-    // recently-modified progress.md if the chat name doesn't match a project
-    // dir, so typed-prompt chats also see their plan.
-    const name = activeChat.value?.name
+    // The adapter resolves which progress.md to read in this order:
+    //   chat_id → chats.project_dir → legacy name-match → project_name hint.
+    // Passing chat_id keeps each session isolated to its own bound project.
+    const chatId = activeChatId.value
+    if (!chatId) {
+      harnessProgress.value = null
+      harnessProject.value = null
+      return
+    }
     try {
       const res = await natsService.invoke('get_harness_progress', {
-        project_name: name,
+        chat_id: chatId,
+        // Sent as a hint for chats with no DB binding yet — the backend only
+        // uses it as the last-resort lookup after chat_id paths miss.
+        project_name: activeChat.value?.name,
       }) as {
         success?: boolean; exists?: boolean;
         progress?: HarnessProgress | null;
         project_name?: string | null;
+        project_dir?: string | null;
       }
       if (res?.exists) {
         harnessProgress.value = res.progress ?? null
@@ -461,6 +470,18 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /** Bind a chat to a project directory. Pass empty string to unbind. */
+  async function setChatProjectDir(chatId: string, projectDir: string): Promise<void> {
+    await natsService.invoke('set_chat_project_dir', {
+      chat_id: chatId,
+      project_dir: projectDir,
+    })
+    // Update the local list so the UI doesn't have to wait for a list_chats
+    // round-trip to reflect the binding.
+    const c = chats.value.find(x => x.id === chatId)
+    if (c) c.project_dir = projectDir || null
+  }
+
   return {
     chats, activeChatId, activeChat, messages, streamingText, isStreaming,
     sending, suggestions, agents, activeAgent,
@@ -468,6 +489,6 @@ export const useChatStore = defineStore('chat', () => {
     harnessActive, harnessInstalled, harnessProgress, harnessProject,
     loadChats, createChat, deleteChat, selectChat, sendMessage,
     stopChat, loadAgents, setActiveAgent, updateChatName,
-    refreshHarnessMode, refreshHarnessProgress,
+    refreshHarnessMode, refreshHarnessProgress, setChatProjectDir,
   }
 })

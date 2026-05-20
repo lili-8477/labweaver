@@ -3,9 +3,11 @@
 // local_projects/, a new chat bound to it, and the kickoff message the
 // caller will send.
 //
-// Frontend-only: the backend has no "project" concept beyond the folder,
-// and `create_chat` doesn't currently bind a working dir. The agent learns
-// the project context from the kickoff message instead.
+// The chat→project binding is persisted via set_chat_project_dir, so the
+// adapter cd's the agent into the project for every turn and harness
+// progress.md lookups go to the right file even after the run finishes.
+// The kickoff message still spells out the working directory so the
+// agent's first turn doesn't need to query its own cwd.
 
 import { useFileStore } from '@/stores/files'
 import { useChatStore } from '@/stores/chat'
@@ -85,7 +87,18 @@ export async function createProjectWithFiles(files: File[]): Promise<CreatedProj
   }
 
   const chatId = await chatStore.createChat(projectName)
-  if (chatId) await chatStore.selectChat(chatId)
+  if (chatId) {
+    // Bind first, then select. Selecting triggers refreshHarnessProgress,
+    // which looks up by chat_id — without the binding it would miss.
+    try {
+      await chatStore.setChatProjectDir(chatId, projectDir)
+    } catch (e) {
+      // Non-fatal: the agent will still work via the kickoff message's cwd
+      // hint, just without persistent binding. Log and continue.
+      console.warn('[project-from-drop] failed to bind chat to project:', e)
+    }
+    await chatStore.selectChat(chatId)
+  }
 
   return { projectName, projectDir, workspaceDir, files: uploaded, chatId }
 }
