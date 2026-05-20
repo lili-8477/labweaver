@@ -264,54 +264,74 @@ function swallow(e: DragEvent) {
   if (e.dataTransfer?.types?.includes('Files')) e.preventDefault()
 }
 
-// Poll the harness state while self-driving is on. Two cadences:
-//   - mode (active/installed) — every 5s, cheap and tells us the marker file
-//     is still present (catches container restarts that wipe the flag).
-//   - progress.md — every 3s while sending or active, every 8s when idle,
-//     so the checklist ticks in near-real-time during a /tick run but doesn't
-//     hammer NATS when nothing's happening.
+// Harness polling. Two timers run independently because the cadences and
+// life-cycles differ:
+//
+//   - mode (active/installed) — every 5s for the whole life of ChatPanel.
+//     Cheap, and it's how we detect a restart that wipes the marker file or
+//     an external toggle (AgentPanel) flipping the mode on while we sit on
+//     a chat with no progress yet.
+//
+//   - progress.md — variable cadence depending on activity:
+//       running + sending → 3s   (a tick is in flight, items change fast)
+//       running + idle    → 8s   (between ticks)
+//       stopped + has progress → 30s (sticky final state; mostly to catch
+//                                     manual edits, slow but cheap)
+//       no progress, not active → no poll (nothing to read)
+//     The point is to keep the checklist live during /tick but not hammer
+//     NATS when the run has stopped. The stopped-state poll exists so that
+//     if the user manually edits progress.md, or kicks /tick off again,
+//     the view eventually catches up without a chat re-select.
 let harnessModeTimer: number | null = null
 let harnessProgressTimer: number | null = null
 
-function startHarnessPolling() {
-  stopHarnessPolling()
-  harnessModeTimer = window.setInterval(() => { void chat.refreshHarnessMode() }, 5000)
-  const tick = () => {
-    void chat.refreshHarnessProgress()
-    const cadence = chat.sending ? 3000 : 8000
-    harnessProgressTimer = window.setTimeout(tick, cadence)
-  }
-  tick()
+function progressCadence(): number | null {
+  if (chat.harnessActive) return chat.sending ? 3000 : 8000
+  if (chat.harnessProgress) return 30_000
+  return null
 }
+
+function scheduleProgressTick() {
+  if (harnessProgressTimer != null) {
+    clearTimeout(harnessProgressTimer)
+    harnessProgressTimer = null
+  }
+  const delay = progressCadence()
+  if (delay == null) return
+  harnessProgressTimer = window.setTimeout(() => {
+    void chat.refreshHarnessProgress().finally(scheduleProgressTick)
+  }, delay)
+}
+
 function stopHarnessPolling() {
   if (harnessModeTimer != null) { clearInterval(harnessModeTimer); harnessModeTimer = null }
   if (harnessProgressTimer != null) { clearTimeout(harnessProgressTimer); harnessProgressTimer = null }
 }
 
-// React to mode + chat changes. When harness flips on or the user switches
-// chats, kick a fresh fetch immediately so the checklist updates without
-// waiting for the next poll cycle.
-watch(() => chat.harnessActive, (active) => {
-  if (active) startHarnessPolling()
-  else {
-    stopHarnessPolling()
-    chat.harnessProgress = null
-    chat.harnessProject = null
-  }
+// Mode and chat changes both trigger an immediate fetch — waiting for the
+// next 30s tick after a chat switch would leave the checklist blank for the
+// first half-minute, which feels broken.
+watch(() => chat.harnessActive, () => {
+  void chat.refreshHarnessProgress()
+  scheduleProgressTick()
 })
 watch(() => chat.activeChatId, () => {
-  if (chat.harnessActive) void chat.refreshHarnessProgress()
+  void chat.refreshHarnessProgress()
+  scheduleProgressTick()
+})
+watch(() => chat.sending, () => {
+  // Sending flipping changes the running-cadence (3s vs 8s); reschedule so
+  // we don't wait the full idle cadence to pick up the burstier rate.
+  scheduleProgressTick()
 })
 
 onMounted(() => {
   window.addEventListener('dragover', swallow)
   window.addEventListener('drop', swallow)
-  // The first refreshHarnessMode happens via AgentPanel on its own mount,
-  // but Chat may render before Agents if it's the visible tab. Do our own
-  // first fetch so the banner shows up immediately on a hard refresh.
-  void chat.refreshHarnessMode().then(() => {
-    if (chat.harnessActive) startHarnessPolling()
-  })
+  harnessModeTimer = window.setInterval(() => { void chat.refreshHarnessMode() }, 5000)
+  void chat.refreshHarnessMode()
+  void chat.refreshHarnessProgress()
+  scheduleProgressTick()
 })
 
 onBeforeUnmount(() => {
@@ -363,12 +383,17 @@ watch(
     <!-- Chat content -->
     <template v-else>
       <!-- Self-driving banner + live checklist. Pinned above messages so it
-           stays visible as the scroll grows. Hidden entirely when the mode
-           is off — the chat behaves exactly as before in that case. -->
+           stays visible as the scroll grows. Visible whenever the mode is on
+           OR this session has a progress.md — once a run produces a plan,
+           the checklist sticks around as a record even after the harness
+           toggles off. The component itself collapses to just the banner
+           if the user folds it. -->
       <HarnessChecklist
-        v-if="chat.harnessActive"
+        v-if="chat.harnessActive || chat.harnessProgress"
+        :active="chat.harnessActive"
         :progress="chat.harnessProgress"
         :project-name="chat.harnessProject"
+        :chat-id="chat.activeChatId"
       />
 
       <div ref="messagesEl" class="messages">

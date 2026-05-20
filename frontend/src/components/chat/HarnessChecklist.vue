@@ -1,24 +1,28 @@
 <script setup lang="ts">
-// Pinned to the top of the chat panel whenever self-driving mode is on.
-// Combines two roles:
-//   1. The "is it really on?" banner — answers a question the toggle in
-//      AgentPanel can't, since the user is usually looking at the chat.
-//   2. A live checklist parsed from progress.md so the user can watch
-//      planner / executor / reviewer tick items off as /tick advances.
+// Pinned to the top of the chat panel while the session has a self-driving
+// plan, OR while harness mode is currently on. Three visual states:
 //
-// Display rules:
-//   - harnessActive=false → render nothing (component itself is wrapped in
-//     a parent v-if for the same reason; this is a belt-and-braces guard).
-//   - harnessProgress=null (no progress.md yet) → show the banner with a
-//     "no plan yet — bootstrap on first prompt" note. The user sees that
-//     the mode IS on; the plan will appear once tick-bootstrap runs.
-//   - harnessProgress.complete → green check + "complete" badge.
-import { computed } from 'vue'
+//   - running  (active=true): pulsing accent dot, "Self-driving mode" title,
+//                            "routed via /tick" hint, live progress polled.
+//   - stopped  (active=false, progress exists): static muted dot,
+//                            "Self-driving plan" title (no route hint), the
+//                            checklist remains so the user can review what
+//                            happened.
+//   - complete (progress.complete=true): green dot + COMPLETE badge,
+//                            regardless of active.
+//
+// The whole panel is foldable. The banner row is always present; the step
+// list + feedback note collapse via a chevron in the banner. Fold state is
+// remembered per chat in localStorage (key: `harness-collapsed:<chatId>`)
+// so a chat the user prefers folded stays folded across reloads.
+import { computed, ref, watch, onMounted } from 'vue'
 import type { HarnessProgress, HarnessStep } from '@/types'
 
 const props = defineProps<{
-  progress: HarnessProgress | null
-  projectName: string | null
+  active: boolean                       // harness mode marker file present
+  progress: HarnessProgress | null      // parsed progress.md for THIS chat
+  projectName: string | null            // matched project dir
+  chatId: string | null                 // for per-chat fold persistence
 }>()
 
 const stepLabel = (s: HarnessStep): string => {
@@ -29,59 +33,117 @@ const stepLabel = (s: HarnessStep): string => {
 
 const totalDone = computed(() => props.progress?.steps.filter(s => s.done).length ?? 0)
 const totalSteps = computed(() => props.progress?.steps.length ?? 0)
+
+const isComplete = computed(() => !!props.progress?.complete)
+const statusLabel = computed(() => {
+  if (isComplete.value) return 'complete'
+  if (props.active)     return 'running'
+  return 'stopped'
+})
+const titleLabel = computed(() => {
+  // Stopped sessions show a calmer "plan" wording — the harness isn't doing
+  // anything right now, the checklist is just a record.
+  if (props.active) return 'Self-driving mode'
+  return 'Self-driving plan'
+})
+
+// ---- Fold state ----
+// localStorage key includes chatId so each session has its own preference.
+// A null chatId (shouldn't normally happen since the parent v-ifs us out)
+// falls back to a shared key so we still degrade cleanly.
+const storageKey = (id: string | null) => `harness-collapsed:${id ?? '_'}`
+
+const collapsed = ref(false)
+function loadCollapsed(id: string | null) {
+  try {
+    collapsed.value = localStorage.getItem(storageKey(id)) === '1'
+  } catch {
+    collapsed.value = false
+  }
+}
+function saveCollapsed(id: string | null, value: boolean) {
+  try {
+    localStorage.setItem(storageKey(id), value ? '1' : '0')
+  } catch { /* storage disabled — keep in-memory only */ }
+}
+
+function toggleCollapsed() {
+  collapsed.value = !collapsed.value
+  saveCollapsed(props.chatId, collapsed.value)
+}
+
+onMounted(() => loadCollapsed(props.chatId))
+watch(() => props.chatId, (id) => loadCollapsed(id))
 </script>
 
 <template>
-  <div class="harness-checklist">
-    <!-- Banner row — always visible while the component is mounted. -->
-    <div class="banner" :class="{ complete: progress?.complete }">
+  <div class="harness-checklist" :class="[`state-${statusLabel}`, { collapsed }]">
+    <!-- Banner row — always visible. Clicking the row (or its chevron)
+         toggles fold; the chevron has its own button for keyboard a11y. -->
+    <button
+      type="button"
+      class="banner"
+      :aria-expanded="!collapsed"
+      :title="collapsed ? 'Show checklist' : 'Hide checklist'"
+      @click="toggleCollapsed"
+    >
       <span class="banner-dot"></span>
-      <span class="banner-title">Self-driving mode</span>
+      <span class="banner-title">{{ titleLabel }}</span>
       <span v-if="projectName" class="banner-sep">·</span>
       <span v-if="projectName" class="banner-project"><code>{{ projectName }}</code></span>
-      <span class="banner-sep">·</span>
-      <span class="banner-route">routed via <code>/tick</code></span>
+      <span v-if="active && !isComplete" class="banner-sep">·</span>
+      <span v-if="active && !isComplete" class="banner-route">routed via <code>/tick</code></span>
+      <span v-if="!active && !isComplete && progress" class="banner-sep">·</span>
+      <span v-if="!active && !isComplete && progress" class="banner-stopped-hint">stopped</span>
       <span v-if="progress" class="banner-progress">
         {{ totalDone }} / {{ totalSteps }} steps
       </span>
-      <span v-if="progress?.complete" class="banner-done-badge">complete</span>
-    </div>
+      <span v-if="isComplete" class="banner-done-badge">complete</span>
+      <span class="banner-chevron" :class="{ rotated: !collapsed }" aria-hidden="true">▸</span>
+    </button>
 
-    <!-- No progress.md yet — the bootstrap will create one on the next /tick. -->
-    <div v-if="!progress" class="empty-plan">
-      No plan yet. Send a prompt — <code>tick-bootstrap</code> will scaffold
-      <code>progress.md</code> and the checklist will appear here.
-    </div>
+    <!-- Body collapses as a whole. v-show (not v-if) so the list isn't
+         remounted on every toggle — keeps any internal scroll position. -->
+    <div v-show="!collapsed" class="body">
+      <!-- No progress.md yet — the bootstrap will create one on the next /tick. -->
+      <div v-if="!progress" class="empty-plan">
+        No plan yet. Send a prompt — <code>tick-bootstrap</code> will scaffold
+        <code>progress.md</code> and the checklist will appear here.
+      </div>
 
-    <!-- Plan exists but contains no items (planner hasn't run yet). -->
-    <div v-else-if="progress.steps.length === 0" class="empty-plan">
-      Plan is empty. Waiting for <code>tick-planner</code> to fill it on the next tick.
-    </div>
+      <!-- Plan exists but contains no items (planner hasn't run yet). -->
+      <div v-else-if="progress.steps.length === 0" class="empty-plan">
+        Plan is empty. Waiting for <code>tick-planner</code> to fill it on the next tick.
+      </div>
 
-    <ol v-else class="step-list">
-      <li
-        v-for="(s, i) in progress.steps"
-        :key="s.name + i"
-        class="step"
-        :class="{
-          done: s.done,
-          reviewed: s.reviewed,
-          'next-up': i === progress.nextStepIndex,
-        }"
-      >
-        <span class="step-box" :title="stepLabel(s)">
-          <template v-if="s.done">☑</template>
-          <template v-else>☐</template>
-        </span>
-        <span class="step-name">{{ s.name }}</span>
-        <span v-if="s.description" class="step-desc">{{ s.description }}</span>
-        <span v-if="s.reviewed" class="step-badge reviewed-badge">reviewed</span>
-        <span v-else-if="i === progress.nextStepIndex" class="step-badge next-badge">next</span>
-      </li>
-    </ol>
+      <ol v-else class="step-list">
+        <li
+          v-for="(s, i) in progress.steps"
+          :key="s.name + i"
+          class="step"
+          :class="{
+            done: s.done,
+            reviewed: s.reviewed,
+            'next-up': active && i === progress.nextStepIndex,
+          }"
+        >
+          <span class="step-box" :title="stepLabel(s)">
+            <template v-if="s.done">☑</template>
+            <template v-else>☐</template>
+          </span>
+          <span class="step-name">{{ s.name }}</span>
+          <span v-if="s.description" class="step-desc">{{ s.description }}</span>
+          <span v-if="s.reviewed" class="step-badge reviewed-badge">reviewed</span>
+          <span v-else-if="active && i === progress.nextStepIndex" class="step-badge next-badge">next</span>
+        </li>
+      </ol>
 
-    <div v-if="progress && progress.pendingFeedback > 0" class="feedback-note">
-      ⚠ {{ progress.pendingFeedback }} unaddressed review note{{ progress.pendingFeedback === 1 ? '' : 's' }} — executor will handle on the next tick.
+      <div v-if="progress && progress.pendingFeedback > 0 && active" class="feedback-note">
+        ⚠ {{ progress.pendingFeedback }} unaddressed review note{{ progress.pendingFeedback === 1 ? '' : 's' }} — executor will handle on the next tick.
+      </div>
+      <div v-else-if="progress && progress.pendingFeedback > 0" class="feedback-note feedback-stopped">
+        ⚠ {{ progress.pendingFeedback }} unaddressed review note{{ progress.pendingFeedback === 1 ? '' : 's' }} pending — resume self-driving to address.
+      </div>
     </div>
   </div>
 </template>
@@ -93,27 +155,60 @@ const totalSteps = computed(() => props.progress?.steps.length ?? 0)
   border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
   border-radius: var(--radius);
   overflow: hidden;
+  transition: border-color 0.2s;
+}
+.harness-checklist.state-stopped {
+  /* Muted border when nothing's running — the panel becomes a record, not
+     an indicator. */
+  border-color: var(--border);
+}
+.harness-checklist.state-complete {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
 }
 
 .banner {
   display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px;
+  width: 100%; padding: 8px 12px;
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   font-size: 0.85em; color: var(--text-secondary);
   border-bottom: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  /* Reset button defaults so this still reads as a banner. */
+  border-top: none; border-left: none; border-right: none;
+  font: inherit; font-size: 0.85em;
+  text-align: left; cursor: pointer;
 }
-.banner.complete {
+.banner:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.banner:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.state-stopped .banner {
+  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+  border-bottom-color: var(--border);
+}
+.state-stopped .banner:hover {
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+}
+.state-complete .banner {
   background: color-mix(in srgb, var(--success) 12%, transparent);
   border-bottom-color: color-mix(in srgb, var(--success) 25%, var(--border));
 }
+.collapsed .banner { border-bottom: none; }
+
 .banner-dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent);
   animation: pulse-dot 2s infinite;
+  flex-shrink: 0;
 }
-.banner.complete .banner-dot {
-  background: var(--success); animation: none;
+.state-stopped .banner-dot {
+  background: var(--text-muted);
+  animation: none;
+  box-shadow: none;
+}
+.state-complete .banner-dot {
+  background: var(--success); animation: none; box-shadow: none;
 }
 @keyframes pulse-dot {
   0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); }
@@ -126,6 +221,10 @@ const totalSteps = computed(() => props.progress?.steps.length ?? 0)
   background: var(--bg-tertiary); padding: 0 4px; border-radius: 3px;
   font-size: 0.95em; font-family: var(--font-mono);
 }
+.banner-stopped-hint {
+  font-size: 0.78em; letter-spacing: 0.4px;
+  color: var(--text-muted); text-transform: uppercase;
+}
 .banner-progress {
   margin-left: auto;
   font-family: var(--font-mono); font-size: 0.9em;
@@ -137,6 +236,16 @@ const totalSteps = computed(() => props.progress?.steps.length ?? 0)
   background: var(--success); color: #fff;
   text-transform: uppercase;
 }
+.banner-chevron {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  transition: transform 0.18s ease;
+  width: 12px; text-align: center;
+}
+.banner-chevron.rotated { transform: rotate(90deg); }
+.banner-progress + .banner-chevron { margin-left: 4px; }
 
 .empty-plan {
   padding: 10px 12px;
@@ -196,5 +305,9 @@ const totalSteps = computed(() => props.progress?.steps.length ?? 0)
   font-size: 0.8em; color: var(--warning, var(--text-secondary));
   background: color-mix(in srgb, var(--warning, var(--accent)) 8%, transparent);
   border-top: 1px solid var(--border);
+}
+.feedback-note.feedback-stopped {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 6%, transparent);
 }
 </style>
