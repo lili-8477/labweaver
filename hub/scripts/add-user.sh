@@ -36,6 +36,7 @@ IMAGE="${IMAGE:-claude-bioflow:dev}"
 USERNAME=""
 API_KEY=""
 DATA_MOUNTS=()
+CHPC_UNID=""
 
 usage() {
     cat <<'HELP'
@@ -43,12 +44,18 @@ Usage: add-user.sh <username> [api_key] [options]
 
 Options:
   --data, -d PATH[:MOUNT]   Mount a host dir (repeatable). Defaults to /workspace/data/<dirname>.
+  --chpc-unid, -c UNID      CHPC username (e.g. u0123456). When set, the
+                            workspace ssh config is pre-populated for the
+                            chpc-login alias and notchpeak's host keys are
+                            pre-fetched, so the user can click "CHPC · open"
+                            in the UI without further setup.
   --image, -i IMAGE         Override container image (default: claude-bioflow:dev).
   --help, -h                Show this help.
 
 Examples:
   add-user.sh alice sk-ant-api03-xxxxx
   add-user.sh bob --data /home/bob/dataset1 --data /shared/refs:/workspace/shared/refs:ro
+  add-user.sh carol --chpc-unid u0123456
 
 The script creates:
   hub/workspaces/<user>/               workspace root, bind-mounted at /workspace
@@ -66,6 +73,11 @@ while [[ $# -gt 0 ]]; do
             shift
             [[ $# -eq 0 ]] && { echo "Error: --data requires a path"; exit 1; }
             DATA_MOUNTS+=("$1"); shift
+            ;;
+        --chpc-unid|-c)
+            shift
+            [[ $# -eq 0 ]] && { echo "Error: --chpc-unid requires a UNID"; exit 1; }
+            CHPC_UNID="$1"; shift
             ;;
         --image|-i)
             shift
@@ -130,7 +142,41 @@ chmod 700 "${WORKSPACE}/.latch"
 # 700 or ssh refuses to use it.
 chmod 700 "${WORKSPACE}/.ssh"
 if [[ ! -f "${WORKSPACE}/.ssh/config" ]]; then
-    cat > "${WORKSPACE}/.ssh/config" <<'SSHCFG'
+    if [[ -n "$CHPC_UNID" ]]; then
+        # --chpc-unid was passed: write an active config the user can use
+        # immediately via the UI pill, and pre-seed notchpeak's host keys
+        # so the very first connection doesn't trip on host-key prompts.
+        cat > "${WORKSPACE}/.ssh/config" <<EOF
+# CHPC bridge — auto-populated by add-user.sh.
+# To change the UNID, edit the User line below.
+# Reference: /workspace/shared/skills/chpc-bridge/SKILL.md
+
+Host chpc-login
+    HostName notchpeak.chpc.utah.edu
+    User ${CHPC_UNID}
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 8h
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile ~/.ssh/known_hosts
+EOF
+        if command -v ssh-keyscan >/dev/null 2>&1; then
+            if ssh-keyscan -H notchpeak.chpc.utah.edu > "${WORKSPACE}/.ssh/known_hosts" 2>/dev/null \
+                && [[ -s "${WORKSPACE}/.ssh/known_hosts" ]]; then
+                chmod 600 "${WORKSPACE}/.ssh/known_hosts"
+                echo "  pre-seeded notchpeak.chpc.utah.edu host keys"
+            else
+                rm -f "${WORKSPACE}/.ssh/known_hosts"
+                echo "  warn: ssh-keyscan against notchpeak failed (no campus network / VPN?); accept-new will fill known_hosts on first connect"
+            fi
+        fi
+    else
+        # No --chpc-unid: write a commented template; the user can either
+        # edit ${WORKSPACE}/.ssh/config to fill in their UNID, or re-run
+        # add-user.sh later isn't supported — they edit by hand.
+        cat > "${WORKSPACE}/.ssh/config" <<'SSHCFG'
 # CHPC bridge — uncomment the Host stanza and fill in your UNID,
 # then open the bridge via the "CHPC · open" pill in the UI.
 # Reference: /workspace/shared/skills/chpc-bridge/SKILL.md
@@ -146,6 +192,7 @@ if [[ ! -f "${WORKSPACE}/.ssh/config" ]]; then
 #     StrictHostKeyChecking accept-new
 #     UserKnownHostsFile ~/.ssh/known_hosts
 SSHCFG
+    fi
     chmod 600 "${WORKSPACE}/.ssh/config"
 fi
 
@@ -384,6 +431,12 @@ docker exec -u root "${CONTAINER}" chown -R node:node /venv 2>/dev/null \
     && echo "  chown /venv -> node:node OK" \
     || echo "  chown /venv skipped (already owned, or container not ready)"
 
+if [[ -n "$CHPC_UNID" ]]; then
+    CHPC_LINE="CHPC bridge:   pre-configured for UNID '${CHPC_UNID}' — click \"CHPC · open\" in the UI"
+else
+    CHPC_LINE="CHPC bridge:   not configured — edit ${WORKSPACE}/.ssh/config or rerun with --chpc-unid"
+fi
+
 cat <<SUMMARY
 
 === User '${USERNAME}' created ===
@@ -395,6 +448,7 @@ Frontend connection:
   WebSocket URL: ws://localhost:8088/ws/   (front with TLS for remote access)
   Service ID:    ${SERVICE_ID}
   Username:      ${USERNAME}  (HTTP Basic)
+  ${CHPC_LINE}
 
 Drop skills into:
   ${WORKSPACE}/.claude/skills/<name>/SKILL.md
