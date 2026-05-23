@@ -15,6 +15,10 @@ FROM pantheon-agents-sc:latest
 #    `jq` is required by the memory SessionStart hook
 #    (hub/skeleton/harness/hooks/memory_session_start.sh) which parses the
 #    /memory/context JSON response.
+#    `openssh-client` + `rsync` power the CHPC bridge (chpc_bridge_* RPCs in
+#    the adapter; pill in the frontend). `build-essential` is required by
+#    node-pty's node-gyp fallback when no prebuilt binary is available for
+#    this Node/glibc/arch combination — kept lean by removing apt lists.
 USER root
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         curl \
@@ -22,6 +26,9 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
         gnupg \
         jq \
         tini \
+        openssh-client \
+        rsync \
+        build-essential \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -77,7 +84,9 @@ RUN groupadd --gid "${GID}" node \
     && mkdir -p /home/node/.claude/skills \
                 /home/node/.claude/agents \
                 /home/node/.claude/projects \
-    && chown -R node:node /home/node/.claude /opt/adapter /opt/mcp-memory \
+                /home/node/.ssh \
+    && chown -R node:node /home/node/.claude /home/node/.ssh /opt/adapter /opt/mcp-memory \
+    && chmod 700 /home/node/.ssh \
     && chmod +x /opt/adapter/kernel-bridge.py
 # NOTE: `/venv` is inherited from the base image owned by root. We intentionally
 # do NOT chown it here — doing so rewrites ~10k file inode bits and forces a

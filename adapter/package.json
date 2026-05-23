@@ -20,6 +20,7 @@
     "@anthropic-ai/claude-agent-sdk": "0.2.116",
     "@anthropic-ai/claude-code": "2.1.116",
     "nats": "2.29.3",
+    "node-pty": "^1.0.0",
     "pg": "^8.13.1"
   },
   "devDependencies": {

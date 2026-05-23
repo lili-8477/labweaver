@@ -216,3 +216,43 @@ Repo refs: `docs/specification.md` (JSON spec), `docs/adding_evals.md` (authorin
 Contrast with `grub-set-default`, which writes `saved_entry` and persists until changed. Use `grub-reboot` when you want to boot a non-default kernel *once* — e.g. temporarily falling back to 6.8.0-110 because the running 6.8.0-111 has no matching `linux-modules-nvidia-590` package yet. Auto-updates can later put you back on the newest kernel without a manual revert.
 
 Caveat: requires `GRUB_DEFAULT=saved` (or equivalent) in `/etc/default/grub`. Ubuntu defaults to this; a hardcoded `GRUB_DEFAULT=0` silently ignores the override.
+
+## 2026-05-13 — Claude Code login: how the auth flows from `claude /login` to a spawned subprocess
+
+**Q:** How does the "logged-in" auth work for Claude Code, especially when it's invoked as a subprocess (like the bioflow adapter does)?
+
+**A:** OAuth, with the token persisted to a single JSON file.
+
+1. `claude /login` opens a browser to console.anthropic.com, you grant access, Anthropic returns a long-lived **refresh token** + short-lived **access token**.
+2. Both are stored in `~/.claude.json` (mode 0600). No env var, no daemon — just the file.
+3. Every spawn of `claude` (interactive or via subprocess) reads `~/.claude.json`, refreshes the access token if expired, and attaches `Authorization: Bearer <access>` to its API calls.
+4. **Precedence**: `ANTHROPIC_API_KEY` env var wins if set (→ API billing); otherwise the `.claude.json` OAuth tokens are used (→ Max plan billing); otherwise it prompts for login. This is why a stray `ANTHROPIC_API_KEY` in a container's env can silently flip the whole platform off your Max subscription.
+5. **Persistence in this stack**: `.claude.json` lives in each workspace container's writable overlay (not in a bind mount). It survives `docker restart` but is wiped by `docker rm` + `docker run`. To make it survive recreates, bind-mount `~/.claude.json` from the host the same way `settings.json` already is.
+
+## 2026-05-22 — Porting claude-bioflow to an HPC where only Singularity is available
+
+**Q:** The backend service is based on docker containers. If I want to move all the infra to CHPC, where only Singularity is available, will the design still work?
+
+**A:** Technically possible; the application code is portable, but three pieces of the design need rework and one (per-user long-running workspaces) fights HPC conventions.
+
+What ports cleanly: images convert via `singularity build foo.sif docker-archive://...`, bind mounts are 1:1, `--nv` replaces `--gpus all`, no source changes to the adapter / indexer / frontend.
+
+What needs rework:
+1. **Networking.** Singularity has no daemon-managed bridge. Today the stack relies on Docker DNS (`claude-bioflow-postgres`, `claude-bioflow-nats`). Replace with `127.0.0.1:<port>` on a single node, or explicit hostnames over the cluster interconnect.
+2. **Orchestration.** No `docker-compose` equivalent. `singularity instance start <sif> <name>` is the closest, but with no dependency ordering, health checks, or restart policy. Replace `hub/docker-compose.yml` with a SLURM job, a startup shell script, or `singularity-compose`. The per-user spawn in `recreate-user.sh` becomes a `singularity instance start` call.
+3. **Per-user long-running containers.** HPC schedulers expect time-bounded jobs, not always-on user services. Either run workspaces inside interactive SLURM sessions (they die with the job) or flip to ephemeral workspaces with state on NFS.
+
+Pragmatic split: keep shared infra (postgres, nats, indexer, embedder, frontend proxy) on a small always-on VM *outside* HPC, and use HPC only for the per-user workspace containers that run scanpy/Seurat — they reach the shared services over the cluster's outbound network. Preserves the architecture without forcing HPC to act like a Docker host.
+
+Site-specific blockers to verify at CHPC: long-running Singularity instances on login nodes vs job-only; whether any user-facing port is exposed at the cluster perimeter (needed for frontend ingress); NFS write performance for postgres' data dir (NFS-hosted postgres is usually unhappy).
+
+## 2026-05-23 — Per-workspace CHPC UNID vs container UID
+
+**Q:** For each container, do I need to set a fixed UID for CHPC access?
+
+**A:** Two separate identifiers, often confused:
+
+- **Container Linux UID** (`node` = 1001) is set once in `image/Dockerfile` (`ARG UID=1001`) and is shared by every workspace. It has to match the host UID that owns the bind-mounted dirs, so don't vary it per user.
+- **CHPC UNID** (e.g. `u6025146`) is the researcher's identity on CHPC. It lives in `hub/workspaces/<workspace>/.ssh/config` on the `User` line, one per workspace, and survives `recreate-user.sh` because `.ssh` is a bind mount.
+
+So the answer is "yes, per workspace, but it's the CHPC UNID, not a Linux UID." Today it's a manual edit after `add-user.sh`; a `--chpc-unid <unid>` flag on `add-user.sh` would `sed` the placeholder at provision time — same shape as the existing `--data` flag.

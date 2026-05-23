@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { ChatsRepo } from "./chats-repo.js";
+import { ChpcBridge, type OpenRequest } from "./chpc-bridge-rpc.js";
 import { runTurn } from "./claude.js";
 import { AbortRegistry, ChatMutexRegistry } from "./concurrency.js";
 import { FileManager } from "./fs-rpc.js";
@@ -46,12 +47,23 @@ export class RpcRouter {
   private files: FileManager;
   private notebooks: NotebookManager;
   private h5ad: H5adService;
+  private chpc: ChpcBridge;
   private mutexes = new ChatMutexRegistry();
   private aborts = new AbortRegistry();
 
   constructor(private deps: RpcDeps) {
     this.chats = deps.chats;
     this.files = new FileManager(deps.workspaceRoot);
+    // CHPC bridge: publishes OpenEvent frames on pantheon.stream.chpc_bridge_events.
+    this.chpc = new ChpcBridge(deps.home, (ev) => {
+      const subject = deps.streamSubject("chpc_bridge_events");
+      deps.publishRaw(subject, {
+        type: "chpc_bridge",
+        session_id: deps.serviceId,
+        timestamp: Date.now() / 1000,
+        data: ev,
+      });
+    });
     // Kernel session_id = `<prefix>_<hash-of-notebook-path>`. One kernel
     // per notebook so their variable namespaces don't bleed together.
     const kernelSessionPrefix = `k_${deps.serviceId.slice(0, 16)}`;
@@ -584,6 +596,33 @@ export class RpcRouter {
         if (!kind) throw new Error("kind required");
         const plotParams = (params.params as Record<string, unknown>) ?? {};
         const res = await this.h5ad.plot(p, kind, plotParams);
+        return { success: true, ...res };
+      }
+
+      case "chpc_bridge_status": {
+        const status = await this.chpc.status();
+        return { success: true, status };
+      }
+
+      case "chpc_bridge_open": {
+        const password = params.password as string | undefined;
+        const duo = params.duo as OpenRequest["duo"] | undefined;
+        const requestId = params.requestId as string | undefined;
+        if (!password || typeof password !== "string") throw new Error("password required");
+        if (!requestId || typeof requestId !== "string") throw new Error("requestId required");
+        if (!duo || (duo.kind !== "push" && duo.kind !== "passcode")) {
+          throw new Error("duo.kind must be 'push' or 'passcode'");
+        }
+        if (duo.kind === "passcode" && (!duo.code || typeof duo.code !== "string")) {
+          throw new Error("duo.code required when duo.kind === 'passcode'");
+        }
+        // Fire-and-forget — open() returns immediately, status arrives via stream.
+        const res = await this.chpc.open({ password, duo, requestId });
+        return { success: true, ...res };
+      }
+
+      case "chpc_bridge_close": {
+        const res = await this.chpc.close();
         return { success: true, ...res };
       }
 

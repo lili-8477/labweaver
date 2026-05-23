@@ -5,6 +5,7 @@ import { useChatStore } from '@/stores/chat'
 import { useFileStore } from '@/stores/files'
 import ChatSidebar from '@/components/chat/ChatSidebar.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
+import ChpcBridgePill from '@/components/layout/ChpcBridgePill.vue'
 import ModelSelect from '@/components/layout/ModelSelect.vue'
 import FileTree from '@/components/files/FileTree.vue'
 import FileViewer from '@/components/files/FileViewer.vue'
@@ -157,6 +158,7 @@ const connStatus = computed(() => {
           <span class="status-dot"></span>
           {{ connStatus.label }}
         </span>
+        <ChpcBridgePill />
       </div>
       <div class="topbar-actions">
         <ModelSelect />

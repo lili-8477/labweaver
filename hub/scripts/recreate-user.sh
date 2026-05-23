@@ -50,6 +50,31 @@ fi
 mkdir -p "${WORKSPACE}/.latch"
 chmod 700 "${WORKSPACE}/.latch"
 
+# CHPC bridge home — see hub/workspaces/shared/skills/chpc-bridge/SKILL.md.
+# Bind-mounted to /home/node/.ssh so multiplex socket + config persist across
+# container recreate. mode 700 required by ssh.
+mkdir -p "${WORKSPACE}/.ssh"
+chmod 700 "${WORKSPACE}/.ssh"
+if [[ ! -f "${WORKSPACE}/.ssh/config" ]]; then
+    cat > "${WORKSPACE}/.ssh/config" <<'SSHCFG'
+# CHPC bridge — uncomment the Host stanza and fill in your UNID,
+# then open the bridge via the "CHPC · open" pill in the UI.
+# Reference: /workspace/shared/skills/chpc-bridge/SKILL.md
+#
+# Host chpc-login
+#     HostName notchpeak.chpc.utah.edu
+#     User <YOUR-UNID>
+#     ControlMaster auto
+#     ControlPath ~/.ssh/cm-%r@%h:%p
+#     ControlPersist 8h
+#     ServerAliveInterval 60
+#     ServerAliveCountMax 3
+#     StrictHostKeyChecking accept-new
+#     UserKnownHostsFile ~/.ssh/known_hosts
+SSHCFG
+    chmod 600 "${WORKSPACE}/.ssh/config"
+fi
+
 if [[ -d "${SKELETON_DIR}" ]]; then
     mkdir -p "${WORKSPACE}/.claude/commands" \
              "${WORKSPACE}/.claude/agents" \
@@ -162,6 +187,7 @@ docker run -d \
     -v "${WORKSPACE}/.claude/settings.json:/home/node/.claude/settings.json" \
     -v "${WORKSPACE}/.claude/claude-projects:/home/node/.claude/projects" \
     -v "${WORKSPACE}/.latch:/home/node/.latch" \
+    -v "${WORKSPACE}/.ssh:/home/node/.ssh" \
     -v "${SHARED_DIR}/reference:/workspace/shared/reference:ro" \
     -v "${SHARED_DIR}/projects:/workspace/shared/projects" \
     -v "${SHARED_DIR}/skills:/home/node/.claude/skills-shared:ro" \

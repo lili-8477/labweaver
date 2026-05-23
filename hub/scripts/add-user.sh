@@ -119,10 +119,35 @@ mkdir -p "${WORKSPACE}/.claude/skills" \
          "${WORKSPACE}/.claude/commands" \
          "${WORKSPACE}/.claude/hooks" \
          "${WORKSPACE}/local_projects" \
-         "${WORKSPACE}/.latch"
+         "${WORKSPACE}/.latch" \
+         "${WORKSPACE}/.ssh"
 # .latch holds the Latch CLI token (used by scbench downloads). Credential —
 # bind-mounted to /home/node/.latch so it survives container recreates.
 chmod 700 "${WORKSPACE}/.latch"
+# .ssh is the CHPC bridge's home — see hub/workspaces/shared/skills/chpc-bridge/.
+# Bind-mounted to /home/node/.ssh inside the container so the SSH multiplex
+# master socket + config + known_hosts survive container recreate. Must be
+# 700 or ssh refuses to use it.
+chmod 700 "${WORKSPACE}/.ssh"
+if [[ ! -f "${WORKSPACE}/.ssh/config" ]]; then
+    cat > "${WORKSPACE}/.ssh/config" <<'SSHCFG'
+# CHPC bridge — uncomment the Host stanza and fill in your UNID,
+# then open the bridge via the "CHPC · open" pill in the UI.
+# Reference: /workspace/shared/skills/chpc-bridge/SKILL.md
+#
+# Host chpc-login
+#     HostName notchpeak.chpc.utah.edu
+#     User <YOUR-UNID>
+#     ControlMaster auto
+#     ControlPath ~/.ssh/cm-%r@%h:%p
+#     ControlPersist 8h
+#     ServerAliveInterval 60
+#     ServerAliveCountMax 3
+#     StrictHostKeyChecking accept-new
+#     UserKnownHostsFile ~/.ssh/known_hosts
+SSHCFG
+    chmod 600 "${WORKSPACE}/.ssh/config"
+fi
 
 # Seed a minimal Claude Code settings file so the CLI has sensible defaults.
 if [[ ! -f "${WORKSPACE}/.claude/settings.json" ]]; then
@@ -295,6 +320,8 @@ MOUNTS=(
     # Persist Claude Code session JSONLs across container recreations.
     -v "${WORKSPACE}/.claude/claude-projects:/home/node/.claude/projects"
     -v "${WORKSPACE}/.latch:/home/node/.latch"
+    # CHPC SSH bridge: config + known_hosts + multiplex socket all live here.
+    -v "${WORKSPACE}/.ssh:/home/node/.ssh"
     -v "${SHARED_DIR}/reference:/workspace/shared/reference:ro"
     -v "${SHARED_DIR}/projects:/workspace/shared/projects"
     -v "${SHARED_DIR}/skills:/home/node/.claude/skills-shared:ro"

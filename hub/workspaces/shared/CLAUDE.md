@@ -13,6 +13,7 @@ Shared skills (read-only, available to every workspace):
 | ChIP-seq, CUT&RUN, CUT&Tag: peaks, motifs, differential binding | `chip-seq` |
 | Pathway / gene-set enrichment (ORA, GSEA, ssGSEA) | `pathway-analysis` |
 | Differential expression (bulk, scRNA-seq pseudobulk, composition) | `differential-expression` |
+| Dispatching work to CHPC: SSH multiplex, remote commands, SLURM submit, file transfer | `chpc-bridge` |
 
 Invoke via `/<skill-name>` or the Skill tool.
 
