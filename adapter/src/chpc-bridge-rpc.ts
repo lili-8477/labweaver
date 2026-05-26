@@ -142,6 +142,14 @@ export class ChpcBridge {
       return { accepted: true };
     }
 
+    // Reap any stale ControlPath socket from a prior master that died (e.g.
+    // killed by container recreate — the socket file lives in the bind-mounted
+    // ~/.ssh and survives, but the process behind it doesn't). Without this,
+    // `ssh -NMf` exits 0 after auth yet never binds the new master to the
+    // already-taken path, producing the classic "ssh exited 0 but master not
+    // running" error. We already know status is "down" at this point.
+    await this.cleanStaleSocket(cfg);
+
     // Spawn ssh -NMf chpc-login under a PTY so password + Duo prompts behave.
     // -f forces backgrounding *after* auth completes, so the pty child exits
     // cleanly when the master is established.
@@ -269,6 +277,23 @@ export class ChpcBridge {
 
   private fail(requestId: string, code: Extract<OpenEvent, { phase: "error" }>["code"], message: string): void {
     this.publishEvent({ requestId, phase: "error", code, message });
+  }
+
+  /** Remove a stale ControlPath socket for this host, if one exists. The path
+   *  is built from User + HostName + port (default 22). Best-effort; ignores
+   *  ENOENT. We don't glob ~/.ssh/cm-* to avoid clobbering a live master for
+   *  some unrelated host the user has open. */
+  private async cleanStaleSocket(cfg: ConfigInfo): Promise<void> {
+    if (!cfg.user || !cfg.host) return;
+    const socket = path.join(this.home, ".ssh", `cm-${cfg.user}@${cfg.host}:22`);
+    try {
+      await fs.unlink(socket);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+        // Surface as a warning event but keep going — ssh may still succeed.
+        console.warn(`[chpc-bridge] could not unlink stale socket ${socket}: ${(e as Error).message}`);
+      }
+    }
   }
 
   private async readConfig(): Promise<ConfigInfo> {
