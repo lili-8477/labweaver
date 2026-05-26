@@ -94,6 +94,20 @@ Rules:
   `nvidia-container-toolkit` and the container was started with `--gpus all`.
   Don't hard-require it — check and fall back to CPU gracefully.
 
+## After submitting a SLURM job (sbatch on CHPC)
+
+Once `sbatch` returns `Submitted batch job <jobid>`, **end the turn cleanly**. Do **not** say "I'll be notified when it finishes", "I'll let you know when it's done", or any variant that implies you're waiting in the background. There is no notification mechanism — the `posttool_jobid.sh` hook only appends the jobid to `~/.jobs.log`; nothing polls, nothing pings you back.
+
+Correct close-out for that turn:
+
+- State the jobid and which cluster (e.g. `Submitted job 13155862 on notchpeak`).
+- One line on what the job is doing and where its outputs will land (`results/...`, log path).
+- Tell the user how to ask for a status check (e.g. *"Tell me 'status 13155862' to check"*).
+
+When the user later asks for status, run `squeue -j <jobid>` or `sacct -j <jobid>` via the CHPC bridge. If the job is finished, summarize results from the log/output files in this same turn — don't submit another job in passing.
+
+Why: pretending to wait makes the chat look hung. The model isn't actually waiting — it's just emitted misleading text and exited the turn. The next user prompt then has to drag a long resumed transcript through the model, which is slow.
+
 ## Installing Python packages
 
 `/venv` is the only Python kernel — install everything into it. Do **not** run `python -m venv …` to make a project-local venv; nothing in this stack can reach it (no kernel resolves there, and adding a new kernelspec breaks notebooks per the rule above).
