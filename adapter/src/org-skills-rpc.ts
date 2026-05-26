@@ -17,7 +17,7 @@ export async function listOrgSkills(workspaceRoot: string): Promise<SkillSummary
   }
   const out: SkillSummary[] = [];
   for (const it of entries) {
-    if (!it.isDirectory()) continue;
+    if (!it.isDirectory() && !it.isSymbolicLink()) continue;
     const skill = join(orgSkillsDir, it.name);
     let manifest: string;
     try {
