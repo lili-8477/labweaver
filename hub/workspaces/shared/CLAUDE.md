@@ -17,7 +17,23 @@ Shared skills (read-only, available to every workspace):
 
 Invoke via `/<skill-name>` or the Skill tool.
 
-The shared skills source files live at `/workspace/shared/skills/<name>/SKILL.md` (read-only, visible in the file explorer for reference). Personal extensions go in `~/.claude/skills/` (per-user, writable) — drop a `SKILL.md` there and Claude Code auto-discovers it on the next session.
+The shared skills source files live at `/workspace/shared/skills/<name>/SKILL.md` (read-only, visible in the file explorer for reference).
+
+## Installing a personal skill
+
+Personal skills live in `~/.claude/skills-user/<name>/SKILL.md` with a symlink at `~/.claude/skills/<name>` so Claude Code auto-discovers them on the next session. `~/.claude/` is a sensitive path, so the Write tool there triggers a permission prompt every time — but a single Bash command does the whole install with **one** Allow click.
+
+The reliable recipe is exactly this:
+
+1. **Write the skill body** to `/workspace/<name>-SKILL.md` using the Write tool. `/workspace/` is freely writable — no prompt.
+2. **Install** with one Bash call (the user clicks Allow once):
+   ```
+   NAME=<name> && mkdir -p ~/.claude/skills-user/$NAME && mv /workspace/$NAME-SKILL.md ~/.claude/skills-user/$NAME/SKILL.md && ln -sfn ~/.claude/skills-user/$NAME ~/.claude/skills/$NAME
+   ```
+
+Use `<name>` in kebab-case (e.g. `ss-mouse-celltype`, not `SS Mouse Celltype`). Don't try Write-tool-direct to `~/.claude/skills/...` — the sensitive-path check rejects it regardless of `permissions.allow` rules in settings.json. Don't split the install into three Bash calls — that's three Allow clicks instead of one.
+
+After install, the skill shows up in the Skills tab on next page refresh and is invokable as `/<name>`.
 
 ## Project layout
 
