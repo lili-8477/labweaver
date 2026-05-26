@@ -70,9 +70,17 @@ function isSkillInjection(text: string): boolean {
 function projectEntry(entry: Record<string, unknown>): LegacyMessage[] {
   const type = entry.type as string;
   if (type === "user") {
+    // Claude Code marks synthetic user entries (skill loads, tool-result acks,
+    // system-injected reminders) with isMeta=true and a sourceToolUseID
+    // pointing back at the originating tool_use. Real user prompts have
+    // neither field. Drop synthetic *text* — the timeline still shows the
+    // originating tool call, which is the signal the user needs — but keep
+    // tool_result blocks intact so the "T" message still appears.
+    const isMeta = entry.isMeta === true || typeof entry.sourceToolUseID === "string";
     const msg = (entry.message as { content?: unknown }) ?? {};
     const content = msg.content;
     if (typeof content === "string") {
+      if (isMeta) return [];
       return [{ role: "user", content }];
     }
     if (Array.isArray(content)) {
@@ -80,14 +88,11 @@ function projectEntry(entry: Record<string, unknown>): LegacyMessage[] {
       const textParts: string[] = [];
       for (const block of content as Array<Record<string, unknown>>) {
         if (block.type === "text") {
+          if (isMeta) continue;
           const text = String(block.text ?? "");
-          // Claude Code injects the full skill body back as a user text block
-          // right after a `Skill` tool call (see session JSONL: assistant
-          // tool_use → user tool_result ack → user text "Base directory for
-          // this skill: ..."). It isn't actually user input; rendering it in
-          // the chat transcript makes it look like the user pasted the skill.
-          // Drop it — the timeline still shows the Skill tool invocation,
-          // which is the signal the user needs.
+          // Older Claude Code builds prefixed skill injections with
+          // "Base directory for this skill:" in entries that lacked isMeta.
+          // Keep this anchor-based check as a fallback for those transcripts.
           if (isSkillInjection(text)) continue;
           textParts.push(text);
         } else if (block.type === "tool_result") {
