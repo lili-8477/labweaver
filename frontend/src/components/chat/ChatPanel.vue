@@ -8,10 +8,13 @@ import ExecutionTimeline from '@/components/chat/ExecutionTimeline.vue'
 import HarnessChecklist from '@/components/chat/HarnessChecklist.vue'
 import { isImage, makeAttachment, uploadAttachment, discardAttachmentFile, type ChatAttachment } from '@/services/chat-attachments'
 import { createProjectWithFiles, composeKickoffMessage, type CreatedProject } from '@/services/project-from-drop'
-import { queueUpload } from '@/services/upload'
+import { queueUpload, cancelUpload } from '@/services/upload'
+import { useUploadsStore } from '@/stores/uploads'
+import { formatFileSize } from '@/utils/format'
 import { isSupported as voiceSupported, startVoice, type VoiceSession } from '@/services/voice'
 
 const chat = useChatStore()
+const uploads = useUploadsStore()
 const input = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 
@@ -20,6 +23,28 @@ const isDragging = ref(false)
 const dragDepth = ref(0)
 const creatingProject = ref(false)
 const projectError = ref<string | null>(null)
+// IDs of upload entries belonging to the in-flight project drop. Used to
+// look up live progress in the uploads store and to cancel the whole batch.
+const creatingProjectIds = ref<string[]>([])
+const projectCanceled = ref(false)
+
+const activeProjectUpload = computed(() => {
+  for (const id of creatingProjectIds.value) {
+    const u = uploads.items.find(i => i.id === id)
+    if (u && (u.state === 'uploading' || u.state === 'pending')) return u
+  }
+  return null
+})
+const activeProjectPct = computed(() => {
+  const u = activeProjectUpload.value
+  if (!u || u.totalBytes <= 0) return 0
+  return Math.min(100, Math.floor((u.bytesSent / u.totalBytes) * 100))
+})
+
+function cancelProjectUpload() {
+  projectCanceled.value = true
+  for (const id of creatingProjectIds.value) cancelUpload(id)
+}
 // A drop creates the project + uploads files, but the kickoff message waits
 // here until the user actually hits Send. They can type more context first,
 // or just send for the default "what can you do with this" overview.
@@ -201,6 +226,8 @@ function hasFilesInDrag(e: DragEvent): boolean {
 async function startProjectFromFiles(files: File[]) {
   if (creatingProject.value || chat.sending) return
   creatingProject.value = true
+  creatingProjectIds.value = []
+  projectCanceled.value = false
   projectError.value = null
   try {
     if (pendingProject.value) {
@@ -208,17 +235,28 @@ async function startProjectFromFiles(files: File[]) {
       // pending project rather than creating a second one.
       const proj = pendingProject.value
       for (const f of files) {
-        const { promise } = queueUpload(f, proj.projectDir)
+        if (projectCanceled.value) break
+        const { id, promise } = queueUpload(f, proj.projectDir)
+        creatingProjectIds.value.push(id)
         await promise
+        if (projectCanceled.value) break
         proj.files.push({ name: f.name, workspacePath: `${proj.workspaceDir}/${f.name}` })
       }
     } else {
-      pendingProject.value = await createProjectWithFiles(files)
+      pendingProject.value = await createProjectWithFiles(files, {
+        onUploadQueued: (id) => { creatingProjectIds.value.push(id) },
+        isCanceled: () => projectCanceled.value,
+      })
     }
   } catch (err) {
-    projectError.value = (err as Error)?.message || String(err)
+    // User-initiated cancel surfaces as Error('canceled') — not an error path.
+    if (!projectCanceled.value && (err as Error)?.message !== 'canceled') {
+      projectError.value = (err as Error)?.message || String(err)
+    }
   } finally {
     creatingProject.value = false
+    creatingProjectIds.value = []
+    projectCanceled.value = false
   }
 }
 
@@ -471,9 +509,34 @@ watch(
           <div class="drop-overlay-sub">images attach &middot; everything else starts a new project</div>
         </div>
 
-        <div v-if="creatingProject" class="project-status">
-          <span class="project-status-spinner"></span>
-          <span>Uploading to project…</span>
+        <div v-if="creatingProject" class="project-status project-status-uploading">
+          <div class="upload-progress-row">
+            <span class="project-status-spinner"></span>
+            <span class="upload-progress-label">
+              <template v-if="activeProjectUpload">
+                Uploading <code>{{ activeProjectUpload.fileName }}</code>
+              </template>
+              <template v-else>
+                Preparing project…
+              </template>
+            </span>
+            <span v-if="activeProjectUpload" class="upload-progress-bytes">
+              {{ formatFileSize(activeProjectUpload.bytesSent) }} /
+              {{ formatFileSize(activeProjectUpload.totalBytes) }}
+              · {{ activeProjectPct }}%
+            </span>
+            <button
+              class="upload-progress-cancel"
+              @click="cancelProjectUpload"
+              title="Cancel upload"
+            >Cancel</button>
+          </div>
+          <div v-if="activeProjectUpload" class="upload-progress-bar">
+            <div
+              class="upload-progress-bar-fill"
+              :style="{ width: activeProjectPct + '%' }"
+            ></div>
+          </div>
         </div>
         <div v-else-if="pendingProject" class="project-status">
           <span class="project-status-icon">&#x1F4C1;</span>
@@ -627,6 +690,41 @@ watch(
 .project-status-dismiss {
   background: transparent; border: none; color: inherit;
   cursor: pointer; font-size: 1.1em; line-height: 1; padding: 0 4px;
+}
+
+.project-status-uploading { flex-direction: column; align-items: stretch; gap: 6px; }
+.upload-progress-row {
+  display: flex; align-items: center; gap: 8px;
+}
+.upload-progress-label {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.upload-progress-label code {
+  background: var(--bg-tertiary); padding: 0 4px; border-radius: 3px;
+  font-size: 0.95em;
+}
+.upload-progress-bytes {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums; font-size: 0.92em;
+  flex-shrink: 0;
+}
+.upload-progress-cancel {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: 4px; padding: 2px 10px;
+  font-size: 0.9em; cursor: pointer; line-height: 1.4;
+}
+.upload-progress-cancel:hover {
+  background: var(--bg-hover); color: var(--danger); border-color: var(--danger);
+}
+.upload-progress-bar {
+  height: 6px; background: var(--bg-tertiary);
+  border-radius: 3px; overflow: hidden;
+}
+.upload-progress-bar-fill {
+  height: 100%; background: var(--accent);
+  transition: width 0.12s linear;
 }
 
 .attachment-strip {

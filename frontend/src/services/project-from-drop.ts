@@ -66,9 +66,22 @@ export function composeKickoffMessage(proj: CreatedProject, userText: string): s
   ].join('\n')
 }
 
+export interface CreateProjectOptions {
+  /** Called with each upload's id immediately after it is queued, so the
+   *  caller can render progress (and target the right id for cancellation). */
+  onUploadQueued?: (id: string, fileName: string) => void
+  /** Polled before each upload and after each await; if it returns true the
+   *  batch aborts and the function throws `Error('canceled')`. The caller is
+   *  responsible for actually calling cancelUpload() on outstanding ids. */
+  isCanceled?: () => boolean
+}
+
 /** Create local_projects/<slug>-<hex>/, upload each file into it, then
  *  create and select a new chat named after the project. */
-export async function createProjectWithFiles(files: File[]): Promise<CreatedProject> {
+export async function createProjectWithFiles(
+  files: File[],
+  opts: CreateProjectOptions = {},
+): Promise<CreatedProject> {
   if (files.length === 0) throw new Error('No files to create project from')
   const filesStore = useFileStore()
   const chatStore = useChatStore()
@@ -81,8 +94,11 @@ export async function createProjectWithFiles(files: File[]): Promise<CreatedProj
 
   const uploaded: { name: string; workspacePath: string }[] = []
   for (const f of files) {
-    const { promise } = queueUpload(f, projectDir)
+    if (opts.isCanceled?.()) throw new Error('canceled')
+    const { id, promise } = queueUpload(f, projectDir)
+    opts.onUploadQueued?.(id, f.name)
     await promise
+    if (opts.isCanceled?.()) throw new Error('canceled')
     uploaded.push({ name: f.name, workspacePath: `${workspaceDir}/${f.name}` })
   }
 

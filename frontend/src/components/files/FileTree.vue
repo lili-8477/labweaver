@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useFileStore } from '@/stores/files'
 import { useUploadsStore } from '@/stores/uploads'
 import { queueUpload, cancelUpload, retryUpload } from '@/services/upload'
-import { getFileIcon } from '@/utils/format'
+import { getFileIcon, formatFileSize } from '@/utils/format'
 import { basenameOf, isAncestorOrSelf, joinPath, parentOf } from '@/utils/path'
 import { walkDataTransferItems } from '@/utils/dnd'
 import { natsService } from '@/services/nats'
@@ -543,13 +543,6 @@ function onRetryUpload(id: string) {
 function onClearUploads() {
   uploads.clearFinished()
 }
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return n + ' B'
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
-  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB'
-  return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
-}
 </script>
 
 <template>
@@ -708,7 +701,7 @@ function fmtBytes(n: number): string {
         <div class="upload-meta">
           <span class="upload-name" :title="u.destPath">{{ u.fileName }}</span>
           <span class="upload-size">
-            {{ fmtBytes(u.bytesSent) }} / {{ fmtBytes(u.totalBytes) }}
+            {{ formatFileSize(u.bytesSent) }} / {{ formatFileSize(u.totalBytes) }}
           </span>
         </div>
         <div class="upload-bar">
@@ -716,11 +709,11 @@ function fmtBytes(n: number): string {
         </div>
         <div class="upload-status">
           <template v-if="u.state === 'uploading' || u.state === 'pending'">
-            <button class="link-btn" @click="onCancelUpload(u.id)">Cancel</button>
+            <button class="upload-btn upload-btn-cancel" @click="onCancelUpload(u.id)">Cancel</button>
           </template>
           <template v-else-if="u.state === 'error'">
             <span class="upload-error" :title="u.error">{{ u.error || 'Failed' }}</span>
-            <button class="link-btn" @click="onRetryUpload(u.id)">Retry</button>
+            <button class="upload-btn" @click="onRetryUpload(u.id)">Retry</button>
           </template>
           <template v-else-if="u.state === 'done'">
             <span class="upload-ok">Uploaded</span>
@@ -845,7 +838,7 @@ function fmtBytes(n: number): string {
 .upload-size { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .upload-bar {
   grid-column: 1 / 2;
-  height: 4px; background: var(--bg-tertiary); border-radius: 2px;
+  height: 8px; background: var(--bg-tertiary); border-radius: 4px;
   overflow: hidden;
 }
 .upload-bar-fill {
@@ -870,6 +863,18 @@ function fmtBytes(n: number): string {
   color: var(--accent); cursor: pointer; font-size: inherit;
 }
 .link-btn:hover { text-decoration: underline; }
+.upload-btn {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-secondary); border-radius: 4px;
+  padding: 2px 10px; font-size: inherit; line-height: 1.4;
+  cursor: pointer;
+}
+.upload-btn:hover {
+  background: var(--bg-hover); color: var(--text-primary);
+}
+.upload-btn-cancel:hover {
+  color: var(--danger); border-color: var(--danger);
+}
 
 .tree-error {
   border-top: 1px solid var(--border);
