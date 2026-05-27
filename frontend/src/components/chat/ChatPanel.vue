@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, computed, onMounted, onBeforeUnmount, toRef } from 'vue'
+import { ref, nextTick, watch, computed, onMounted, onBeforeUnmount } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useChatStore } from '@/stores/chat'
 import { isDisplayableMessage, extractTextContent } from '@/utils/content'
 import type { ChatMessage } from '@/types'
@@ -61,8 +62,9 @@ let voiceBaseText = ''
 const slashMenuRef = ref<InstanceType<typeof SlashMenu> | null>(null)
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 
+const { messages: chatMessages } = storeToRefs(chat)
 const hints = useChatHints({
-  messages:       toRef(chat, 'messages'),
+  messages:       chatMessages,
   attachments,
   pendingProject,
 })
