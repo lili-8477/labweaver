@@ -17,6 +17,7 @@ import { NotebookManager } from "./notebook-rpc.js";
 import { ShareRpcClient } from "./share-rpc.js";
 import { listOrgSkills } from "./org-skills-rpc.js";
 import { listUserSkills } from "./skills-rpc.js";
+import { listUserCommands } from "./commands-rpc.js";
 import type { StreamEvent } from "./types.js";
 
 export interface RpcDeps {
@@ -221,9 +222,6 @@ export class RpcRouter {
         );
         return { success: true, messages };
       }
-
-      case "get_suggestions":
-        return { success: true, suggestions: [] };
 
       case "get_agents": {
         // Hide harness-internal subagents (planner/executor/reviewer of the
@@ -580,6 +578,11 @@ export class RpcRouter {
       case "org_skills_list": {
         const skills = await listOrgSkills(this.deps.workspaceRoot);
         return { success: true, skills };
+      }
+
+      case "commands_list": {
+        const commands = await listUserCommands(this.deps.home);
+        return { success: true, commands };
       }
 
       case "h5ad_introspect": {
