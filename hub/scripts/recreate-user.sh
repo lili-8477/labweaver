@@ -41,9 +41,10 @@ fi
 
 # Refresh harness skeleton + memory wiring on the existing workspace so
 # recreating a pre-memory user gains the SessionStart hook, the slash
-# commands, and the bioflow-memory MCP server. All three operations are
-# idempotent (cp -n + Python merges) so re-running does not clobber
-# user-edited files.
+# commands, and the bioflow-memory MCP server. Commands/agents use cp -n
+# (preserve user customizations); hooks use cp -f (harness-managed code,
+# must stay in sync with the skeleton — otherwise bug fixes like the
+# chpc_job_watcher integration never reach existing workspaces).
 # Per-user Latch CLI token directory. Bind-mounted to /home/node/.latch so
 # `latch cp` (used by scbench dataset downloads) keeps its token across
 # container recreates. mode 700 — it holds a credential.
@@ -81,7 +82,8 @@ if [[ -d "${SKELETON_DIR}" ]]; then
              "${WORKSPACE}/.claude/hooks"
     cp -n "${SKELETON_DIR}/commands/"*.md "${WORKSPACE}/.claude/commands/" 2>/dev/null || true
     cp -n "${SKELETON_DIR}/agents/"tick-*.md "${WORKSPACE}/.claude/agents/" 2>/dev/null || true
-    cp -n "${SKELETON_DIR}/hooks/"*.sh "${WORKSPACE}/.claude/hooks/" 2>/dev/null || true
+    # Hooks are harness-managed — force-refresh on every recreate.
+    cp -f "${SKELETON_DIR}/hooks/"*.sh "${WORKSPACE}/.claude/hooks/" 2>/dev/null || true
     chmod +x "${WORKSPACE}/.claude/hooks/"*.sh 2>/dev/null || true
 
     # Merge harness hook entries into settings.json (idempotent overwrite of

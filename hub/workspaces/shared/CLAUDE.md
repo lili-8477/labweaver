@@ -96,17 +96,21 @@ Rules:
 
 ## After submitting a SLURM job (sbatch on CHPC)
 
-Once `sbatch` returns `Submitted batch job <jobid>`, **end the turn cleanly**. Do **not** say "I'll be notified when it finishes", "I'll let you know when it's done", or any variant that implies you're waiting in the background. There is no notification mechanism — the `posttool_jobid.sh` hook only appends the jobid to `~/.jobs.log`; nothing polls, nothing pings you back.
+Once `sbatch` returns a jobid, **end the turn cleanly**. The `posttool_jobid.sh` hook auto-spawns a background `chpc_job_watcher.sh` for that jobid; it polls `sacct` via the SSH bridge every 10 minutes and, on terminal state (COMPLETED/FAILED/TIMEOUT/OOM/etc.), writes one NDJSON record to `~/.claude/.chpc_pending`. The `userprompt_route.sh` hook drains that inbox at the top of the next user prompt, so the agent sees the result as additional context the next time the user types anything.
 
-Correct close-out for that turn:
+**This is passive notification, not autonomous wake-up.** The chat does not resume on its own when the job finishes — the user still has to send a message for the agent to learn the outcome. Do NOT say "I'll be notified when it finishes" or "I'll let you know when it's done" — those phrases imply the chat will resume by itself, which it won't.
+
+Correct close-out for the sbatch turn:
 
 - State the jobid and which cluster (e.g. `Submitted job 13155862 on notchpeak`).
 - One line on what the job is doing and where its outputs will land (`results/...`, log path).
-- Tell the user how to ask for a status check (e.g. *"Tell me 'status 13155862' to check"*).
+- Tell the user: *"The watcher will post the outcome above your next prompt — just send any message after it finishes (or now, to get a live `squeue` check)."*
 
-When the user later asks for status, run `squeue -j <jobid>` or `sacct -j <jobid>` via the CHPC bridge. If the job is finished, summarize results from the log/output files in this same turn — don't submit another job in passing.
+When the user later sends a prompt, if a `[CHPC job watcher — events since your last prompt]` block appears at the top, treat it as authoritative: for each completed job, open its log/output files and surface anything worth knowing (success summary, failure mode, OOM, timeout). Don't ignore the block; if a job FAILED, lead with that.
 
-Why: pretending to wait makes the chat look hung. The model isn't actually waiting — it's just emitted misleading text and exited the turn. The next user prompt then has to drag a long resumed transcript through the model, which is slow.
+For an on-demand status check (job still running, user is impatient), run `squeue -j <jobid>` or `sacct -j <jobid>` via the CHPC bridge in this turn — that's complementary to the passive watcher, not a replacement.
+
+Why this matters: pretending the chat will resume autonomously makes the chat look hung — the model has actually exited the turn, and the next prompt has to drag a long transcript through resume. The watcher gives the same information without the lie.
 
 ## Installing Python packages
 

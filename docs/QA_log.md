@@ -246,6 +246,40 @@ Pragmatic split: keep shared infra (postgres, nats, indexer, embedder, frontend 
 
 Site-specific blockers to verify at CHPC: long-running Singularity instances on login nodes vs job-only; whether any user-facing port is exposed at the cluster perimeter (needed for frontend ingress); NFS write performance for postgres' data dir (NFS-hosted postgres is usually unhappy).
 
+## 2026-05-23 — Per-chat context isolation and resume
+
+**Q:** How does the agent manage context when I switch between different sessions?
+
+**A:** Per-chat isolation backed by Postgres-tracked Claude SDK session UUIDs.
+
+- Each bioFlow chat row has a `session_id` column = the real Claude Agent SDK
+  session UUID. One UUID ↔ one JSONL transcript at
+  `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`
+  (bind-mounted from `${WORKSPACE}/.claude/claude-projects/` so it
+  survives container recreate). Switching chats in the sidebar just loads
+  a different transcript.
+- On every turn, the adapter (`adapter/src/rpc.ts` → `runChat`) reads the
+  chat row and passes `resumeSessionId: chat.session_id` to the SDK,
+  which reconstructs the model's view from the JSONL. First turn of a
+  fresh chat has no UUID yet — the SDK mints one and `onSessionId`
+  back-fills it for the next resume.
+- `cwd` stays at `defaultProjectCwd` (`/workspace`) even when the chat is
+  bound to a project, because the JSONL path is derived from the cwd
+  encoding; changing it mid-chat would split the transcript and break
+  resume. The agent learns its project from the kickoff prompt / `/tick`
+  harness, not from `cwd`.
+- Concurrency: `ChatMutexRegistry` allows one streaming turn per chat,
+  but chats run in parallel. You can switch and watch another chat while
+  the first runs.
+- What is NOT shared between sessions: the JSONL transcripts themselves.
+  Cross-session knowledge only flows via: (1) the bioflow-memory MCP
+  (auto-injected at session start by `memory_session_start.sh`),
+  (2) files in `/workspace/` that all chats can read, (3) `CLAUDE.md` +
+  the imported shared `CLAUDE.md`, (4) skills under `~/.claude/skills/`.
+- Inside a single long session, the Claude harness automatically
+  compresses older messages when the model context fills up — the full
+  JSONL on disk is preserved, only the in-memory view is summarized.
+
 ## 2026-05-23 — Per-workspace CHPC UNID vs container UID
 
 **Q:** For each container, do I need to set a fixed UID for CHPC access?
@@ -256,3 +290,30 @@ Site-specific blockers to verify at CHPC: long-running Singularity instances on 
 - **CHPC UNID** (e.g. `u6025146`) is the researcher's identity on CHPC. It lives in `hub/workspaces/<workspace>/.ssh/config` on the `User` line, one per workspace, and survives `recreate-user.sh` because `.ssh` is a bind mount.
 
 So the answer is "yes, per workspace, but it's the CHPC UNID, not a Linux UID." Today it's a manual edit after `add-user.sh`; a `--chpc-unid <unid>` flag on `add-user.sh` would `sed` the placeholder at provision time — same shape as the existing `--data` flag.
+
+## 2026-05-27 — How does the new CHPC job notification system work in plain language?
+
+**Q:** How it works in plain language
+
+**A:** Three small bash scripts and one hidden file form a loop between two worlds: a background poller and the chat.
+
+The cast:
+
+- `posttool_jobid.sh` — Claude Code's PostToolUse hook on Bash. Fires every time the agent runs a Bash command. See `hub/skeleton/harness/hooks/posttool_jobid.sh`.
+- `chpc_job_watcher.sh` — a tiny per-jobid poller. See `hub/skeleton/harness/hooks/chpc_job_watcher.sh`.
+- `userprompt_route.sh` — Claude Code's UserPromptSubmit hook. Fires every time the user types anything. See `hub/skeleton/harness/hooks/userprompt_route.sh`.
+- `~/.claude/.chpc_pending` — a mailbox file (NDJSON).
+
+The flow:
+
+1. The agent runs `ssh chpc-login 'sbatch ...'`. CHPC prints a jobid (e.g. `13169761`).
+2. The Bash command finishes → `posttool_jobid.sh` runs. It recognizes `sbatch`, extracts the jobid, and launches `chpc_job_watcher.sh <jobid>` **in the background, detached** (`setsid nohup ... &`). The watcher keeps running after the hook ends and after the agent's turn ends.
+3. The agent ends its turn. The chat goes idle. The user walks away.
+4. The watcher polls CHPC every 10 minutes: `ssh chpc-login 'sacct -j <jobid> ...'`. Bounded at 72h; protected by a per-jobid flock so duplicate watchers can't fight. Interval tunable via `CHPC_POLL_INTERVAL` env var (seconds).
+5. Eventually CHPC returns a terminal state (`COMPLETED`/`FAILED`/`TIMEOUT`/`OOM`/...). The watcher appends one JSON line to `.chpc_pending` and exits.
+6. Hours later, the user types anything. Before that prompt reaches the model, `userprompt_route.sh` runs. It atomically rotates `.chpc_pending` to a tmpfile (so a watcher writing at that instant isn't lost), formats the contents as a "events since your last prompt" block, and emits it on stdout — which Claude Code prepends to the user's message as additional context.
+7. The agent sees `job 13169761 → COMPLETED` glued on top of the user's message, reads the log files, folds the outcome into its reply.
+
+The mental model: the watcher (background, hours-long) and the chat (foreground, idle) never talk directly — the mailbox file is the only bridge. The watcher only writes; the prompt hook only reads-and-clears.
+
+What it deliberately doesn't do: it doesn't wake the chat. No notification, no auto-resume. If the user never sends another message, the agent never learns. That trade-off was the explicit Option A choice (vs. an autonomous variant that would inject a synthetic prompt via the adapter's `chat` RPC over NATS) — passive saves API tokens and avoids racing the user, at the cost of "you have to type for the agent to find out."

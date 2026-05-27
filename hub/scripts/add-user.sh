@@ -207,15 +207,17 @@ JSON
 fi
 
 # Install the self-driving tick harness skeleton (orchestrator command,
-# tick-* subagents, hook scripts). Idempotent: cp -n leaves user-edited
-# copies alone. The harness itself is dormant unless the user toggles
-# Self-driving on in the Agents panel (which writes ~/.claude/.harness_active);
-# until then the four hooks gate-out as no-ops.
+# tick-* subagents, hook scripts). Commands/agents use cp -n so user
+# customizations survive a re-run; hooks use cp -f because they're
+# harness-managed code that must track the skeleton (e.g. the CHPC job
+# watcher needs the matching posttool_jobid.sh — drift breaks the chain).
+# The harness itself is dormant unless the user toggles Self-driving on
+# in the Agents panel (which writes ~/.claude/.harness_active).
 SKELETON_DIR="${HUB_DIR}/skeleton/harness"
 if [[ -d "${SKELETON_DIR}" ]]; then
     cp -n "${SKELETON_DIR}/commands/"*.md "${WORKSPACE}/.claude/commands/" 2>/dev/null || true
     cp -n "${SKELETON_DIR}/agents/"tick-*.md "${WORKSPACE}/.claude/agents/" 2>/dev/null || true
-    cp -n "${SKELETON_DIR}/hooks/"*.sh "${WORKSPACE}/.claude/hooks/" 2>/dev/null || true
+    cp -f "${SKELETON_DIR}/hooks/"*.sh "${WORKSPACE}/.claude/hooks/" 2>/dev/null || true
     chmod +x "${WORKSPACE}/.claude/hooks/"*.sh 2>/dev/null || true
 
     # Merge harness hook entries into settings.json, preserving inode (the
