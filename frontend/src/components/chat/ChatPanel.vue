@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, nextTick, watch, computed, onMounted, onBeforeUnmount, toRef } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { isDisplayableMessage, extractTextContent } from '@/utils/content'
 import type { ChatMessage } from '@/types'
@@ -12,6 +12,8 @@ import { queueUpload, cancelUpload } from '@/services/upload'
 import { useUploadsStore } from '@/stores/uploads'
 import { formatFileSize } from '@/utils/format'
 import { isSupported as voiceSupported, startVoice, type VoiceSession } from '@/services/voice'
+import SlashMenu from '@/components/chat/SlashMenu.vue'
+import { useChatHints } from '@/composables/useChatHints'
 
 const chat = useChatStore()
 const uploads = useUploadsStore()
@@ -55,6 +57,15 @@ let voiceSession: VoiceSession | null = null
 // Text already in the textarea when recording starts; new transcript is
 // appended to it so we don't clobber a partially-typed message.
 let voiceBaseText = ''
+
+const slashMenuRef = ref<InstanceType<typeof SlashMenu> | null>(null)
+const inputRef = ref<HTMLTextAreaElement | null>(null)
+
+const hints = useChatHints({
+  messages:       toRef(chat, 'messages'),
+  attachments,
+  pendingProject,
+})
 
 const anyUploading = computed(() => attachments.value.some(a => a.state === 'uploading'))
 const hasContent = computed(
@@ -113,15 +124,31 @@ function send() {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  if (slashMenuRef.value?.handleKey(e)) {
+    e.preventDefault()
+    return
+  }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
     send()
   }
 }
 
-function useSuggestion(text: string) {
+function applyHint(text: string) {
   input.value = text
-  send()
+  nextTick(() => inputRef.value?.focus())
+}
+
+function onSlashAccept(item: { kind: 'command' | 'skill'; name: string }) {
+  input.value = item.kind === 'command'
+    ? `/${item.name} `
+    : `Use the ${item.name} skill: `
+  nextTick(() => inputRef.value?.focus())
+}
+
+function onSlashDismiss() {
+  if (input.value.startsWith('/')) input.value = ''
+  nextTick(() => inputRef.value?.focus())
 }
 
 // ---- Image attachments ----
@@ -469,15 +496,15 @@ watch(
         </div>
       </div>
 
-      <!-- Suggestions -->
-      <div v-if="chat.suggestions.length > 0 && !chat.sending" class="suggestions">
+      <!-- Hints -->
+      <div v-if="hints.length > 0 && !chat.sending" class="suggestions">
         <button
-          v-for="(s, i) in chat.suggestions.slice(0, 3)"
-          :key="i"
+          v-for="h in hints"
+          :key="h.id"
           class="suggestion-btn"
-          @click="useSuggestion(s.text)"
+          @click="applyHint(h.text)"
         >
-          {{ s.text }}
+          {{ h.text }}
         </button>
       </div>
 
@@ -552,8 +579,16 @@ watch(
           <button class="project-status-dismiss" @click="projectError = null" title="Dismiss">&times;</button>
         </div>
 
+        <SlashMenu
+          ref="slashMenuRef"
+          :input="input"
+          @accept="onSlashAccept"
+          @dismiss="onSlashDismiss"
+        />
+
         <div class="input-row">
           <textarea
+            ref="inputRef"
             v-model="input"
             class="message-input"
             placeholder="Type a message. Drop an image to attach, or any other file to start a new project."
