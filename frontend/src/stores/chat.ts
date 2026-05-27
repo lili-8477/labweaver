@@ -4,7 +4,7 @@ import { natsService } from '@/services/nats'
 import { extractTextContent } from '@/utils/content'
 import type {
   ChatInfo, ChatMessage, StreamMessage, StreamChunk,
-  StepMessage, ChatFinished, Suggestion, AgentInfo,
+  StepMessage, ChatFinished, AgentInfo,
   StepMessageData, TimelineStep, HarnessProgress,
 } from '@/types'
 
@@ -15,7 +15,6 @@ export const useChatStore = defineStore('chat', () => {
   const streamingText = ref('')
   const isStreaming = ref(false)
   const sending = ref(false)
-  const suggestions = ref<Suggestion[]>([])
   const agents = ref<AgentInfo[]>([])
   const activeAgent = ref<string | null>(null)
 
@@ -188,16 +187,6 @@ export const useChatStore = defineStore('chat', () => {
     chatSubId = natsService.subscribe(`chat_${chatId}`, handleStreamMessage)
 
     loadAgents(chatId)
-    loadSuggestions(chatId)
-  }
-
-  async function loadSuggestions(chatId: string) {
-    try {
-      const result = await natsService.invoke('get_suggestions', { chat_id: chatId }) as {
-        success: boolean; suggestions: Suggestion[]
-      }
-      if (result?.success) suggestions.value = result.suggestions || []
-    } catch { /* ignore */ }
   }
 
   // ---- Stream message handling ----
@@ -484,7 +473,7 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     chats, activeChatId, activeChat, messages, streamingText, isStreaming,
-    sending, suggestions, agents, activeAgent,
+    sending, agents, activeAgent,
     liveTimeline, completedTimelines,
     harnessActive, harnessInstalled, harnessProgress, harnessProject,
     loadChats, createChat, deleteChat, selectChat, sendMessage,

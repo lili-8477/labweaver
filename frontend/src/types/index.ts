@@ -176,11 +176,6 @@ export interface StreamMessage {
   metadata?: Record<string, unknown>
 }
 
-export interface Suggestion {
-  text: string
-  category?: string
-}
-
 // ============================================================
 // Agents / Teams
 // ============================================================
