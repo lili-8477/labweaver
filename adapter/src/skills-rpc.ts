@@ -3,6 +3,7 @@
 
 import { readdir, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
+import { extractDescription } from "./frontmatter.js";
 
 export interface SkillSummary {
   name:        string;
@@ -53,17 +54,4 @@ export async function listUserSkills(home: string): Promise<SkillSummary[]> {
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
-}
-
-function extractDescription(manifest: string): string {
-  // YAML frontmatter between leading "---" lines. Look for `description:` only.
-  // Anything fancier (multi-line, quoted, escapes, CRLF line endings) we treat as
-  // opaque and surface as empty — the manager's review UI shows the full manifest.
-  const fmMatch = manifest.match(/^---\n(?<fm>[\s\S]*?)\n---\n/);
-  const fm = fmMatch?.groups?.fm;
-  if (!fm) return "";
-  const dm = fm.match(/^description:\s*(?<val>.+?)\s*$/m);
-  const val = dm?.groups?.val;
-  if (!val) return "";
-  return val.replace(/^['"]|['"]$/g, "");
 }

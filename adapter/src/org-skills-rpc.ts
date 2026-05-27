@@ -5,6 +5,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SkillSummary } from "./skills-rpc.js";
+import { extractDescription } from "./frontmatter.js";
 
 export async function listOrgSkills(workspaceRoot: string): Promise<SkillSummary[]> {
   const orgSkillsDir = join(workspaceRoot, "shared", "skills");
@@ -33,14 +34,4 @@ export async function listOrgSkills(workspaceRoot: string): Promise<SkillSummary
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
-}
-
-function extractDescription(manifest: string): string {
-  const fmMatch = manifest.match(/^---\n(?<fm>[\s\S]*?)\n---\n/);
-  const fm = fmMatch?.groups?.fm;
-  if (!fm) return "";
-  const dm = fm.match(/^description:\s*(?<val>.+?)\s*$/m);
-  const val = dm?.groups?.val;
-  if (!val) return "";
-  return val.replace(/^['"]|['"]$/g, "");
 }
