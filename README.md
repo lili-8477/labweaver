@@ -1,23 +1,66 @@
-# claude-bioflow
+# LabWeaver
 
-A thin multi-user hub that runs the official
-[Claude Code](https://code.claude.com) CLI in a per-user devcontainer and
-bridges it to a Vue 3 + NATS WebSocket frontend.
+A shared, self-improving laboratory AI that turns a single-user coding agent
+into persistent research infrastructure.
 
-- **Frontend** — ported from pantheon-frontend, unchanged NATS contract (Vue 3 + Pinia + nats.ws).
-- **Adapter** — small TypeScript bridge inside each container, using `@anthropic-ai/claude-agent-sdk`. Translates SDK events to the frontend's `chunk` / `step_message` / `chat_finished` stream.
-- **Image** — Node 20 + the Claude Code CLI on top of the bio stack (Python 3.12, scanpy, R 4.5.3, Seurat/SoupX/scDblFinder).
-- **Hub** — docker-compose with NATS + nginx + per-user container provisioning.
-- **Skills** — user's skills bind-mount into the container at `~/.claude/skills/` and are auto-discovered by Claude Code.
+## Mission
 
-This project is independent of the existing `pantheon-frontend`,
-`pantheon-hub`, and `PantheonOS` repos — those are untouched.
+Agentic AI promises to democratize data analysis across research laboratories,
+yet its current prompt-by-prompt use suffers from three compounding
+limitations: **loss of institutional knowledge**, **fragmented research
+environments**, and **non-reproducible AI workflows**. Experimental protocols,
+decision rationales, and laboratory context are rarely preserved, leading to
+inconsistent documentation, difficult onboarding, and analyses that cannot be
+reliably regenerated across users or time.
+
+LabWeaver transforms a single-user coding agent into persistent research
+infrastructure. It continuously accumulates laboratory knowledge from daily
+use as reusable **skills** and structured **memory**, enabling context-aware
+reasoning grounded in a lab's protocols, inventories, and prior discoveries.
+Through shared agent rules, a common filesystem contract, and an automated
+multi-agent reasoning framework, LabWeaver executes autonomous, long-running
+scientific workflows while maintaining reproducibility and continuity across
+researchers.
+
+## Case study — synovial sarcoma scRNA-seq
+
+We demonstrate LabWeaver on a synovial sarcoma mouse-model single-cell
+RNA-seq analysis. A native AI generated only a generic single-cell workflow
+and cell annotations based on marker genes. LabWeaver leveraged accumulated
+laboratory knowledge — including H&E morphology and marker-gene
+interpretation — to identify **SS18-SSX2 fusion-oncogene expression** and
+assign lab-specific cell states, including **biphasic** and **monophasic**
+synovial sarcoma cells. These insights were not obtained by the native AI
+alone.
+
+LabWeaver reframes agentic analysis from a transient query interface into a
+persistent laboratory infrastructure that captures, organizes, and compounds
+scientific knowledge — a feedback loop in which accumulated experience
+continuously improves future AI-driven discovery.
+
+Demo walk-through: [`final.mp4`](final.mp4)
+
+## Architecture
+
+- **Frontend** — Vue 3 + Pinia + nats.ws over a NATS WebSocket contract.
+- **Adapter** — small TypeScript bridge inside each user's container, built
+  on `@anthropic-ai/claude-agent-sdk`. Translates SDK events to the
+  frontend's `chunk` / `step_message` / `chat_finished` stream.
+- **Image** — Node 20 + the Claude Code CLI on top of the bio stack
+  (Python 3.12, scanpy, R 4.5.3, Seurat / SoupX / scDblFinder).
+- **Hub** — docker-compose with NATS + nginx + per-user container
+  provisioning.
+- **Skills** — a user's skills bind-mount into the container at
+  `~/.claude/skills/` and are auto-discovered by Claude Code; org-wide
+  skills live under `hub/workspaces/shared/skills/` and mount read-only.
+- **Memory** — structured laboratory memory persists across sessions and
+  feeds back into every turn.
 
 ## Layout
 
 ```
-claude-bioflow/
-├── frontend/                 # Vue 3 + Pinia + nats.ws (copied from pantheon-frontend)
+labweaver/
+├── frontend/                 # Vue 3 + Pinia + nats.ws
 ├── adapter/                  # TypeScript NATS <-> Claude Code bridge
 ├── image/                    # Dockerfile for the per-user devcontainer
 ├── hub/                      # docker-compose + nginx + provisioning scripts
@@ -28,6 +71,11 @@ claude-bioflow/
 
 See `image/README.md` for Dockerfile details.
 
+> Internal image tags, container names, and the NPM frontend package still
+> use the legacy `claude-bioflow` / `bioflow` prefix. Those are operational
+> identifiers, not the product name — leave them alone unless you also
+> migrate the running stack.
+
 ## Quick start (multi-user hub)
 
 Prerequisites: Docker, Node 20, `htpasswd` (or Docker can stand in).
@@ -36,7 +84,7 @@ Prerequisites: Docker, Node 20, `htpasswd` (or Docker can stand in).
 # 1. Build the adapter bundle.
 cd adapter
 npm ci
-npm test          # 20 contract tests against the frontend event shape
+npm test          # contract tests against the frontend event shape
 npm run build
 cd ..
 
@@ -157,16 +205,15 @@ session JSONL tails (not truncated), nats-server logs (no `slow consumer`).
 
 ## Contract
 
-See `.claude/plans/i-like-the-current-immutable-wall.md` (in the repo that
-spawned this project) and `adapter/test/events.test.ts` (vitest contract
-tests). The frontend's NATS RPCs and stream event shapes are the source of
-truth — if the SDK changes, fix the adapter translator, not the frontend.
+The frontend's NATS RPCs and stream event shapes are the source of truth —
+if the SDK changes, fix the adapter translator, not the frontend. See
+`adapter/test/events.test.ts` (vitest contract tests).
 
 ## Adapter test suite
 
 ```bash
 cd adapter
-npm test           # 20 tests, <500ms
+npm test
 npm run typecheck
 ```
 
@@ -177,7 +224,9 @@ Tests cover:
 - Per-chat mutex rejects overlapping `chat` RPCs
 - `AbortController` cleanly aborts in-flight turns
 - Session sidecar CRUD and path-escape guards in `file_manager`
+- `commands_list`, `skills_list`, and `org_skills_list` enumerate
+  `~/.claude/commands/` and the two skill tiers for the in-app slash menu.
 
 ## License
 
-MIT. Frontend ported from pantheon-frontend (also MIT).
+MIT. Frontend originally ported from pantheon-frontend (also MIT).
