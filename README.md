@@ -38,7 +38,11 @@ persistent laboratory infrastructure that captures, organizes, and compounds
 scientific knowledge — a feedback loop in which accumulated experience
 continuously improves future AI-driven discovery.
 
-Demo walk-through: [`final.mp4`](final.mp4)
+Demo walk-through:
+
+<video src="https://raw.githubusercontent.com/lili-8477/labweaver/main/final.mp4" controls width="720"></video>
+
+(If your client doesn't render the inline player, download [`final.mp4`](final.mp4).)
 
 ## Architecture
 
