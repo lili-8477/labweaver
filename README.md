@@ -38,7 +38,9 @@ persistent laboratory infrastructure that captures, organizes, and compounds
 scientific knowledge — a feedback loop in which accumulated experience
 continuously improves future AI-driven discovery.
 
-Demo walk-through: [`final.mp4`](final.mp4) (click to download / play).
+Demo walk-through: 
+
+.
 
 ## Architecture
 
