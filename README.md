@@ -1,3 +1,5 @@
+
+
 # LabWeaver
 
 A shared, self-improving laboratory AI that turns a single-user coding agent
@@ -39,6 +41,10 @@ scientific knowledge — a feedback loop in which accumulated experience
 continuously improves future AI-driven discovery.
 
 Demo walk-through: 
+
+
+https://github.com/user-attachments/assets/d6bd8825-ba3b-46ab-a8df-a00b71a5925d
+
 
 .
 
