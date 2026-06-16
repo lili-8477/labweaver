@@ -3,7 +3,7 @@ import { ref, onMounted } from 'vue'
 import { natsService } from '@/services/nats'
 
 const MODELS = [
-  { id: 'claude-opus-4-7',    label: 'Opus 4.7',    hint: 'Strongest reasoning · most expensive' },
+  { id: 'claude-opus-4-8',    label: 'Opus 4.8',    hint: 'Strongest reasoning · most expensive' },
   { id: 'claude-sonnet-4-6',  label: 'Sonnet 4.6',  hint: 'Balanced · default' },
   { id: 'claude-haiku-4-5',   label: 'Haiku 4.5',   hint: 'Cheapest · fastest' },
 ] as const
