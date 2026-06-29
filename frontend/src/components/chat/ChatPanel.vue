@@ -231,13 +231,52 @@ function handlePaste(e: ClipboardEvent) {
   }
 }
 
+// Matches FileTree's INTERNAL_PATH_MIME — a drag originating from the file
+// tree (a folder/file path), as opposed to an OS file drag (kind 'Files').
+const PATH_DRAG_MIME = 'application/x-bioflow-path'
+
+function hasPathInDrag(e: DragEvent): boolean {
+  const types = e.dataTransfer?.types
+  if (!types) return false
+  for (let i = 0; i < types.length; i++) if (types[i] === PATH_DRAG_MIME) return true
+  return false
+}
+
+// Insert a path at the caret (or append), padding with spaces so it doesn't
+// fuse onto surrounding words.
+function insertPathIntoInput(path: string) {
+  const ta = inputRef.value
+  const cur = input.value
+  if (ta && ta.selectionStart != null) {
+    const start = ta.selectionStart
+    const end = ta.selectionEnd ?? start
+    const before = cur.slice(0, start)
+    const after = cur.slice(end)
+    const lead = before && !/\s$/.test(before) ? ' ' : ''
+    const trail = after && !/^\s/.test(after) ? ' ' : ''
+    input.value = before + lead + path + trail + after
+    const pos = (before + lead + path).length
+    nextTick(() => { ta.focus(); ta.setSelectionRange(pos, pos) })
+  } else {
+    const lead = cur && !/\s$/.test(cur) ? ' ' : ''
+    input.value = cur + lead + path + ' '
+    nextTick(() => inputRef.value?.focus())
+  }
+}
+
 function onDragEnter(e: DragEvent) {
+  if (hasPathInDrag(e)) { e.preventDefault(); return }
   if (!hasFilesInDrag(e)) return
   e.preventDefault()
   dragDepth.value++
   isDragging.value = true
 }
 function onDragOver(e: DragEvent) {
+  if (hasPathInDrag(e)) {
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    return
+  }
   if (!hasFilesInDrag(e)) return
   e.preventDefault()
 }
@@ -252,6 +291,15 @@ function onDrop(e: DragEvent) {
   e.preventDefault()
   dragDepth.value = 0
   isDragging.value = false
+
+  // A folder/file dragged from the file tree carries its path (text/plain),
+  // not File objects — drop it into the prompt instead of starting a project.
+  if (hasPathInDrag(e)) {
+    const p = e.dataTransfer.getData('text/plain')
+    if (p) insertPathIntoInput(p)
+    return
+  }
+
   const fileList = e.dataTransfer.files
   if (!fileList || fileList.length === 0) return
   const all = Array.from(fileList)

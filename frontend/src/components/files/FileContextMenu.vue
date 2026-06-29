@@ -9,6 +9,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  (e: 'copy-path'): void
   (e: 'rename'): void
   (e: 'move-to'): void
   (e: 'new-file'): void
@@ -37,8 +38,9 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey)
 })
 
-function pick(action: 'rename' | 'move-to' | 'new-file' | 'new-folder' | 'delete' | 'share') {
+function pick(action: 'copy-path' | 'rename' | 'move-to' | 'new-file' | 'new-folder' | 'delete' | 'share') {
   switch (action) {
+    case 'copy-path': emit('copy-path'); break
     case 'rename': emit('rename'); break
     case 'move-to': emit('move-to'); break
     case 'new-file': emit('new-file'); break
@@ -64,6 +66,10 @@ function pick(action: 'rename' | 'move-to' | 'new-file' | 'new-folder' | 'delete
       @click="pick('share')"
     >Share with org</button>
     <div v-if="shareable" class="ctx-sep" />
+    <button class="ctx-item" role="menuitem" @click="pick('copy-path')">
+      Copy {{ props.type === 'directory' ? 'directory' : 'file' }} path
+    </button>
+    <div class="ctx-sep" />
     <button class="ctx-item" role="menuitem" @click="pick('rename')">Rename</button>
     <button class="ctx-item" role="menuitem" @click="pick('move-to')">Move to…</button>
     <div class="ctx-sep" />

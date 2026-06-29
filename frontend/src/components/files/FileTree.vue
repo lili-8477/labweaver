@@ -429,11 +429,38 @@ function onPickDir(e: Event) {
   input.value = ''
 }
 
+// Tree paths are relative to the workspace root, which is mounted at
+// /workspace inside the user's container. The agent runs there, so the
+// absolute container path is what's useful to paste into a prompt.
+function toContainerPath(p: string): string {
+  return '/workspace/' + p
+}
+
+async function copyPath(fe: FlatEntry) {
+  const text = toContainerPath(fe.path)
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // navigator.clipboard is unavailable outside secure contexts — fall back
+    // to a hidden textarea + execCommand.
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy') } catch { showTreeError('Could not copy path') }
+    document.body.removeChild(ta)
+  }
+}
+
 function onRowDragStart(ev: DragEvent, fe: FlatEntry) {
   if (!ev.dataTransfer) return
+  // INTERNAL_PATH_MIME keeps the relative path for in-tree moves; text/plain
+  // carries the absolute container path for pasting/dropping elsewhere.
   ev.dataTransfer.setData(INTERNAL_PATH_MIME, fe.path)
-  ev.dataTransfer.setData('text/plain', fe.path)
-  ev.dataTransfer.effectAllowed = 'move'
+  ev.dataTransfer.setData('text/plain', toContainerPath(fe.path))
+  ev.dataTransfer.effectAllowed = 'copyMove'
 }
 
 function onDragOver(e: DragEvent, path: string | null) {
@@ -654,6 +681,7 @@ function onClearUploads() {
       :y="ctxMenu.y"
       :type="ctxMenu.fe.entry.type"
       :shareable="isShareableProject(ctxMenu.fe)"
+      @copy-path="(copyPath(ctxMenu.fe), closeCtxMenu())"
       @rename="(startRename(ctxMenu.fe), closeCtxMenu())"
       @move-to="(openMoveTo(ctxMenu.fe), closeCtxMenu())"
       @new-file="(startNewItemIn(ctxMenu.fe, 'file'), closeCtxMenu())"
