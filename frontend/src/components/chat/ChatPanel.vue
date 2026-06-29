@@ -125,6 +125,28 @@ function send() {
   clearAttachments()
 }
 
+// Split the input for the highlight overlay: when it starts with "/", the
+// leading command token (up to the first whitespace) is colored; the rest is
+// plain. Rendered as text (not v-html) so user input can't inject markup.
+const inputSegments = computed(() => {
+  const v = input.value
+  if (!v.startsWith('/')) return { cmd: '', rest: v }
+  const ws = v.search(/\s/)
+  return ws === -1
+    ? { cmd: v, rest: '' }
+    : { cmd: v.slice(0, ws), rest: v.slice(ws) }
+})
+
+const highlightRef = ref<HTMLDivElement | null>(null)
+
+// Keep the mirror div's scroll aligned with the textarea (it scrolls
+// internally once content passes max-height).
+function syncHighlightScroll() {
+  const ta = inputRef.value
+  const hl = highlightRef.value
+  if (ta && hl) { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft }
+}
+
 function handleKeydown(e: KeyboardEvent) {
   if (slashMenuRef.value?.handleKey(e)) {
     e.preventDefault()
@@ -589,15 +611,23 @@ watch(
         />
 
         <div class="input-row">
-          <textarea
-            ref="inputRef"
-            v-model="input"
-            class="message-input"
-            placeholder="Type a message. Drop an image to attach, or any other file to start a new project."
-            @keydown="handleKeydown"
-            @paste="handlePaste"
-            rows="1"
-          ></textarea>
+          <div class="input-editor">
+            <!-- Mirror layer: re-prints the text with the leading /command
+                 token colored. Sits behind the transparent textarea. -->
+            <div ref="highlightRef" class="input-highlight" aria-hidden="true">
+              <span class="cmd-token">{{ inputSegments.cmd }}</span>{{ inputSegments.rest }}
+            </div>
+            <textarea
+              ref="inputRef"
+              v-model="input"
+              class="message-input"
+              placeholder="Type a message. Drop an image to attach, or any other file to start a new project."
+              @keydown="handleKeydown"
+              @paste="handlePaste"
+              @scroll="syncHighlightScroll"
+              rows="1"
+            ></textarea>
+          </div>
           <button
             v-if="voiceSupportedFlag"
             class="btn-mic"
@@ -808,14 +838,41 @@ watch(
 .chip-remove:hover { background: rgba(0,0,0,0.85); }
 
 .input-row { display: flex; gap: 8px; align-items: flex-end; position: relative; z-index: 0; }
-.message-input {
-  flex: 1; padding: 10px 14px; background: var(--bg-primary);
+/* Wrapper carries the border/background/focus ring. The textarea and the
+   highlight mirror share identical inner metrics so their text aligns exactly. */
+.input-editor {
+  flex: 1; position: relative;
+  background: var(--bg-primary);
   border: 1px solid var(--border); border-radius: var(--radius-lg);
-  color: var(--text-primary); resize: none;
-  min-height: 40px; max-height: 200px;
-  font-size: 0.95em; line-height: 1.4;
 }
-.message-input:focus { outline: none; border-color: var(--accent); }
+.input-editor:focus-within { border-color: var(--accent); }
+
+/* Shared box model — these two MUST stay in sync for the overlay to line up. */
+.input-highlight,
+.message-input {
+  padding: 10px 14px;
+  min-height: 40px; max-height: 200px;
+  font: inherit; font-size: 0.95em; line-height: 1.4;
+  white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word;
+  box-sizing: border-box;
+}
+
+.message-input {
+  display: block; width: 100%;
+  background: transparent; border: none; resize: none;
+  color: transparent; caret-color: var(--text-primary);
+  position: relative; z-index: 1; overflow-y: auto;
+}
+.message-input:focus { outline: none; }
+.message-input::placeholder { color: var(--text-muted); }
+
+/* Mirror layer behind the textarea: shows the colored command token. */
+.input-highlight {
+  position: absolute; inset: 0;
+  color: var(--text-primary);
+  overflow: hidden; pointer-events: none; z-index: 0;
+}
+.input-highlight .cmd-token { color: var(--accent); font-weight: 600; }
 
 .btn-send, .btn-stop {
   width: 40px; height: 40px; border-radius: var(--radius);
