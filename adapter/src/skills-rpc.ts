@@ -1,7 +1,7 @@
 // Lists the user's per-user skills under <home>/.claude/skills/<name>/SKILL.md.
 // Pure read-only file walk. Empty array when the directory does not exist.
 
-import { readdir, readFile, readlink } from "node:fs/promises";
+import { readdir, readFile, readlink, lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { extractDescription } from "./frontmatter.js";
 
@@ -54,4 +54,45 @@ export async function listUserSkills(home: string): Promise<SkillSummary[]> {
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
+}
+
+// Reads SKILL.md for one personal user skill. Mirrors the symlink/path-safety
+// rules of listUserSkills so org-tier symlinks under ~/.claude/skills/ can't be
+// fetched through this endpoint (org skills have their own review surface).
+export async function readUserSkillManifest(
+  home: string,
+  name: string,
+): Promise<string> {
+  if (
+    !name ||
+    typeof name !== "string" ||
+    name.includes("/") ||
+    name.includes("\\") ||
+    name.includes("..") ||
+    name.startsWith(".")
+  ) {
+    throw new Error(`invalid skill name: ${name}`);
+  }
+  const skillsDir   = join(home, ".claude", "skills");
+  const userTierDir = join(home, ".claude", "skills-user");
+  const skillDir    = join(skillsDir, name);
+
+  let st;
+  try {
+    st = await lstat(skillDir);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`skill not found: ${name}`);
+    }
+    throw e;
+  }
+  if (st.isSymbolicLink()) {
+    const target = await readlink(skillDir);
+    if (!target.startsWith(userTierDir)) {
+      throw new Error(`not a personal skill: ${name}`);
+    }
+  } else if (!st.isDirectory()) {
+    throw new Error(`not a skill: ${name}`);
+  }
+  return await readFile(join(skillDir, "SKILL.md"), "utf8");
 }

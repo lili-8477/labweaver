@@ -213,40 +213,82 @@ without `docker cp`. Anywhere else in the container is overlay-only.
 
 ## 6. SLURM dispatch idiom
 
-Default account/partition for short, interactive-ish work:
-**`notchpeak-shared-short`** for both `--account` and `--partition`. Switch
-to a group allocation (e.g. `--account=<pi>-np`, partition `notchpeak`) for
-production-scale runs.
+### jonesk lab allocation (default for this workspace)
 
-### Minimal template
+For all production and GPU jobs in the Jones lab, use:
+
+```
+#SBATCH --account=jonesk-gpu-np
+#SBATCH --partition=jonesk-gpu-np
+#SBATCH --gres=gpu
+#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=96G
+```
+
+### Conda environment routing
+
+**Always use the correct env for the language — do not mix.**
+
+| Task | Env | What it provides |
+|---|---|---|
+| R scripts (Seurat, DESeq2, edgeR) | `R_env` | R 4.5.1 · Seurat 5.5.0 · dplyr · ggplot2 |
+| Python scripts (scanpy, scVI, scANVI, PyTorch) | `scvi-env` | Python · scanpy 1.10.1 · scvi-tools 1.1.2 · anndata 0.10.7 |
+
+Source conda before activating in any SLURM script:
 
 ```bash
-cat << 'SLURM_EOF' | ssh chpc-login 'cat > /uufs/chpc.utah.edu/common/home/<group>/<project>/run.slurm'
+source /uufs/chpc.utah.edu/common/home/u6025146/software/pkg/miniconda3/etc/profile.d/conda.sh
+conda activate R_env       # for R scripts
+# or
+conda activate scvi-env    # for Python / scvi-tools scripts
+```
+
+Never activate `R_env` for Python work or `scvi-env` for R work — the envs are not interchangeable.
+
+### jonesk GPU job template
+
+```bash
+cat << 'SLURM_EOF' | ssh chpc-login 'cat > /uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/<project>/<name>.slurm'
 #!/bin/bash
 #SBATCH --job-name=<name>
-#SBATCH --account=notchpeak-shared-short
-#SBATCH --partition=notchpeak-shared-short
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=16G
-#SBATCH --time=2:00:00
-#SBATCH --output=/uufs/chpc.utah.edu/common/home/<group>/<project>/logs/%x_%j.out
-#SBATCH --error=/uufs/chpc.utah.edu/common/home/<group>/<project>/logs/%x_%j.err
+#SBATCH --account=jonesk-gpu-np
+#SBATCH --partition=jonesk-gpu-np
+#SBATCH --gres=gpu
+#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=96G
+#SBATCH --output=/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/<project>/logs/%x_%j.out
+#SBATCH --error=/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/<project>/logs/%x_%j.err
 
 set -euo pipefail
-cd /uufs/chpc.utah.edu/common/home/<group>/<project>
+source /uufs/chpc.utah.edu/common/home/u6025146/software/pkg/miniconda3/etc/profile.d/conda.sh
+conda activate R_env
+
+cd /uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/<project>
 
 # --- workload ---
-echo "host=$(hostname) job=$SLURM_JOB_ID"
-# your command here
+echo "host=$(hostname) job=$SLURM_JOB_ID gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo none)"
+Rscript <script>.R
 SLURM_EOF
+```
+
+### Short / CPU-only job (notchpeak-shared-short)
+
+For lightweight tasks that don't need a GPU:
+
+```bash
+#SBATCH --account=notchpeak-shared-short
+#SBATCH --partition=notchpeak-shared-short
+#SBATCH --time=2:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
 ```
 
 ### Submit + capture job ID
 
 ```bash
-JOBID=$(ssh chpc-login 'sbatch --parsable /uufs/chpc.utah.edu/common/home/<group>/<project>/run.slurm')
+JOBID=$(ssh chpc-login 'sbatch --parsable /uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/<project>/<name>.slurm')
 echo "Submitted $JOBID"
 ```
 
@@ -258,7 +300,7 @@ scripting.
 ```bash
 ssh chpc-login "squeue -j $JOBID -o '%i %T %M %R'"
 ssh chpc-login "sacct -j $JOBID --format=JobID,State,Elapsed,MaxRSS,ExitCode"
-ssh chpc-login "tail -n 50 /uufs/chpc.utah.edu/common/home/<group>/<project>/logs/<name>_${JOBID}.out"
+ssh chpc-login "tail -n 50 /uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/<project>/logs/<name>_${JOBID}.out"
 ```
 
 ### Cancel

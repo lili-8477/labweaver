@@ -16,7 +16,7 @@ import { MemoryRpcClient } from "./memory-rpc.js";
 import { NotebookManager } from "./notebook-rpc.js";
 import { ShareRpcClient } from "./share-rpc.js";
 import { listOrgSkills } from "./org-skills-rpc.js";
-import { listUserSkills } from "./skills-rpc.js";
+import { listUserSkills, readUserSkillManifest } from "./skills-rpc.js";
 import { listUserCommands } from "./commands-rpc.js";
 import type { StreamEvent } from "./types.js";
 
@@ -573,6 +573,12 @@ export class RpcRouter {
       case "skills_list": {
         const skills = await listUserSkills(this.deps.home);
         return { success: true, skills };
+      }
+
+      case "skill_get_manifest": {
+        const name = params.name as string;
+        const manifest = await readUserSkillManifest(this.deps.home, name);
+        return { success: true, manifest };
       }
 
       case "org_skills_list": {

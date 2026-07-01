@@ -317,3 +317,15 @@ The flow:
 The mental model: the watcher (background, hours-long) and the chat (foreground, idle) never talk directly — the mailbox file is the only bridge. The watcher only writes; the prompt hook only reads-and-clears.
 
 What it deliberately doesn't do: it doesn't wake the chat. No notification, no auto-resume. If the user never sends another message, the agent never learns. That trade-off was the explicit Option A choice (vs. an autonomous variant that would inject a synthetic prompt via the adapter's `chat` RPC over NATS) — passive saves API tokens and avoids racing the user, at the cost of "you have to type for the agent to find out."
+
+## 2026-06-16 — Skill preview vs. edit: why preview is read-only
+
+**Q:** i can preview only, then what is the update for? agent can edit it, right?
+
+**A:** Yes. The Skills panel separates *editing* from *publishing*:
+
+1. **Edit** — happens in chat. You ask the agent to modify `~/.claude/skills/<name>/SKILL.md` (or any file in the skill folder); Claude uses Edit/Write tools directly on disk. You can also edit in a terminal — same file.
+2. **Preview** (the inline expander, [`frontend/src/components/skills/SkillRow.vue`](../frontend/src/components/skills/SkillRow.vue)) — read-only view of what's currently on disk. Its only job is to let you verify what *would* be submitted before you press the button.
+3. **Submit update / Share** — the button calls `share.submit({ kind: 'skill_update' | 'skill', ref: name })` ([`frontend/src/stores/skills.ts`](../frontend/src/stores/skills.ts)). The share-api snapshots the current SKILL.md + files and queues a request for the org reviewer. On approve, `/workspace/shared/skills/<name>/` is atomically replaced.
+
+The split keeps the UI surface tiny — no in-browser editor, no save-vs-submit confusion — and reuses the chat's already-trusted editing path (with hooks, audit, etc.) rather than building a second one in the panel.

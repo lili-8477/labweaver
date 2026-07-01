@@ -13,4 +13,10 @@ export const skillsService = {
       { success: true; skills: SkillSummary[] };
     return r.skills;
   },
+
+  getManifest: async (name: string): Promise<string> => {
+    const r = await natsService.invoke('skill_get_manifest', { name }) as
+      { success: true; manifest: string };
+    return r.manifest;
+  },
 } as const;

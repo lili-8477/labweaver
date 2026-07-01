@@ -34,7 +34,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Claude Code CLI — pinned. Bump deliberately.
-RUN npm install -g @anthropic-ai/claude-code@2.1.116
+RUN npm install -g @anthropic-ai/claude-code@2.1.178
 
 # 2b. Pre-install torch + CUDA-13 wheel stack (~2.5 GB) so agents don't
 #     have to pull it on every container recreate. `--no-cache-dir` saves
@@ -45,6 +45,29 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.116
 #     Placed BEFORE adapter COPY steps so the pip layer is cached across
 #     adapter code edits — only torch version bumps invalidate it.
 RUN pip install --no-cache-dir torch
+
+# 2c. QuPath — headless IHC / whole-slide image analysis.
+#     The Linux tarball is a jpackage bundle that carries its own JRE, so
+#     no openjdk-* install is needed. libopenslide0 is the system library
+#     QuPath's OpenSlide JNI binding dlopens at runtime to read .svs/.ndpi/
+#     .scn / .mrxs slides; without it Bio-Formats handles the rest but the
+#     fast WSI path goes dark.
+#
+#     Bump QUPATH_VERSION to upgrade. The /opt/QuPath* glob keeps us
+#     forward-compatible with both `QuPath-v0.7.0` and `QuPath` tarball
+#     roots without hardcoding.
+#
+#     Use the bundled launcher headless via:
+#         QuPath script /path/to/script.groovy --image=...
+ARG QUPATH_VERSION=0.7.0
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        libopenslide0 \
+        xz-utils \
+    && curl -fsSL "https://github.com/qupath/qupath/releases/download/v${QUPATH_VERSION}/QuPath-v${QUPATH_VERSION}-Linux.tar.xz" \
+        | tar -xJ -C /opt \
+    && mv /opt/QuPath* /opt/qupath \
+    && ln -sf /opt/qupath/bin/QuPath /usr/local/bin/QuPath \
+    && rm -rf /var/lib/apt/lists/*
 
 # 3. Adapter bundle + Python kernel bridge.
 #    jupyter_client is already in the base image (pantheon-agents-sc's Python env).
