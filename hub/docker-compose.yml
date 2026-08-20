@@ -55,7 +55,7 @@ services:
     container_name: claude-bioflow-caddy
     ports:
       - "80:80"       # ACME HTTP-01 + HTTP→HTTPS redirect
-      - "443:443"     # public TLS entrypoint for bioflow.selfai.cc
+      - "443:443"     # public TLS entrypoint for labweaver.selfai.cc
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
