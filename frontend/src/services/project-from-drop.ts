@@ -102,6 +102,12 @@ export async function createProjectWithFiles(
     uploaded.push({ name: f.name, workspacePath: `${workspaceDir}/${f.name}` })
   }
 
+  // The uploads above bypass the Files panel's own upload path, so nothing
+  // has invalidated its cached listing — without this the new project reads
+  // as missing (or, if it was expanded mid-upload, as empty) until the user
+  // hits Refresh.
+  filesStore.requestReveal(projectDir)
+
   const chatId = await chatStore.createChat(projectName)
   if (chatId) {
     // Bind first, then select. Selecting triggers refreshHarnessProgress,

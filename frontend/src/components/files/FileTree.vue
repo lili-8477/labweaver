@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useFileStore } from '@/stores/files'
 import { useUploadsStore } from '@/stores/uploads'
 import { queueUpload, cancelUpload, retryUpload } from '@/services/upload'
@@ -375,6 +375,12 @@ async function revealAndRefreshDir(destDir: string) {
 function refreshAfterUpload(destDir: string) {
   void revealAndRefreshDir(destDir)
 }
+
+// Writes that happen outside this component (drop-to-create-project) signal
+// through the store rather than reaching into the tree's cache directly.
+watch(() => files.revealRequest, (req) => {
+  if (req) void revealAndRefreshDir(req.path)
+})
 
 function queueOne(file: File, destDir: string) {
   const { id, promise } = queueUpload(file, destDir)

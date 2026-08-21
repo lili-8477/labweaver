@@ -20,6 +20,17 @@ export const useFileStore = defineStore('files', () => {
   // (those files are HDF5 and big) — backend reads on demand.
   const openH5ad = ref<{ path: string; size?: number } | null>(null)
 
+  // Directory the file tree should re-fetch and expand. Raised by flows that
+  // write into the workspace from outside the Files panel (drop-to-create-
+  // project), which otherwise leave the tree showing a stale cached listing.
+  // The nonce makes a repeat request for the same directory still fire.
+  const revealRequest = ref<{ path: string; nonce: number } | null>(null)
+  let revealNonce = 0
+
+  function requestReveal(path: string) {
+    revealRequest.value = { path, nonce: ++revealNonce }
+  }
+
   async function loadTree(subDir?: string) {
     loading.value = true
     try {
@@ -144,8 +155,8 @@ export const useFileStore = defineStore('files', () => {
   }
 
   return {
-    tree, loading, openFile, openH5ad,
-    loadTree, readFile, writeFile, createFile,
+    tree, loading, openFile, openH5ad, revealRequest,
+    loadTree, requestReveal, readFile, writeFile, createFile,
     createDirectory, deletePath, movePath,
     closeFile, openH5adFile, closeH5ad,
   }
