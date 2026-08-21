@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LabWeaver — one context, the whole lab</title>
+<meta name="description" content="LabWeaver turns a lab's scattered AI briefings into one shared memory — skills, protocols and instruments woven into infrastructure that compounds.">
+<link rel="icon" type="image/png" href="/favicon.png">
+<meta property="og:title" content="LabWeaver — one context, the whole lab">
+<meta property="og:description" content="Persistent laboratory AI infrastructure. Shared memory, reusable skills, grounded at the bench.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@200;400;600&display=swap" rel="stylesheet">
+<style>
+  html, body { margin:0; padding:0; background:#000; }
+  a { color:#ffb829; text-decoration:none; }
+  a:hover { color:#ffffff; }
+  @keyframes lw-pulse { 0%,100% { transform:scale(1); opacity:.85 } 50% { transform:scale(1.35); opacity:1 } }
+  @keyframes lw-march { to { stroke-dashoffset:-60 } }
+  @keyframes lw-float { 0%,100% { transform:translateY(0) } 50% { transform:translateY(-7px) } }
+  @keyframes lw-blink { 0%,92%,100% { transform:scaleY(1) } 96% { transform:scaleY(.1) } }
+  @keyframes lw-twinkle { 0%,100% { opacity:.15 } 50% { opacity:1 } }
+  @keyframes lw-spin { to { transform:rotate(360deg) } }
+  @keyframes lw-shuttle { 0%,100% { transform:translateY(-96px) } 50% { transform:translateY(96px) } }
+  @keyframes lw-card { 0% { transform:translateY(-58px); opacity:0 } 30% { transform:translateY(0); opacity:1 } 85% { transform:translateY(0); opacity:1 } 100% { transform:translateY(0); opacity:0 } }
+  @keyframes lw-helix { 0% { transform:translateY(-22px) scale(0.7); opacity:0.45 } 50% { transform:translateY(22px) scale(1.15); opacity:1 } 100% { transform:translateY(-22px) scale(0.7); opacity:0.45 } }
+  @keyframes lw-cellL { 0%,15% { transform:translateX(0) } 55%,80% { transform:translateX(-24px) } 100% { transform:translateX(0) } }
+  @keyframes lw-cellR { 0%,15% { transform:translateX(0) } 55%,80% { transform:translateX(24px) } 100% { transform:translateX(0) } }
+  @keyframes lw-membrane { 0%,15% { transform:scaleX(1) } 55%,80% { transform:scaleX(1.9) } 100% { transform:scaleX(1) } }
+  @keyframes lw-glow { 0%,100% { opacity:.25 } 50% { opacity:.7 } }
+  .lw-hero { display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,0.95fr); gap:60px; align-items:center; }
+  .lw-cta { background:#8052ff; color:#ffffff; border-radius:24px; font-weight:600; letter-spacing:0.35px; text-transform:uppercase; display:inline-block; transition:background .15s ease; }
+  .lw-cta:hover { background:#9670ff; color:#ffffff; }
+  a:focus-visible { outline:2px solid #ffb829; outline-offset:3px; border-radius:4px; }
+  @media (max-width: 1000px) { .lw-hero { grid-template-columns:minmax(0,1fr); } .lw-panels svg { max-width:400px; display:block; } .lw-proof { grid-template-columns:minmax(0,1fr) !important; } }
+  @media (max-width: 760px) { .lw-navlinks, .lw-navfull { display:none !important; } }
+  @media (max-width: 640px) { .lw-panels { grid-template-columns:minmax(0,1fr) !important; } .lw-foot { flex-direction:column; align-items:flex-start !important; gap:12px !important; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } }
+</style>
+</head>
+<body>
+
+<div style="background:#000; color:#ffffff; font-family:Inter, ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing:antialiased; min-height:100vh; overflow-x:hidden;">
+
+  <div style="max-width:1280px; margin:0 auto; padding:30px 36px; display:flex; align-items:center; justify-content:space-between; gap:24px;">
+    <div style="display:flex; align-items:center; gap:12px;">
+      <img src="/labweaver-mark.png" alt="" width="27" height="34" style="display:block; height:34px; width:auto;">
+      <span style="font-size:15px; letter-spacing:-0.2px;">LabWeaver</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:30px; font-size:14px; font-weight:600; letter-spacing:0.35px; text-transform:uppercase; color:#9a9a9a;">
+      <span class="lw-navlinks" style="display:flex; align-items:center; gap:30px;">
+        <a href="#how" style="color:#9a9a9a;">How it works</a>
+        <a href="#proof" style="color:#9a9a9a;">Case study</a>
+        <a href="https://github.com/lili-8477/labweaver" style="color:#9a9a9a;">GitHub</a>
+      </span>
+      <a href="/app" data-connect class="lw-cta" style="padding:13px 18px; font-size:14px; white-space:nowrap;">Connect<span class="lw-navfull"> to LabWeaver</span></a>
+    </div>
+  </div>
+
+  <div style="max-width:1280px; margin:0 auto; padding:60px 36px 96px;" class="lw-hero">
+    <div>
+      <div style="font-size:14px; font-weight:600; letter-spacing:0.35px; text-transform:uppercase; color:#ffb829;">Lab AI context ecosystem</div>
+      <h1 style="margin:24px 0 0; font-size:clamp(44px, 6vw, 78px); font-weight:400; line-height:1.1; letter-spacing:-0.04em;">One context.<br>The whole lab.</h1>
+      <p style="margin:30px 0 0; max-width:480px; font-size:18px; font-weight:200; line-height:1.5; color:#bdbdbd;">Everyone briefs their own AI from scratch. LabWeaver makes it one shared memory — skills, protocols and instruments woven into infrastructure that compounds.</p>
+      <div style="display:flex; align-items:center; flex-wrap:wrap; gap:30px; margin-top:36px;">
+        <a href="/app" data-connect class="lw-cta" style="padding:15px 22px; font-size:14px;">Connect to LabWeaver</a>
+        <a href="https://github.com/lili-8477/labweaver" style="color:#ffffff; font-size:14px; font-weight:400;">Request access</a>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:36px; margin-top:60px; font-size:12px; line-height:1.5; color:#9a9a9a; text-transform:uppercase; letter-spacing:0.35px;">
+        <span>Open source · MIT</span><span>Multi-user hub</span><span>Wet-lab grounded</span>
+      </div>
+    </div>
+
+    <div style="display:flex; justify-content:center; min-width:0;">
+      <svg viewBox="0 0 440 440" style="width:100%; max-width:440px; height:auto;" role="img" aria-label="Threads of lab knowledge weaving into one glowing core">
+        <defs><radialGradient id="lwcore"><stop offset="0%" stop-color="#8052ff" stop-opacity="0.55"></stop><stop offset="100%" stop-color="#8052ff" stop-opacity="0"></stop></radialGradient></defs>
+        <circle cx="220" cy="220" r="150" fill="url(#lwcore)" style="animation:lw-glow 5s ease-in-out infinite;"></circle>
+        <g stroke="#ffffff" stroke-opacity="0.13" stroke-width="1">
+          <line x1="100" y1="70" x2="100" y2="370"></line><line x1="140" y1="70" x2="140" y2="370"></line>
+          <line x1="180" y1="70" x2="180" y2="370"></line><line x1="220" y1="70" x2="220" y2="370"></line>
+          <line x1="260" y1="70" x2="260" y2="370"></line><line x1="300" y1="70" x2="300" y2="370"></line>
+          <line x1="340" y1="70" x2="340" y2="370"></line>
+        </g>
+        <g style="animation:lw-shuttle 7s ease-in-out infinite;">
+          <line x1="86" y1="220" x2="354" y2="220" stroke="#8052ff" stroke-width="2"></line>
+          <circle cx="354" cy="220" r="6" fill="#ffb829"></circle>
+        </g>
+        <g fill="none" stroke="#8052ff" stroke-width="1.6" stroke-dasharray="7 9" style="animation:lw-march 3s linear infinite;">
+          <path d="M90 220 C 140 120, 300 120, 350 220"></path>
+          <path d="M90 220 C 140 320, 300 320, 350 220"></path>
+          <path d="M110 160 C 190 200, 250 240, 330 280"></path>
+        </g>
+        <circle cx="220" cy="220" r="26" fill="none" stroke="#ffffff" stroke-opacity="0.5" stroke-width="1.5"></circle>
+        <circle cx="220" cy="220" r="9" fill="#8052ff" style="transform-box:fill-box; transform-origin:center; animation:lw-pulse 2.6s ease-in-out infinite;"></circle>
+        <g style="transform-box:fill-box; transform-origin:center; animation:lw-spin 26s linear infinite;">
+          <path d="M220 150 l7 12 h-14 z" fill="#ffb829"></path>
+          <path d="M290 250 l7 12 h-14 z" fill="#8052ff"></path>
+          <path d="M150 250 l7 12 h-14 z" fill="#15846e"></path>
+        </g>
+        <g>
+          <path d="M64 96 l6 10 h-12 z" fill="#8052ff" style="animation:lw-twinkle 3.1s ease-in-out infinite;"></path>
+          <path d="M382 130 l6 10 h-12 z" fill="#ffb829" style="animation:lw-twinkle 4.3s ease-in-out infinite;"></path>
+          <path d="M56 300 l6 10 h-12 z" fill="#15846e" style="animation:lw-twinkle 3.7s ease-in-out infinite;"></path>
+          <path d="M392 322 l6 10 h-12 z" fill="#8052ff" style="animation:lw-twinkle 5.1s ease-in-out infinite;"></path>
+          <path d="M212 46 l6 10 h-12 z" fill="#ffb829" style="animation:lw-twinkle 4.7s ease-in-out infinite;"></path>
+          <path d="M228 390 l6 10 h-12 z" fill="#8052ff" style="animation:lw-twinkle 3.4s ease-in-out infinite;"></path>
+        </g>
+      </svg>
+    </div>
+  </div>
+
+  <div id="how" style="max-width:1280px; margin:0 auto; padding:0 36px 60px;">
+    <div style="font-size:14px; font-weight:600; letter-spacing:0.35px; text-transform:uppercase; color:#ffb829;">How it works</div>
+    <h2 style="margin:18px 0 0; font-size:42px; font-weight:400; line-height:1.2; letter-spacing:-1.68px;">Three moves. One loop.</h2>
+  </div>
+
+  <div style="max-width:1280px; margin:0 auto; padding:0 36px 96px; display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:36px;" class="lw-panels">
+
+    <div>
+      <svg width="100%" viewBox="0 0 320 240" role="img" aria-label="Three researchers talking into one shared glowing context">
+        <g fill="none" stroke="#8052ff" stroke-width="1.6" stroke-dasharray="5 7" style="animation:lw-march 2.6s linear infinite;">
+          <path d="M60 158 C 90 120, 130 100, 160 96"></path>
+          <path d="M160 168 L160 122"></path>
+          <path d="M260 158 C 230 120, 190 100, 160 96"></path>
+        </g>
+        <circle cx="160" cy="82" r="30" fill="none" stroke="#ffffff" stroke-opacity="0.4" stroke-width="1.4"></circle>
+        <circle cx="160" cy="82" r="12" fill="#8052ff" style="transform-box:fill-box; transform-origin:center; animation:lw-pulse 2.4s ease-in-out infinite;"></circle>
+        <g style="transform-box:fill-box; transform-origin:center; animation:lw-spin 14s linear infinite;">
+          <path d="M160 44 l5 9 h-10 z" fill="#ffb829"></path>
+          <path d="M196 100 l5 9 h-10 z" fill="#15846e"></path>
+        </g>
+        <g stroke="#ffffff" stroke-width="1.8" fill="none">
+          <g style="animation:lw-float 4.4s ease-in-out infinite;">
+            <circle cx="60" cy="176" r="15"></circle>
+            <path d="M53 180 q7 6 14 0" stroke-linecap="round"></path>
+            <path d="M45 226 v-14 a15 15 0 0 1 30 0 v14" fill="#8052ff" fill-opacity="0.85" stroke="none"></path>
+            <g fill="#ffffff" stroke="none" style="transform-box:fill-box; transform-origin:center; animation:lw-blink 5s ease-in-out infinite;"><circle cx="55" cy="173" r="1.8"></circle><circle cx="65" cy="173" r="1.8"></circle></g>
+          </g>
+          <g style="animation:lw-float 5.2s ease-in-out infinite;">
+            <circle cx="160" cy="186" r="15"></circle>
+            <path d="M153 190 q7 6 14 0" stroke-linecap="round"></path>
+            <path d="M145 236 v-14 a15 15 0 0 1 30 0 v14" fill="#ffb829" fill-opacity="0.85" stroke="none"></path>
+            <g fill="#ffffff" stroke="none" style="transform-box:fill-box; transform-origin:center; animation:lw-blink 6.2s ease-in-out infinite;"><circle cx="155" cy="183" r="1.8"></circle><circle cx="165" cy="183" r="1.8"></circle></g>
+          </g>
+          <g style="animation:lw-float 4.8s ease-in-out infinite;">
+            <circle cx="260" cy="176" r="15"></circle>
+            <path d="M253 180 q7 6 14 0" stroke-linecap="round"></path>
+            <path d="M245 226 v-14 a15 15 0 0 1 30 0 v14" fill="#15846e" fill-opacity="0.9" stroke="none"></path>
+            <g fill="#ffffff" stroke="none" style="transform-box:fill-box; transform-origin:center; animation:lw-blink 4.2s ease-in-out infinite;"><circle cx="255" cy="173" r="1.8"></circle><circle cx="265" cy="173" r="1.8"></circle></g>
+          </g>
+        </g>
+      </svg>
+      <div style="font-size:12px; font-weight:600; letter-spacing:0.35px; text-transform:uppercase; color:#9a9a9a; margin-top:24px;">01</div>
+      <h3 style="margin:12px 0 0; font-size:27px; font-weight:400; line-height:1;">Everyone shares one brain.</h3>
+      <p style="margin:12px 0 0; font-size:18px; font-weight:200; line-height:1.5; color:#bdbdbd;">Same memory, same protocols — no re-briefing.</p>
+    </div>
+
+    <div>
+      <svg width="100%" viewBox="0 0 320 240" role="img" aria-label="A finished analysis being filed as a reusable skill card">
+        <g style="animation:lw-card 5s ease-in-out infinite;">
+          <rect x="112" y="26" width="96" height="62" rx="10" fill="#000000" stroke="#8052ff" stroke-width="1.6"></rect>
+          <path d="M112 36 a10 10 0 0 1 10 -10 h18 v20 h-28 z" fill="#ffb829"></path>
+          <g stroke="#ffffff" stroke-opacity="0.55" stroke-width="2" stroke-linecap="round"><line x1="126" y1="62" x2="192" y2="62"></line><line x1="126" y1="74" x2="170" y2="74"></line></g>
+        </g>
+        <path d="M160 96 L160 118" stroke="#8052ff" stroke-width="1.6" stroke-dasharray="5 7" style="animation:lw-march 2.2s linear infinite;"></path>
+        <g fill="none" stroke="#ffffff" stroke-width="1.8">
+          <rect x="70" y="122" width="180" height="98" rx="14"></rect>
+          <line x1="70" y1="154" x2="250" y2="154"></line>
+          <line x1="70" y1="187" x2="250" y2="187"></line>
+        </g>
+        <g fill="#8052ff" fill-opacity="0.85"><rect x="86" y="132" width="56" height="12" rx="6"></rect><rect x="86" y="165" width="86" height="12" rx="6"></rect><rect x="86" y="197" width="42" height="12" rx="6"></rect></g>
+        <circle cx="232" cy="138" r="5" fill="#ffb829" style="transform-box:fill-box; transform-origin:center; animation:lw-pulse 2s ease-in-out infinite;"></circle>
+      </svg>
+      <div style="font-size:12px; font-weight:600; letter-spacing:0.35px; text-transform:uppercase; color:#9a9a9a; margin-top:24px;">02</div>
+      <h3 style="margin:12px 0 0; font-size:27px; font-weight:400; line-height:1;">Every answer becomes a skill.</h3>
+      <p style="margin:12px 0 0; font-size:18px; font-weight:200; line-height:1.5; color:#bdbdbd;">Drop in markdown; the lab reuses it next turn.</p>
+    </div>
+
+    <div>
+      <svg width="100%" viewBox="0 0 320 240" role="img" aria-label="A DNA helix of circles flowing into a dividing cell">
+        <g>
+          <circle cx="44" cy="120" r="5.5" fill="#8052ff" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:0s;"></circle>
+          <circle cx="44" cy="120" r="5.5" fill="#ffb829" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:-1.8s;"></circle>
+          <circle cx="64" cy="120" r="5.5" fill="#8052ff" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:-0.45s;"></circle>
+          <circle cx="64" cy="120" r="5.5" fill="#ffb829" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:-2.25s;"></circle>
+          <circle cx="84" cy="120" r="5.5" fill="#8052ff" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:-0.9s;"></circle>
+          <circle cx="84" cy="120" r="5.5" fill="#ffb829" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:-2.7s;"></circle>
+          <circle cx="104" cy="120" r="5.5" fill="#8052ff" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:-1.35s;"></circle>
+          <circle cx="104" cy="120" r="5.5" fill="#ffb829" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:-3.15s;"></circle>
+          <circle cx="124" cy="120" r="5.5" fill="#8052ff" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:-1.8s;"></circle>
+          <circle cx="124" cy="120" r="5.5" fill="#ffb829" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:0s;"></circle>
+          <circle cx="144" cy="120" r="5.5" fill="#8052ff" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:-2.25s;"></circle>
+          <circle cx="144" cy="120" r="5.5" fill="#ffb829" style="transform-box:fill-box; transform-origin:center; animation:lw-helix 3.6s ease-in-out infinite; animation-delay:-0.45s;"></circle>
+        </g>
+        <g fill="none" stroke="#8052ff" stroke-width="1.6" stroke-dasharray="5 7" style="animation:lw-march 2.4s linear infinite;"><path d="M158 120 H 192"></path></g>
+        <g>
+          <ellipse cx="240" cy="120" rx="34" ry="34" fill="none" stroke="#ffffff" stroke-opacity="0.5" stroke-width="1.8" style="transform-box:fill-box; transform-origin:center; animation:lw-membrane 5s ease-in-out infinite;"></ellipse>
+          <g style="animation:lw-cellL 5s ease-in-out infinite;">
+            <circle cx="240" cy="120" r="16" fill="none" stroke="#ffffff" stroke-width="1.8"></circle>
+            <circle cx="240" cy="120" r="6" fill="#8052ff" style="transform-box:fill-box; transform-origin:center; animation:lw-pulse 2.5s ease-in-out infinite;"></circle>
+          </g>
+          <g style="animation:lw-cellR 5s ease-in-out infinite;">
+            <circle cx="240" cy="120" r="16" fill="none" stroke="#ffffff" stroke-width="1.8"></circle>
+            <circle cx="240" cy="120" r="6" fill="#ffb829" style="transform-box:fill-box; transform-origin:center; animation:lw-pulse 2.5s ease-in-out infinite; animation-delay:-1.25s;"></circle>
+          </g>
+        </g>
+        <g>
+          <circle cx="206" cy="64" r="4" fill="#15846e" style="animation:lw-twinkle 3.4s ease-in-out infinite;"></circle>
+          <circle cx="286" cy="76" r="3" fill="#8052ff" style="animation:lw-twinkle 4.2s ease-in-out infinite;"></circle>
+          <circle cx="292" cy="170" r="4" fill="#ffb829" style="animation:lw-twinkle 3.8s ease-in-out infinite;"></circle>
+          <circle cx="204" cy="180" r="3" fill="#8052ff" style="animation:lw-twinkle 4.8s ease-in-out infinite;"></circle>
+        </g>
+      </svg>
+      <div style="font-size:12px; font-weight:600; letter-spacing:0.35px; text-transform:uppercase; color:#9a9a9a; margin-top:24px;">03</div>
+      <h3 style="margin:12px 0 0; font-size:27px; font-weight:400; line-height:1;">The AI reaches the bench.</h3>
+      <p style="margin:12px 0 0; font-size:18px; font-weight:200; line-height:1.5; color:#bdbdbd;">Grounded in your instruments, samples and history.</p>
+    </div>
+  </div>
+
+  <div id="proof" style="max-width:1280px; margin:0 auto; padding:0 36px 120px; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:60px; align-items:start;" class="lw-proof">
+    <div>
+      <div style="font-size:14px; font-weight:600; letter-spacing:0.35px; text-transform:uppercase; color:#ffb829;">Case study</div>
+      <h2 style="margin:18px 0 0; font-size:42px; font-weight:400; line-height:1.2; letter-spacing:-1.68px;">It found what the generic agent missed.</h2>
+    </div>
+    <p style="margin:0; font-size:18px; font-weight:200; line-height:1.5; color:#bdbdbd; max-width:520px;">On a synovial sarcoma mouse-model scRNA-seq run, a native agent produced a boilerplate workflow. With the lab's own H&amp;E morphology and marker knowledge in context, LabWeaver surfaced <span style="color:#ffb829;">SS18-SSX2 fusion expression</span> and assigned biphasic and monophasic cell states.</p>
+  </div>
+
+  <div style="max-width:1280px; margin:0 auto; padding:0 36px 120px;">
+    <h2 style="margin:0; font-size:clamp(44px, 6vw, 78px); font-weight:400; line-height:1.1; letter-spacing:-0.04em;">Weave your lab.</h2>
+    <div style="display:flex; align-items:center; flex-wrap:wrap; gap:30px; margin-top:36px;">
+      <a href="/app" data-connect class="lw-cta" style="padding:15px 22px; font-size:14px;">Connect to LabWeaver</a>
+      <a href="https://github.com/lili-8477/labweaver" style="color:#ffffff; font-size:14px; font-weight:400;">Request access</a>
+    </div>
+  </div>
+
+  <div style="max-width:1280px; margin:0 auto; padding:0 36px 44px;">
+    <img src="/labweaver-lockup.png" alt="LabWeaver — open-source AI, wet + dry lab ecosystem, XR enabled" style="height:170px; width:auto; opacity:.9;">
+  </div>
+
+  <div style="max-width:1280px; margin:0 auto; padding:0 36px 60px; display:flex; align-items:center; justify-content:space-between; gap:24px; font-size:12px; line-height:1.5; color:#9a9a9a; border-top:1px solid rgba(255,255,255,0.09); padding-top:28px;" class="lw-foot">
+    <span>LabWeaver — persistent laboratory AI infrastructure. MIT licensed.</span>
+    <a href="https://github.com/lili-8477/labweaver" style="color:#9a9a9a;">github.com/lili-8477/labweaver</a>
+  </div>
+</div>
+
+<script>
+  // Point every "Connect to LabWeaver" CTA at the app with this host's NATS
+  // WebSocket endpoint prefilled (the app reads ?nats= in loadFromUrl()).
+  // Without JS the links still resolve to /app, which prompts for the URL.
+  (function () {
+    var ws = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/'
+    document.querySelectorAll('a[data-connect]').forEach(function (a) {
+      // auto=true reconnects returning users straight into their session
+      // (App.vue only auto-connects when a service ID is already stored).
+      a.href = '/app?auto=true&nats=' + encodeURIComponent(ws)
+    })
+  })()
+</script>
+
+</body>
+</html>
