@@ -45,6 +45,19 @@ export const useConnectionStore = defineStore('connection', () => {
     }))
   }
 
+  // nginx routes /upload/, /download/ and /share-snapshot/ by workspace owner.
+  // It resolves that owner from this cookie (see hub/service-map.conf), which
+  // replaces the HTTP Basic prompt that used to supply the same routing key.
+  // Same secret the NATS connection already authenticates with — the cookie
+  // just makes it reachable from plain <a href> downloads and XHR uploads.
+  const SERVICE_COOKIE = 'lw_service'
+
+  function setServiceCookie(value: string) {
+    const secure = location.protocol === 'https:' ? '; Secure' : ''
+    const age = value ? '; Max-Age=31536000' : '; Max-Age=0'
+    document.cookie = `${SERVICE_COOKIE}=${value}; Path=/; SameSite=Strict${secure}${age}`
+  }
+
   async function connect() {
     if (!url.value || !serviceId.value) {
       error.value = 'URL and Service ID are required'
@@ -62,6 +75,7 @@ export const useConnectionStore = defineStore('connection', () => {
       await natsService.connect(config)
       connected.value = true
       saveToStorage()
+      setServiceCookie(serviceId.value)
 
       // Fetch endpoint info
       try {
@@ -80,6 +94,7 @@ export const useConnectionStore = defineStore('connection', () => {
     await natsService.disconnect()
     connected.value = false
     endpointServiceId.value = ''
+    setServiceCookie('')
   }
 
   return {

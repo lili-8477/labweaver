@@ -118,8 +118,11 @@ docker compose ps
 
 The final command prints a `service_id` (64-char hex). Open
 `http://localhost:8088/` (or whatever nginx binds), enter
-`ws://localhost:8088/ws/` as the WebSocket URL, the printed service ID, and
-the username/password you chose.
+`ws://localhost:8088/ws/` as the WebSocket URL and the printed service ID.
+That ID is the only credential: the app stores it in the `lw_service` cookie,
+and nginx maps it to the workspace owner to route `/upload/` and `/download/`
+(see `hub/scripts/gen-service-map.sh`). The password you chose is used only
+by `/nats/`, the admin monitoring endpoint.
 
 ## Quick start (single-user local dev)
 

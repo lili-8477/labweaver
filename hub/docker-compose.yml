@@ -38,9 +38,14 @@ services:
       # and the next `npm run build` fails with EACCES.
       - ../frontend/dist:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      # service ID -> workspace owner, the routing key for the per-user
+      # endpoints. Regenerate with scripts/gen-service-map.sh.
+      - ./service-map.conf:/etc/nginx/service-map.conf:ro
+      # Still used by /nats/ (admin monitoring) — the per-user endpoints no
+      # longer prompt for a password.
       - ./htpasswd:/etc/nginx/htpasswd:ro
       # Read-only access for the /download/ endpoint. Per-user scoped via
-      # $remote_user in the location block; `.env` etc. are mode 0600 so
+      # $ws_user in the location block; `.env` etc. are mode 0600 so
       # nginx (unprivileged) can't even read them as a secondary safety net.
       - ./workspaces:/downloads:ro
     depends_on:
