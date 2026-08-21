@@ -1,4 +1,4 @@
-// bioFlow Memory Types — MIT License
+// LabWeaver Memory Types — MIT License
 
 export type MemoryType = 'user' | 'feedback' | 'project' | 'reference' | 'session_summary' | 'observation'
 export type MemorySource = 'user' | 'distilled'

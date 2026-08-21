@@ -1,4 +1,4 @@
-// bioFlow Memory Service — MIT License
+// LabWeaver Memory Service — MIT License
 // Adapter RPCs wrap responses as {success: true, ...}; extract the data payload in get/search/audit
 
 import { natsService } from './nats'

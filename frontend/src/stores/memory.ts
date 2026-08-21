@@ -1,4 +1,4 @@
-// bioFlow Memory Store — MIT License
+// LabWeaver Memory Store — MIT License
 
 import { defineStore } from 'pinia'
 import { ref } from 'vue'

@@ -14,7 +14,7 @@ let themeRegistered = false
 export const PANTHEON_THEME = 'bioflow-cell'
 
 /**
- * Monaco colors mirror the bioFlow OKLCH palette. Monaco doesn't accept
+ * Monaco colors mirror the LabWeaver OKLCH palette. Monaco doesn't accept
  * oklch() strings, so these are hex approximations of the same tokens.
  */
 export function getMonaco(): Promise<Monaco> {

@@ -1,5 +1,5 @@
 /**
- * bioFlow NATS Service — MIT License
+ * LabWeaver NATS Service — MIT License
  *
  * Handles WebSocket connection to NATS, JSON-based RPC calls,
  * and pub/sub streaming for chat and notebook events.

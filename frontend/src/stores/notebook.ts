@@ -10,7 +10,7 @@ import type {
 type CellType = 'code' | 'markdown' | 'raw'
 
 /**
- * Notebook store. Backend contract (see bioFlow/Pantheon
+ * Notebook store. Backend contract (see LabWeaver/Pantheon
  * `pantheon.toolsets.notebook.IntegratedNotebookToolSet`):
  *
  *   read_notebook(notebook_path, validate)

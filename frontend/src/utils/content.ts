@@ -1,7 +1,7 @@
 /**
  * Extract displayable text from various message content formats.
  *
- * bioFlow message.content can be:
+ * LabWeaver message.content can be:
  * - string: plain text
  * - array of content blocks: [{type: "text", text: "..."}, {type: "image_url", ...}]
  * - object: arbitrary data

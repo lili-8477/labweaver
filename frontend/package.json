@@ -2,7 +2,7 @@
   "name": "bioflow-frontend",
   "private": false,
   "version": "0.1.0",
-  "description": "bioFlow — Vue 3 + NATS WebSocket frontend",
+  "description": "LabWeaver — Vue 3 + NATS WebSocket frontend",
   "license": "MIT",
   "type": "module",
   "scripts": {

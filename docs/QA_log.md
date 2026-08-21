@@ -74,7 +74,7 @@ Mechanics:
 - It's an *inline* mechanic, not a layered override system. Imported text and surrounding text concatenate into the same system prompt. To "override" the imported content, place user-specific instructions *after* the `@…` line so the later text wins.
 - Imported files are plain markdown — not skills. For skill-style routing, use `.claude/skills/` instead.
 
-Bioflow application: bind-mount `shared/CLAUDE.md` into each container at e.g. `/workspace/.bioflow/shared.md`, seed each user's `CLAUDE.md` with `@/workspace/.bioflow/shared.md` as the first line, and shared edits will flow live to every workspace while user files own local overrides.
+LabWeaver application: bind-mount `shared/CLAUDE.md` into each container at e.g. `/workspace/.bioflow/shared.md`, seed each user's `CLAUDE.md` with `@/workspace/.bioflow/shared.md` as the first line, and shared edits will flow live to every workspace while user files own local overrides.
 
 ---
 
@@ -157,7 +157,7 @@ Suggested order: do (1) as a 30-min smoke test in `claude-bioflow-li86`, then de
 
 Two integration gotchas either way:
 
-- **`work_dir` / cwd alignment** — agent must write `eval_answer.json` into the runner-supplied `work_dir`. Bioflow sessions default cwd to `/workspace` or `local_projects/<proj>/`. Easiest: make `work_dir` a subdir of `local_projects/scbench-runs/<task-id>/` so the agent's `Write` lands there.
+- **`work_dir` / cwd alignment** — agent must write `eval_answer.json` into the runner-supplied `work_dir`. LabWeaver sessions default cwd to `/workspace` or `local_projects/<proj>/`. Easiest: make `work_dir` a subdir of `local_projects/scbench-runs/<task-id>/` so the agent's `Write` lands there.
 - **Dataset cache** — `.h5ad` snapshots are downloaded; cache on the bind-mounted workspace, not `/tmp`, or every container recreate re-downloads.
 
 For the full 394 set (vs. 7 canonical), contact LatchBio.
@@ -252,7 +252,7 @@ Site-specific blockers to verify at CHPC: long-running Singularity instances on 
 
 **A:** Per-chat isolation backed by Postgres-tracked Claude SDK session UUIDs.
 
-- Each bioFlow chat row has a `session_id` column = the real Claude Agent SDK
+- Each LabWeaver chat row has a `session_id` column = the real Claude Agent SDK
   session UUID. One UUID ↔ one JSONL transcript at
   `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`
   (bind-mounted from `${WORKSPACE}/.claude/claude-projects/` so it

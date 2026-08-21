@@ -12,7 +12,7 @@ function handleConnect() {
   <div class="dialog-overlay">
     <div class="dialog">
       <div class="dialog-header">
-        <h2>Connect to bioFlow</h2>
+        <h2>Connect to LabWeaver</h2>
         <p class="subtitle">Enter your NATS WebSocket endpoint and service ID</p>
       </div>
 

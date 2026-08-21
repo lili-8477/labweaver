@@ -153,7 +153,8 @@ const connStatus = computed(() => {
         >
           <span class="hamburger">☰</span>
         </button>
-        <span class="logo">bioFlow</span>
+        <img class="logo-mark" src="/labweaver-mark.png" alt="" />
+        <span class="logo">LabWeaver</span>
         <span class="conn-badge" :class="connStatus.cls">
           <span class="status-dot"></span>
           {{ connStatus.label }}
@@ -295,6 +296,11 @@ const connStatus = computed(() => {
 }
 .hamburger { font-size: 14px; }
 
+.logo-mark {
+  height: 22px;
+  width: auto;
+  flex: none;
+}
 .logo {
   font-family: var(--font-display);
   font-weight: var(--fw-semi);

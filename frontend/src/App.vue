@@ -25,9 +25,9 @@ onMounted(() => {
 
 <style>
 /*
- * bioFlow design tokens.
+ * LabWeaver design tokens.
  *
- * Palette: warm-slate dark with a faint green-yellow tint (bioFlow hue = 135°).
+ * Palette: warm-slate dark with a faint green-yellow tint (LabWeaver hue = 135°).
  * Neutrals are OKLCH-defined so lightness steps are perceptually even.
  * Accents (coral primary, sage success, amber warning, oxblood danger) are
  * chosen to feel like pigments from scientific illustration — *not*

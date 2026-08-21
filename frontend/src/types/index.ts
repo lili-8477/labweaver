@@ -1,4 +1,4 @@
-// bioFlow Frontend Types — MIT License
+// LabWeaver Frontend Types — MIT License
 
 export * from './memory'
 
@@ -89,7 +89,7 @@ export interface StepMessage {
   chat_id: string
 }
 
-/** Actual step_message payload from bioFlow backend */
+/** Actual step_message payload from LabWeaver backend */
 export interface StepMessageData {
   role: 'assistant' | 'tool' | 'user' | 'system'
   content?: unknown  // string or structured
