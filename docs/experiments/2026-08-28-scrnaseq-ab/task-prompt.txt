@@ -1,7 +1,7 @@
 Analyze the single-cell RNA-seq dataset A8163_mSS, a mouse synovial sarcoma model.
 
 Raw FASTQ files are on CHPC at:
-/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input/Fastq
+/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/ab_input_2026-08-28/Fastq
 
 Compute runs on CHPC — reach it over SSH and submit heavy work through SLURM. Do not process the data inside this container.
 
