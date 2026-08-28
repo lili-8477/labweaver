@@ -31,7 +31,7 @@ fi
 
 # Leakage check: did this arm read outside the staged input?
 grep -oE '/uufs/[^ "'"'"')]*' "${OUT}"/.audit.log 2>/dev/null \
-    | grep -v 'A8163_mSS_ab_input' | sort -u > "${OUT}/offpath-uufs.txt" || true
+    | grep -v 'ab_input_2026-08-28' | sort -u > "${OUT}/offpath-uufs.txt" || true
 
 echo "captured arm ${ARM} (${WS}) -> ${OUT}"
 echo "off-path CHPC accesses: $(wc -l < "${OUT}/offpath-uufs.txt" 2>/dev/null || echo 0)"

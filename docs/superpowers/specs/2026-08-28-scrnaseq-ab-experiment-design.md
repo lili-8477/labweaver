@@ -152,17 +152,42 @@ reference. Either arm can browse to it, and if both do, the strongest
 discriminator in the experiment — whether the agent knows to avoid the
 human/mouse barnyard reference — disappears.
 
-Stage `/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input/Fastq`
+Stage `/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/ab_input_2026-08-28/Fastq`
 on CHPC containing only hard links to the FASTQ files, and point both
 arms there. Hard links rather than symlinks: a symlink's target reveals
-the original project path under `ls -l`. The real project tree,
-including the scripts and prior outputs, is left untouched.
+the original project path under `ls -l`.
 
-**Honest limit.** Container-side isolation (C1) is enforceable. CHPC-side
-isolation is not: both arms authenticate as the same account
-`u6025146`, so either can `ls` its way to the original `A8163_mSS`
-tree. Nothing short of a second CHPC account changes that. The staging
-directory removes the *invitation*, not the *capability*.
+**Amended 2026-08-28 after inspecting the tree.** What sits beside the
+FASTQs is not a hint, it is the finished analysis: `srt_A8163_fixed.Robj`
+(976M), `srt_for_monocle3.Robj` (778M, carrying the `cell_type` column),
+`markers_all.csv`, `markers_top10.csv`, `mSS_SC_CellType.Rmd`, and the
+`cellranger/`, `cellranger_fixed/` and `scripts/` directories — 23 entries
+in all. Staging a sibling directory would have left every one of them a
+single `ls ..` away.
+
+Two changes, both approved by the user:
+
+1. **Relocate the worked solution.** All 23 non-`Fastq` entries move to
+   `A8163_mSS_locked/` for the duration, leaving `A8163_mSS/` holding only
+   `Fastq/`. A `mv` within one filesystem — instant, nothing deleted or
+   copied, reversed by
+   `docs/experiments/2026-08-28-scrnaseq-ab/chpc-restore.sh`, which was
+   written *before* the move.
+2. **Stage outside the dataset tree.** The clean input lives at
+   `agent-omics/ab_input_2026-08-28/Fastq/`, not as a sibling of the
+   original. Its parent lists only `Fastq`, so no breadcrumb points back.
+
+The FASTQs are in per-sample subdirectories (`21416X1`…`21416X5`, four
+files each — I1, I2, R1, R2 — 20 files, 134G), so the staging preserves
+that layout with hard links rather than flattening it.
+
+**Honest limit, still.** Container-side isolation (C1) is enforceable.
+CHPC-side isolation is not: both arms authenticate as the same account
+`u6025146`, and the task prompt names the dataset, so a determined search
+can still reach `A8163_mSS_locked/`. Relocation removes the accident;
+only a second CHPC account would remove the capability. The audit-log
+check below therefore stays, as verification rather than as the primary
+defence.
 
 The experiment therefore treats this as something to verify rather than
 assume. Each arm's `.audit.log` records every Bash call; after the runs,
@@ -181,7 +206,7 @@ Pasted verbatim into both containers' chat in the LabWeaver UI. Wording
 is fixed before either run starts and is not adjusted between arms.
 
 > Analyze the single-cell RNA-seq dataset A8163_mSS, a mouse synovial
-> sarcoma model. Raw FASTQ files are on CHPC at `/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input/Fastq`.
+> sarcoma model. Raw FASTQ files are on CHPC at `/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/ab_input_2026-08-28/Fastq`.
 >
 > Compute runs on CHPC — reach it over SSH and submit heavy work through
 > SLURM. Do not process the data inside this container.
@@ -250,4 +275,7 @@ Scoring is done against the lab's established A8163 taxonomy
 2. Restore `model: claude-sonnet-4-6` in control's `settings.json`.
 3. Re-comment control's `~/.ssh/config` stanza.
 4. Move `_quarantine_ab/` contents back into li86's `local_projects/`.
-5. Remove the staged FASTQ hard-link directory on CHPC.
+5. Run `docs/experiments/2026-08-28-scrnaseq-ab/chpc-restore.sh` — it moves
+   all 23 entries back from `A8163_mSS_locked/` into `A8163_mSS/` and removes
+   the staged hard-link directory. Hard links mean removing the staged entries
+   cannot touch the originals.

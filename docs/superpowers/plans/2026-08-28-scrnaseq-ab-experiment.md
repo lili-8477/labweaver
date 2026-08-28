@@ -16,7 +16,7 @@
 - Arm A (`claude-bioflow-li86`) gets exactly one change: the C4 quarantine. Its skills, `settings.json`, `CLAUDE.md`, `.mcp.json` and memory store are not touched.
 - Model for both arms: `claude-opus-4-8`.
 - CHPC account for both arms: `u6025146` on `notchpeak.chpc.utah.edu`.
-- Staged input path, identical for both arms: `/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input/Fastq`
+- Staged input path, identical for both arms: `/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/ab_input_2026-08-28/Fastq`
 - Both arms work in `/workspace/local_projects/A8163_mSS_ab/`.
 - The task prompt is fixed before either run starts and is byte-identical between arms. Do not reword it between runs.
 - Duo MFA needs a TTY. Any `ssh -MNf` to open a ControlMaster is an operator action run via `docker exec -it`, never automated.
@@ -445,7 +445,7 @@ git commit -m "docs(experiment): record arm A quarantine"
 ### Task 5: Open the CHPC bridges and stage a clean FASTQ input
 
 **Files:**
-- Create: `/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input/Fastq/` on CHPC (hard links)
+- Create: `/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/ab_input_2026-08-28/Fastq/` on CHPC (hard links)
 - Modify: `docs/experiments/2026-08-28-scrnaseq-ab/run-log.md`
 
 **Interfaces:**
@@ -489,7 +489,7 @@ Hard links rather than symlinks: a symlink's target would reveal the original pr
 docker exec claude-bioflow-li86 bash -lc '
   ssh chpc-login "
     SRC=/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS/Fastq
-    DST=/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input/Fastq
+    DST=/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/ab_input_2026-08-28/Fastq
     mkdir -p \"\$DST\" && ln \"\$SRC\"/*.fastq.gz \"\$DST\"/ && ls \"\$DST\" | wc -l"'
 ```
 
@@ -500,17 +500,17 @@ Expected: the same file count as Step 3. If `ln` reports `Invalid cross-device l
 ```bash
 docker exec claude-bioflow-control bash -lc '
   ssh chpc-login "
-    D=/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input
+    D=/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/ab_input_2026-08-28
     ls -la \$D/Fastq | head -5; echo ---; ls -la \$D"'
 ```
 
-Expected: `Fastq/` contains only `.fastq.gz` entries with a link count of 2 and **no** `->` symlink arrows; the parent `A8163_mSS_ab_input/` contains only `Fastq`. No `scripts/`, no `outs/`, no reference directory.
+Expected: `Fastq/` contains only `.fastq.gz` entries with a link count of 2 and **no** `->` symlink arrows; the parent `ab_input_2026-08-28/` contains only `Fastq`. No `scripts/`, no `outs/`, no reference directory.
 
 - [ ] **Step 6: Record the staging in the run log**
 
 ```bash
 { echo; echo "## FASTQ staging — $(date -Iseconds)"; echo
-  echo "Staged path: /uufs/.../singlecellrnaseq/A8163_mSS_ab_input/Fastq"
+  echo "Staged path: /uufs/.../agent-omics/ab_input_2026-08-28/Fastq"
   echo "File count: <N from step 4>"
   echo "Samples: <sample names from step 3>"
 } >> docs/experiments/2026-08-28-scrnaseq-ab/run-log.md
@@ -539,7 +539,7 @@ cat > docs/experiments/2026-08-28-scrnaseq-ab/task-prompt.txt <<'EOF'
 Analyze the single-cell RNA-seq dataset A8163_mSS, a mouse synovial sarcoma model.
 
 Raw FASTQ files are on CHPC at:
-/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input/Fastq
+/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/ab_input_2026-08-28/Fastq
 
 Compute runs on CHPC — reach it over SSH and submit heavy work through SLURM. Do not process the data inside this container.
 
@@ -603,7 +603,7 @@ fi
 
 # Leakage check: did this arm read outside the staged input?
 grep -oE '/uufs/[^ "'"'"')]*' "${OUT}"/.audit.log 2>/dev/null \
-    | grep -v 'A8163_mSS_ab_input' | sort -u > "${OUT}/offpath-uufs.txt" || true
+    | grep -v 'ab_input_2026-08-28' | sort -u > "${OUT}/offpath-uufs.txt" || true
 
 echo "captured arm ${ARM} (${WS}) -> ${OUT}"
 echo "off-path CHPC accesses: $(wc -l < "${OUT}/offpath-uufs.txt" 2>/dev/null || echo 0)"
@@ -737,7 +737,7 @@ Expected: `captured arm a (li86) -> .../arm-a` and the same for b, each with an 
 cat docs/experiments/2026-08-28-scrnaseq-ab/arm-{a,b}/offpath-uufs.txt
 ```
 
-Any path under `.../singlecellrnaseq/A8163_mSS/` (the original tree, not `A8163_mSS_ab_input`) means that arm reached the answer key. Record it in `scoring.md` and void that arm's reference-choice row rather than dropping the run.
+Any path under `.../singlecellrnaseq/A8163_mSS/` (the original tree, not `ab_input_2026-08-28`) means that arm reached the answer key. Record it in `scoring.md` and void that arm's reference-choice row rather than dropping the run.
 
 - [ ] **Step 3: Fill the scoring sheet**
 
@@ -779,11 +779,11 @@ The only experiment-specific residue is the CHPC access, which a future non-CHPC
 docker exec -u root claude-bioflow-control rm -rf /home/node/.claude/skills-user/chpc-bridge
 ```
 
-- [ ] **Step 7: Remove the staged FASTQ directory on CHPC**
+- [ ] **Step 7: Restore CHPC — unlock the worked solution and remove the staged input**
 
 ```bash
 docker exec claude-bioflow-li86 bash -lc '
-  ssh chpc-login "rm -rf /uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input"'
+  ssh chpc-login "rm -rf /uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/ab_input_2026-08-28"'
 ```
 
 Hard links mean removing these entries does not touch the original FASTQs. Confirm the originals survive:
