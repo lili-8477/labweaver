@@ -21,7 +21,7 @@ Dataset: `A8163_mSS`, mouse synovial sarcoma model, on CHPC under
 | Domain skills | all 41, incl. `hci-scrnaseq`, `ss-mouse-celltype`, `single-cell` | none; `chpc-bridge` only |
 | Shared tree readable | `/workspace/shared/{skills,projects,reference}` | not mounted |
 | `/workspace/CLAUDE.md` | lab context, `@`-imports `shared.md` | absent (host path is an empty dir) |
-| `bioflow-memory` MCP | `USERNAME=li86`, populated | `USERNAME=control`, empty |
+| `bioflow-memory` MCP | `USERNAME=li86`, populated | not mounted; `MEMORY_ENABLED=0` |
 | Model | `claude-opus-4-8` | `claude-opus-4-8` (raised from `claude-sonnet-4-6`) |
 
 The treatment is **skills + memory + workspace context together**, not
@@ -45,7 +45,7 @@ also bind-mounts the shared tree at `/workspace/shared/skills`, where
 readable with one `cat`. Hiding the skill while leaving its text in the
 file explorer is not a control.
 
-Instead, recreate `claude-bioflow-control` with the four shared mounts
+Instead, recreate `claude-bioflow-control` with the five shared mounts
 removed:
 
 ```
@@ -69,15 +69,44 @@ multiplexing and `sbatch` mechanics are infrastructure, not biology.
 Without it the control fails on plumbing, which answers a different
 question than the one being asked.
 
-This requires a small, opt-in change to `hub/scripts/recreate-user.sh`
-— a `SHARED_MOUNTS=0` guard that collects the five shared `-v` flags
-into an array and omits them. Duplicating the 30-line `docker run` into
-a one-off experiment script was the alternative; the guard is smaller
-and does not drift. Default behaviour is unchanged, so li86 and
-test1-3 are unaffected.
+The rebuild runs through a new `hub/scripts/recreate-control.sh`, not
+through `hub/scripts/recreate-user.sh`.
 
-Retained per-user mounts: `local_projects`, `.claude`, `.env`,
-`.mcp.json`, `.ssh`, `.latch`. The `.ssh` mount is what C3 needs.
+`hub/users.md` documents that this baseline was already invalidated
+once — on 2026-08-10 someone ran `recreate-user.sh control` during a
+GPU recovery, which applied the standard mount set and restored
+everything the baseline exists to exclude. That file carries a standing
+instruction: *"Never run `recreate-user.sh` or `add-user.sh` against
+`control`."* An opt-in `SHARED_MOUNTS=0` flag on that script was the
+first design; it is rejected because it is still the forbidden script,
+one forgotten flag away from silently breaking the baseline a second
+time. A dedicated script encodes the mount set as code.
+
+`ID_HASH` derives deterministically from the container name
+(`recreate-user.sh:152`), so the control keeps service ID
+`1095be4c…` and its nginx `lw_service` route across the rebuild.
+
+Mount set, following the baseline documented in `hub/users.md`:
+
+| Mounted | Why |
+|---|---|
+| `local_projects` | the arm's working tree |
+| `.env` | OAuth token, shared with li86 |
+| `.claude/settings.json` | model and hooks |
+| `.claude/claude-projects` | transcripts, needed for capture |
+| `.claude/hooks` | writes `.audit.log`, the leakage instrumentation; li86 runs the identical set |
+| `.claude/skills` | experiment addition — holds only `chpc-bridge` |
+| `.ssh` | experiment addition — C3 needs it |
+
+Omitted: all four shared mounts, the shared `CLAUDE.md`, `.mcp.json`,
+`agents`, `commands`, `.latch`, and `MEMORY_ENABLED=1` /
+`MEMORY_API_URL` / `SIDECAR_IMPORT_ON_BOOT`. `hub/users.md` specifies
+the baseline has no MCP servers, so `.mcp.json` is deleted from the
+workspace as well as unmounted — the control gets no memory tool.
+
+`.ssh` and `.claude/skills` are deliberate deviations from the pure
+baseline, required because the arm must reach CHPC. Both are recorded
+in the script's header comment.
 
 ### C2 — Equalize the model
 
@@ -208,15 +237,16 @@ Scoring is done against the lab's established A8163 taxonomy
 - No 2x2 model factorial. One model, both arms.
 - No change to `hub/workspaces/shared/`, and no change to arm A's
   skills, settings or context beyond the C4 quarantine.
-- No change to `image/entrypoint.sh`. The only product-code change is
-  the opt-in `SHARED_MOUNTS=0` guard in `hub/scripts/recreate-user.sh`,
-  which is inert unless explicitly set.
+- No change to `image/entrypoint.sh` or `hub/scripts/recreate-user.sh`.
+  The only new product code is `hub/scripts/recreate-control.sh`, which
+  no other user's workflow touches.
 
 ## Reversal
 
-1. `SHARED_MOUNTS=1 hub/scripts/recreate-user.sh control` to restore the
-   shared mounts, then remove the copied `chpc-bridge` from the
-   control's `skills-user`.
+1. Nothing. The baseline mount set is the control's correct steady
+   state; `hub/users.md` forbids recreating it with the standard script.
+   Optionally re-comment its SSH stanza and drop the `chpc-bridge` copy
+   if a CHPC-free baseline is wanted.
 2. Restore `model: claude-sonnet-4-6` in control's `settings.json`.
 3. Re-comment control's `~/.ssh/config` stanza.
 4. Move `_quarantine_ab/` contents back into li86's `local_projects/`.

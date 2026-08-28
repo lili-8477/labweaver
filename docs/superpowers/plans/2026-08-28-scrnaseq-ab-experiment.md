@@ -24,15 +24,19 @@
 
 ---
 
-### Task 1: Add an opt-in `SHARED_MOUNTS` guard to the recreate script
+### Task 1: Write a dedicated `recreate-control.sh` encoding the documented baseline
 
 **Files:**
-- Modify: `hub/scripts/recreate-user.sh:166-201` (the `docker run` invocation)
-- Test: `docker inspect` on a recreated container (Task 3)
+- Create: `hub/scripts/recreate-control.sh`
+- Reference: `hub/users.md` (section "control — baseline container"), `hub/scripts/recreate-user.sh:150-205`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: environment variable `SHARED_MOUNTS`, read by `hub/scripts/recreate-user.sh`. Unset or any value other than `0` keeps today's behaviour. `SHARED_MOUNTS=0` omits all five shared bind mounts. Task 3 invokes it as `SHARED_MOUNTS=0 hub/scripts/recreate-user.sh control`.
+- Produces: `hub/scripts/recreate-control.sh`, taking no arguments, run by Task 3. It recreates `claude-bioflow-control` with the baseline mount set documented in `hub/users.md` plus the two experiment-required additions. `hub/scripts/recreate-user.sh` is **not** modified.
+
+`hub/users.md` carries a standing instruction: *"Never run `recreate-user.sh` or `add-user.sh` against `control`."* That script applies the standard mount set, which is exactly what broke this baseline on 2026-08-10. A `SHARED_MOUNTS=0` flag on `recreate-user.sh` would still be running the forbidden script, and would leave the next operator one forgotten flag away from breaking it again. A dedicated script encodes the baseline as code so it cannot drift back.
+
+`ID_HASH` is derived deterministically from the container name (`recreate-user.sh:152`), so it stays `1095be4c…` and the one-click URL plus the nginx `lw_service` route keep working across the recreate.
 
 - [ ] **Step 1: Record the current mount count as the baseline**
 
@@ -40,64 +44,122 @@
 docker inspect claude-bioflow-control --format '{{len .Mounts}}'
 ```
 
-Expected: `18`
+Expected: `18` — the contaminated standard set.
 
-- [ ] **Step 2: Build the shared flags into an array**
+- [ ] **Step 2: Write the script**
 
-Insert this immediately above the `docker run -d \` line (currently `hub/scripts/recreate-user.sh:166`):
+Create `hub/scripts/recreate-control.sh` with exactly this content, then `chmod +x` it:
 
 ```bash
-# Shared-tree mounts. Set SHARED_MOUNTS=0 to omit them entirely — used by
-# the A/B experiment control arm, which must have no shared skills and no
-# readable shared tree. Any other value (or unset) keeps them.
-SHARED_FLAGS=()
-if [[ "${SHARED_MOUNTS:-1}" != "0" ]]; then
-    SHARED_FLAGS=(
-        -v "${SHARED_DIR}/CLAUDE.md:/workspace/.bioflow/shared.md:ro"
-        -v "${SHARED_DIR}/reference:/workspace/shared/reference:ro"
-        -v "${SHARED_DIR}/projects:/workspace/shared/projects"
-        -v "${SHARED_DIR}/skills:/home/node/.claude/skills-shared:ro"
-        -v "${SHARED_DIR}/skills:/workspace/shared/skills:ro"
-    )
-else
-    echo "  [shared] SHARED_MOUNTS=0 — omitting shared CLAUDE.md/reference/projects/skills mounts"
+#!/bin/bash
+# Recreate the `control` baseline container.
+#
+# DO NOT use recreate-user.sh or add-user.sh for this container. Those apply
+# the standard mount set and silently restore everything the baseline exists
+# to exclude -- that is what invalidated the baseline on 2026-08-10 (see the
+# "control -- baseline container" section of hub/users.md).
+#
+# Mount set is the documented baseline, plus two additions required by the
+# 2026-08-28 A/B experiment, both recorded in
+# docs/superpowers/specs/2026-08-28-scrnaseq-ab-experiment-design.md:
+#
+#   .ssh            -- the control arm must reach CHPC; without it the arm
+#                      fails on plumbing rather than on biology.
+#   .claude/skills  -- carries exactly one skill, chpc-bridge, for the same
+#                      reason. Domain skills stay out.
+#
+# Deliberately omitted: shared/{skills,projects,reference}, the shared
+# CLAUDE.md, .mcp.json, agents, commands, .latch, and the MEMORY_* env.
+# .claude/hooks IS mounted: those hooks write .audit.log, which the
+# experiment greps for off-path CHPC reads, and li86 runs the identical
+# set, so this is instrumentation rather than an asymmetry.
+set -euo pipefail
+
+HUB_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+WORKSPACE="${HUB_DIR}/workspaces/control"
+NETWORK="claude-bioflow_bioflow-net"
+NATS_HOST="claude-bioflow-nats"
+ENV_FILE="${HUB_DIR}/.env"
+CONTAINER="claude-bioflow-control"
+IMAGE="${IMAGE:-claude-bioflow:dev}"
+
+[[ -d "$WORKSPACE" ]] || { echo "No workspace at ${WORKSPACE}"; exit 1; }
+[[ -f "$ENV_FILE" ]]  || { echo "Missing ${ENV_FILE}"; exit 1; }
+
+set -a
+. "${ENV_FILE}"
+set +a
+
+# Same derivation as recreate-user.sh:152, so the service ID recorded in
+# users.md and the nginx lw_service route stay valid.
+ID_HASH=$(printf 'claude-bioflow-control' | sha256sum | cut -c1-12)
+
+if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
+    docker stop "${CONTAINER}" >/dev/null
+    docker rm   "${CONTAINER}" >/dev/null
 fi
+
+docker run -d \
+    --name "${CONTAINER}" \
+    --network "${NETWORK}" \
+    --restart unless-stopped \
+    -e "ID_HASH=${ID_HASH}" \
+    -e "NATS_SERVERS=nats://${NATS_HOST}:4222" \
+    -e "NATS_USER=agent" \
+    -e "WORKSPACE_ROOT=/workspace" \
+    -e "DEFAULT_PROJECT=/workspace" \
+    -e "PG_URL=postgres://bioflow:${POSTGRES_PASSWORD}@claude-bioflow-postgres:5432/bioflow" \
+    -e "USERNAME=control" \
+    -e "HOME=/home/node" \
+    -e "MEMORY_ENABLED=0" \
+    -v "${WORKSPACE}/local_projects:/workspace/local_projects" \
+    -v "${WORKSPACE}/.env:/workspace/.env:ro" \
+    -v "${WORKSPACE}/.claude/settings.json:/home/node/.claude/settings.json" \
+    -v "${WORKSPACE}/.claude/claude-projects:/home/node/.claude/projects" \
+    -v "${WORKSPACE}/.claude/hooks:/home/node/.claude/hooks" \
+    -v "${WORKSPACE}/.claude/skills:/home/node/.claude/skills-user" \
+    -v "${WORKSPACE}/.ssh:/home/node/.ssh" \
+    -w /workspace \
+    "${IMAGE}"
+
+docker exec -u root "${CONTAINER}" chown -R node:node /venv 2>/dev/null \
+    && echo "  chown /venv -> node:node OK" \
+    || echo "  chown /venv skipped"
+
+echo "recreated ${CONTAINER} with the baseline mount set (ID_HASH=${ID_HASH})"
 ```
 
-- [ ] **Step 3: Remove the five now-duplicated `-v` lines from `docker run`**
-
-Delete these exact lines from the `docker run` block:
-
-```
-    -v "${SHARED_DIR}/CLAUDE.md:/workspace/.bioflow/shared.md:ro" \
-    -v "${SHARED_DIR}/reference:/workspace/shared/reference:ro" \
-    -v "${SHARED_DIR}/projects:/workspace/shared/projects" \
-    -v "${SHARED_DIR}/skills:/home/node/.claude/skills-shared:ro" \
-    -v "${SHARED_DIR}/skills:/workspace/shared/skills:ro" \
-```
-
-- [ ] **Step 4: Reference the array from `docker run`**
-
-Add this line immediately above `    -w /workspace \`:
-
-```
-    "${SHARED_FLAGS[@]}" \
-```
-
-- [ ] **Step 5: Syntax-check the script both ways**
+- [ ] **Step 3: Syntax-check and confirm no excluded path slipped in**
 
 ```bash
-bash -n hub/scripts/recreate-user.sh && echo SYNTAX_OK
-grep -c 'SHARED_DIR' hub/scripts/recreate-user.sh
+bash -n hub/scripts/recreate-control.sh && echo SYNTAX_OK
+grep -c 'workspaces/shared\|SHARED_DIR\|mcp.json\|MEMORY_API_URL\|SIDECAR' hub/scripts/recreate-control.sh
 ```
 
-Expected: `SYNTAX_OK`, and the `SHARED_DIR` count is `6` (one assignment at line 9 plus the five inside `SHARED_FLAGS`). If it is higher, a `-v` line was not deleted in Step 3.
+Expected: `SYNTAX_OK`, then `0`.
+
+- [ ] **Step 4: Confirm `recreate-user.sh` is untouched**
+
+```bash
+git diff --stat hub/scripts/recreate-user.sh
+```
+
+Expected: no output. The standard script must not change — every other user depends on it.
+
+- [ ] **Step 5: Verify the derived ID hash matches the provisioned service ID**
+
+```bash
+printf 'claude-bioflow-control' | sha256sum | cut -c1-12
+grep -o '1095be4c[a-f0-9]*' hub/users.md | head -1
+```
+
+Expected: the first command's 12 characters are the leading characters of the service ID in `users.md`. If they differ, stop — recreating would break the control's one-click URL and its nginx `lw_service` route.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add hub/scripts/recreate-user.sh
-git commit -m "feat(hub): add opt-in SHARED_MOUNTS=0 to recreate a container without the shared tree"
+git add hub/scripts/recreate-control.sh
+git commit -m "feat(hub): dedicated recreate-control.sh so the baseline stops drifting"
 ```
 
 ---
@@ -108,10 +170,13 @@ git commit -m "feat(hub): add opt-in SHARED_MOUNTS=0 to recreate a container wit
 - Create: `hub/workspaces/control/.claude/skills/chpc-bridge/SKILL.md` (copied from the shared tree)
 - Modify: `hub/workspaces/control/.claude/settings.json` (the `model` key)
 - Modify: `hub/workspaces/control/.ssh/config` (uncomment and fill the `chpc-login` stanza)
+- Delete: `hub/workspaces/control/.mcp.json`
 
 **Interfaces:**
 - Consumes: nothing from Task 1.
-- Produces: a `control` workspace whose per-user mounts already carry `chpc-bridge`, the `claude-opus-4-8` model, and a working SSH host alias `chpc-login`. Task 3 recreates the container over this workspace; Task 5 opens the ControlMaster against this alias.
+- Produces: a `control` workspace whose per-user mounts already carry `chpc-bridge`, the `claude-opus-4-8` model, a working SSH host alias `chpc-login`, and no `.mcp.json`. Task 3 recreates the container over this workspace; Task 5 opens the ControlMaster against this alias.
+
+Run this task **before** Task 3, while the shared tree is still mounted — Step 1 copies `chpc-bridge` out of it, and after the recreate that source is gone from the container.
 
 These are per-user host paths, safe to edit. `hub/workspaces/control/.claude/skills/` is root-owned, so the copy goes through the container as root.
 
@@ -203,7 +268,18 @@ user u6025146
 controlmaster auto
 ```
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Remove the memory MCP from the control workspace**
+
+`hub/users.md` specifies the baseline has no MCP servers; the contaminated recreate on 2026-08-10 added `.mcp.json` (`bioflow-memory`). Task 3 stops mounting it, but delete the file too, so a future standard recreate cannot silently re-expose it.
+
+```bash
+rm -f hub/workspaces/control/.mcp.json
+ls hub/workspaces/control/.mcp.json 2>&1
+```
+
+Expected: `No such file or directory`
+
+- [ ] **Step 8: Commit**
 
 The workspace tree may be gitignored; `git add -f` if so, otherwise skip the commit and note it in the run log.
 
@@ -214,44 +290,46 @@ git commit -m "chore(control): match arm A's model and enable the CHPC host alia
 
 ---
 
-### Task 3: Recreate the control container with no shared mounts
+### Task 3: Recreate the control container on the baseline mount set
 
 **Files:**
-- Modify: none (runs `hub/scripts/recreate-user.sh` from Task 1)
+- Modify: none (runs `hub/scripts/recreate-control.sh` from Task 1)
 
 **Interfaces:**
-- Consumes: `SHARED_MOUNTS=0` from Task 1; the prepared workspace from Task 2.
-- Produces: a running `claude-bioflow-control` with 13 mounts, zero shared-tree paths, and exactly one skill (`chpc-bridge`). Task 6's capture script reads its transcripts from `hub/workspaces/control/.claude/claude-projects/`.
+- Consumes: `hub/scripts/recreate-control.sh` from Task 1; the prepared workspace from Task 2.
+- Produces: a running `claude-bioflow-control` with 7 mounts, zero shared-tree paths, no MCP server, and exactly one skill (`chpc-bridge`). Task 6's capture script reads its transcripts from `hub/workspaces/control/.claude/claude-projects/`.
 
-- [ ] **Step 1: Recreate the container without the shared tree**
+- [ ] **Step 1: Recreate on the baseline mount set**
 
 ```bash
-SHARED_MOUNTS=0 hub/scripts/recreate-user.sh control
+hub/scripts/recreate-control.sh
 ```
 
-Expected: the line `  [shared] SHARED_MOUNTS=0 — omitting shared CLAUDE.md/reference/projects/skills mounts`, then the container starting.
+Expected: the container id, then `recreated claude-bioflow-control with the baseline mount set (ID_HASH=1095be4c…)`.
 
-- [ ] **Step 2: Verify the shared mounts are gone**
+- [ ] **Step 2: Verify the mount set shrank to the baseline**
 
 ```bash
+docker inspect claude-bioflow-control --format '{{len .Mounts}}'
 docker inspect claude-bioflow-control --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}
 {{end}}' | grep -c 'workspaces/shared'
 ```
 
-Expected: `0`
+Expected: `7`, then `0`.
 
 - [ ] **Step 3: Verify the shared tree is unreadable from inside**
 
-This is the check the tombstone approach would have failed.
+This is the check the tombstone approach would have failed, and the one that catches a standard-recreate regression.
 
 ```bash
 docker exec claude-bioflow-control bash -lc '
   cat /workspace/shared/skills/ss-mouse-celltype/SKILL.md 2>&1 | head -1;
   ls /workspace/shared 2>&1;
-  cat /workspace/.bioflow/shared.md 2>&1 | head -1'
+  cat /workspace/.bioflow/shared.md 2>&1 | head -1;
+  cat /workspace/.mcp.json 2>&1 | head -1'
 ```
 
-Expected: every line is a "No such file or directory" error. If any of the three returns content, stop — the arm is not isolated and the run is invalid.
+Expected: all four lines are "No such file or directory" errors. If any returns content, stop — the arm is not isolated and the run is invalid.
 
 - [ ] **Step 4: Verify the skill set is exactly `chpc-bridge`**
 
@@ -276,7 +354,21 @@ Expected: `41`, then `SKILL.md`, then `278 hub/workspaces/shared/skills/ss-mouse
 docker ps --filter name=claude-bioflow-control --format '{{.Names}} {{.Status}}'
 ```
 
-Expected: `claude-bioflow-control Up ... (healthy)`. Then open the control workspace in the LabWeaver UI and confirm the chat responds to a trivial message such as `hello`. Do not ask it anything about the dataset — that would pollute the transcript.
+Expected: `claude-bioflow-control Up ... (healthy)`. Then open the control workspace in the LabWeaver UI via its one-click URL from `hub/users.md` and confirm the chat responds to a trivial message such as `hello`. Do not ask it anything about the dataset — that would pollute the transcript.
+
+- [ ] **Step 7: Clear the BROKEN banner in `hub/users.md`**
+
+`hub/users.md` still carries *"BROKEN as of 2026-08-10 — do not use as a baseline until rebuilt."* Task 3 is that rebuild, so the banner is now stale and would mislead the next operator into distrusting a valid baseline.
+
+Replace the blockquote in the "control — baseline container" section with a rebuild note recording: the rebuild date (2026-08-28), that `hub/scripts/recreate-control.sh` now owns the mount set, the two deliberate additions (`.ssh`, `.claude/skills` holding only `chpc-bridge`), that `.claude/hooks` is retained as experiment instrumentation, and that `.mcp.json` was deleted. Keep the standing *"Never run `recreate-user.sh` or `add-user.sh` against `control`"* warning — point it at the new script.
+
+`hub/users.md` is gitignored and holds credentials. Edit it in place; do not commit it, and do not quote its contents into any committed file.
+
+```bash
+grep -c 'BROKEN as of 2026-08-10' hub/users.md
+```
+
+Expected: `0`
 
 ---
 
@@ -661,16 +753,20 @@ docker exec claude-bioflow-li86 bash -lc 'ls /workspace/local_projects/ | grep -
 
 Expected: `4`
 
-- [ ] **Step 6: Restore the control container**
+- [ ] **Step 6: Leave the control container on the baseline mount set**
 
-Only after the capture in Step 1 is committed — this recreate does not delete `local_projects`, but restoring the shared mounts ends the isolation.
+Do **not** "restore" the control by running `hub/scripts/recreate-user.sh control`. `hub/users.md` forbids it, and running it is exactly what invalidated this baseline on 2026-08-10. The baseline mount set is the container's correct steady state — there is nothing to undo here.
+
+Confirm it survived the run:
 
 ```bash
-hub/scripts/recreate-user.sh control
-docker exec claude-bioflow-control bash -lc 'ls ~/.claude/skills/ | wc -l'
+docker inspect claude-bioflow-control --format '{{len .Mounts}}'
+docker exec claude-bioflow-control bash -lc 'ls ~/.claude/skills/'
 ```
 
-Expected: `7`. `stitch_skills` links the per-user `chpc-bridge` first and then skips the shared entry of the same name (`image/entrypoint.sh:48`), so the copy does not add an eighth. Remove the copy if a clean restore is wanted:
+Expected: `7`, then `chpc-bridge` alone.
+
+The only experiment-specific residue is the CHPC access, which a future non-CHPC baseline does not need. Leave it unless a purist baseline is wanted; if it is, re-comment the SSH stanza in `hub/workspaces/control/.ssh/config` and drop the skill:
 
 ```bash
 docker exec -u root claude-bioflow-control rm -rf /home/node/.claude/skills-user/chpc-bridge
