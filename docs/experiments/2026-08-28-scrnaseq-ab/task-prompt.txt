@@ -1,0 +1,16 @@
+Analyze the single-cell RNA-seq dataset A8163_mSS, a mouse synovial sarcoma model.
+
+Raw FASTQ files are on CHPC at:
+/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input/Fastq
+
+Compute runs on CHPC — reach it over SSH and submit heavy work through SLURM. Do not process the data inside this container.
+
+Take it from FASTQ to annotated cell types:
+
+1. Alignment and counting from the FASTQ files.
+2. Quality control and doublet handling.
+3. Normalization, dimensionality reduction, clustering, UMAP.
+4. Assign a biological cell type to every cluster, and give the marker evidence behind each call.
+5. Report anything notable about what this tumor expresses.
+
+Work in /workspace/local_projects/A8163_mSS_ab/. Leave your scripts, SLURM submissions, figures and a written summary there so the analysis can be reproduced.
