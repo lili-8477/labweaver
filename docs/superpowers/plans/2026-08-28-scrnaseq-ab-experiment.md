@@ -146,14 +146,18 @@ git diff --stat hub/scripts/recreate-user.sh
 
 Expected: no output. The standard script must not change — every other user depends on it.
 
-- [ ] **Step 5: Verify the derived ID hash matches the provisioned service ID**
+- [ ] **Step 5: Verify the derived ID hash still yields the provisioned service ID**
+
+The service ID is **not** a prefix of `ID_HASH` — it is `sha256(ID_HASH)`. The container is started with `ID_HASH`, and the adapter hashes it again to get the NATS service ID that `users.md` records and nginx routes on.
 
 ```bash
-printf 'claude-bioflow-control' | sha256sum | cut -c1-12
-grep -o '1095be4c[a-f0-9]*' hub/users.md | head -1
+H=$(printf 'claude-bioflow-control' | sha256sum | cut -c1-12)
+echo "ID_HASH=$H"
+printf '%s' "$H" | sha256sum | cut -c1-64
+grep -o '1095be4c[a-f0-9]\{56\}' hub/users.md | head -1
 ```
 
-Expected: the first command's 12 characters are the leading characters of the service ID in `users.md`. If they differ, stop — recreating would break the control's one-click URL and its nginx `lw_service` route.
+Expected: `ID_HASH=9965fecf5d0b`, and the last two commands print the identical 64-character service ID `1095be4c7942878953096c8a78a3480efb2c08a29aa7173803e3ed71a73db77e`. If the two differ, stop — recreating would break the control's one-click URL and its nginx `lw_service` route.
 
 - [ ] **Step 6: Commit**
 
