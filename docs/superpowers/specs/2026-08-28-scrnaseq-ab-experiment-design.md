@@ -19,6 +19,7 @@ Dataset: `A8163_mSS`, mouse synovial sarcoma model, on CHPC under
 |---|---|---|
 | Container | `claude-bioflow-li86` | `claude-bioflow-control` |
 | Domain skills | all 41, incl. `hci-scrnaseq`, `ss-mouse-celltype`, `single-cell` | none; `chpc-bridge` only |
+| Shared tree readable | `/workspace/shared/{skills,projects,reference}` | not mounted |
 | `/workspace/CLAUDE.md` | lab context, `@`-imports `shared.md` | absent (host path is an empty dir) |
 | `bioflow-memory` MCP | `USERNAME=li86`, populated | `USERNAME=control`, empty |
 | Model | `claude-opus-4-8` | `claude-opus-4-8` (raised from `claude-sonnet-4-6`) |
@@ -35,28 +36,48 @@ All changes are container-local or per-user. Nothing under
 li86, control and test1-3 alike, so editing it would contaminate arm A
 and every other user.
 
-### C1 — Remove the control's domain skills
+### C1 — Isolate the control container
 
-`image/entrypoint.sh:27` (`stitch_skills`) rebuilds `~/.claude/skills`
-on every container start by symlinking everything from the shared
-mount. Deleting a symlink is therefore undone by a restart.
+Superseded approach: symlink tombstones in `~/.claude/skills`. Rejected
+because it only hides skills from auto-discovery. The control container
+also bind-mounts the shared tree at `/workspace/shared/skills`, where
+`ss-mouse-celltype/SKILL.md` — the full 278-line A8163 taxonomy — is
+readable with one `cat`. Hiding the skill while leaving its text in the
+file explorer is not a control.
 
-Instead, replace each of these symlinks with an empty directory of the
-same name inside the control container:
+Instead, recreate `claude-bioflow-control` with the four shared mounts
+removed:
 
 ```
-chip-seq  differential-expression  pathway-analysis
-single-cell  spatial-transcriptomics  ss-mouse-celltype
+${SHARED_DIR}/skills    -> /home/node/.claude/skills-shared   DROP
+${SHARED_DIR}/skills    -> /workspace/shared/skills           DROP
+${SHARED_DIR}/projects  -> /workspace/shared/projects         DROP
+${SHARED_DIR}/reference -> /workspace/shared/reference        DROP
+${SHARED_DIR}/CLAUDE.md -> /workspace/.bioflow/shared.md      DROP
 ```
 
-`chpc-bridge` stays: SSH multiplexing and `sbatch` mechanics are
-infrastructure, not biology. Without it the control would fail on
-plumbing, which answers a different question than the one being asked.
+With no `skills-shared` tree to walk, `stitch_skills`
+(`image/entrypoint.sh:43`) links nothing, so the control's skill set
+becomes exactly its per-user `skills-user` directory — which is empty.
+No tombstones, no exclusion logic, durable across restarts by
+construction.
 
-Tombstones survive restarts by construction — `stitch_skills` deletes
-only `-type l` entries (`entrypoint.sh:29`) and skips any name that
-already exists (`entrypoint.sh:48`). Reverse with `rm -rf` on the six
-directories.
+`chpc-bridge` is preserved by copying it from the shared tree into
+`hub/workspaces/control/.claude/skills/chpc-bridge/`, which mounts as
+`skills-user`. It is the one capability the control keeps: SSH
+multiplexing and `sbatch` mechanics are infrastructure, not biology.
+Without it the control fails on plumbing, which answers a different
+question than the one being asked.
+
+This requires a small, opt-in change to `hub/scripts/recreate-user.sh`
+— a `SHARED_MOUNTS=0` guard that collects the five shared `-v` flags
+into an array and omits them. Duplicating the 30-line `docker run` into
+a one-off experiment script was the alternative; the guard is smaller
+and does not drift. Default behaviour is unchanged, so li86 and
+test1-3 are unaffected.
+
+Retained per-user mounts: `local_projects`, `.claude`, `.env`,
+`.mcp.json`, `.ssh`, `.latch`. The `.ssh` mount is what C3 needs.
 
 ### C2 — Equalize the model
 
@@ -94,7 +115,7 @@ and restore afterwards. Curated skills and memory are the treatment;
 a pre-annotated object on disk is answer leakage that would let arm A
 copy a result instead of deriving one.
 
-### C5 — Stage clean FASTQs on CHPC
+### C5 — Stage clean FASTQs on CHPC, and the limit of that
 
 The FASTQ directory's sibling `../scripts/cellranger_rerun_fixed.slurm`
 is a working submission that names the GRCm39 + `SSX2_SSX18` transgene
@@ -102,9 +123,24 @@ reference. Either arm can browse to it, and if both do, the strongest
 discriminator in the experiment — whether the agent knows to avoid the
 human/mouse barnyard reference — disappears.
 
-Stage `/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input/Fastq` on CHPC containing only symlinks to the FASTQ files,
-and point both arms there. The real project tree, including the
-scripts, is left untouched.
+Stage `/uufs/chpc.utah.edu/common/home/jonesk-group2/agent-omics/singlecellrnaseq/A8163_mSS_ab_input/Fastq`
+on CHPC containing only hard links to the FASTQ files, and point both
+arms there. Hard links rather than symlinks: a symlink's target reveals
+the original project path under `ls -l`. The real project tree,
+including the scripts and prior outputs, is left untouched.
+
+**Honest limit.** Container-side isolation (C1) is enforceable. CHPC-side
+isolation is not: both arms authenticate as the same account
+`u6025146`, so either can `ls` its way to the original `A8163_mSS`
+tree. Nothing short of a second CHPC account changes that. The staging
+directory removes the *invitation*, not the *capability*.
+
+The experiment therefore treats this as something to verify rather than
+assume. Each arm's `.audit.log` records every Bash call; after the runs,
+grep both for paths outside the staged directory. If an arm wandered
+into the original project tree, that is reported in the writeup, not
+quietly dropped — an arm that read the answer key has its
+reference-choice score voided rather than counted.
 
 This is the one change with a judgement call attached: it makes the
 task harder for both arms than a realistic session would be, in
@@ -172,12 +208,16 @@ Scoring is done against the lab's established A8163 taxonomy
 - No 2x2 model factorial. One model, both arms.
 - No change to `hub/workspaces/shared/`, and no change to arm A's
   skills, settings or context beyond the C4 quarantine.
-- No product code change; `entrypoint.sh` gains no exclusion mechanism.
+- No change to `image/entrypoint.sh`. The only product-code change is
+  the opt-in `SHARED_MOUNTS=0` guard in `hub/scripts/recreate-user.sh`,
+  which is inert unless explicitly set.
 
 ## Reversal
 
-1. `rm -rf` the six tombstone directories in the control container.
+1. `SHARED_MOUNTS=1 hub/scripts/recreate-user.sh control` to restore the
+   shared mounts, then remove the copied `chpc-bridge` from the
+   control's `skills-user`.
 2. Restore `model: claude-sonnet-4-6` in control's `settings.json`.
 3. Re-comment control's `~/.ssh/config` stanza.
 4. Move `_quarantine_ab/` contents back into li86's `local_projects/`.
-5. Remove the staged FASTQ symlink directory on CHPC.
+5. Remove the staged FASTQ hard-link directory on CHPC.
