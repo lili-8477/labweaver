@@ -18,7 +18,7 @@ Dataset: `A8163_mSS`, mouse synovial sarcoma model, on CHPC under
 | | Arm A — treatment | Arm B — control |
 |---|---|---|
 | Container | `claude-bioflow-li86` | `claude-bioflow-control` |
-| Domain skills | all 41, incl. `hci-scrnaseq`, `ss-mouse-celltype`, `single-cell` | none; `chpc-bridge` only |
+| Domain skills | all 40, incl. `hci-scrnaseq`, `ss-mouse-celltype`, `single-cell` | none; `chpc-bridge` only |
 | Shared tree readable | `/workspace/shared/{skills,projects,reference}` | not mounted |
 | `/workspace/CLAUDE.md` | lab context, `@`-imports `shared.md` | absent (host path is an empty dir) |
 | `bioflow-memory` MCP | `USERNAME=li86`, populated | not mounted; `MEMORY_ENABLED=0` |

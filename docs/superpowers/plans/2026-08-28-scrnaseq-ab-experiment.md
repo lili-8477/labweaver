@@ -353,7 +353,7 @@ docker exec claude-bioflow-li86 bash -lc 'ls ~/.claude/skills/ | wc -l; ls ~/.cl
 wc -l hub/workspaces/shared/skills/ss-mouse-celltype/SKILL.md
 ```
 
-Expected: `41`, then `SKILL.md`, then `278 hub/workspaces/shared/skills/ss-mouse-celltype/SKILL.md`. The shared tree must be byte-identical to before.
+Expected: `40`, then `SKILL.md`, then `278 hub/workspaces/shared/skills/ss-mouse-celltype/SKILL.md`. The shared tree must be byte-identical to before.
 
 - [ ] **Step 6: Verify the container is healthy and reachable in the UI**
 
@@ -684,7 +684,7 @@ print(json.load(open('hub/workspaces/li86/.claude/settings.json'))['model'],
       json.load(open('hub/workspaces/control/.claude/settings.json'))['model'])"
 ```
 
-Expected: li86 lists 41 skills, control lists only `chpc-bridge`, both print a notchpeak hostname, and both models read `claude-opus-4-8`. Do not start if any of these is off.
+Expected: li86 lists 40 skills, control lists only `chpc-bridge`, both print a notchpeak hostname, and both models read `claude-opus-4-8`. Do not start if any of these is off.
 
 - [ ] **Step 2: Start a fresh session in each arm**
 
