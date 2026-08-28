@@ -131,12 +131,15 @@ echo "recreated ${CONTAINER} with the baseline mount set (ID_HASH=${ID_HASH})"
 
 - [ ] **Step 3: Syntax-check and confirm no excluded path slipped in**
 
+The script's header comment names the excluded paths, so grep the *executable* lines only — comments are the documentation of what is omitted, not an omission failure.
+
 ```bash
 bash -n hub/scripts/recreate-control.sh && echo SYNTAX_OK
-grep -c 'workspaces/shared\|SHARED_DIR\|mcp.json\|MEMORY_API_URL\|SIDECAR' hub/scripts/recreate-control.sh
+grep -v '^\s*#' hub/scripts/recreate-control.sh \
+  | grep -c 'workspaces/shared\|SHARED_DIR\|mcp\.json\|MEMORY_API_URL\|SIDECAR'
 ```
 
-Expected: `SYNTAX_OK`, then `0`.
+Expected: `SYNTAX_OK`, then `0`. Grepping the whole file instead returns `1` — `.mcp.json` appears in the header comment listing what is deliberately not mounted.
 
 - [ ] **Step 4: Confirm `recreate-user.sh` is untouched**
 
