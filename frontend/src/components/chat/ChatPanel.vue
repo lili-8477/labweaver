@@ -147,6 +147,20 @@ function syncHighlightScroll() {
   if (ta && hl) { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft }
 }
 
+// Grow the editor with the content until max-height, then let it scroll.
+// The textarea is rows="1", so without this it stays one line tall and the
+// text scrolls inside it. The mirror is inset:0 on the wrapper, so it follows.
+function autosize() {
+  const ta = inputRef.value
+  if (!ta) return
+  ta.style.height = 'auto'
+  ta.style.height = `${ta.scrollHeight}px`
+  syncHighlightScroll()
+}
+
+watch(input, () => { void nextTick(autosize) })
+onMounted(autosize)
+
 function handleKeydown(e: KeyboardEvent) {
   if (slashMenuRef.value?.handleKey(e)) {
     e.preventDefault()
