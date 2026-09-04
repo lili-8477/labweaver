@@ -1,0 +1,16 @@
+# The build context is the repo root, but the image only needs six paths
+# (see image/Dockerfile COPY lines). Without this file docker uploads
+# hub/workspaces (47 GB of user data) and adapter/node_modules (1.2 GB) on
+# every build. Allowlist: ignore everything, then re-include what is copied.
+*
+
+!adapter/package.json
+!adapter/package-lock.json
+!adapter/dist/
+
+!mcp-memory/package.json
+!mcp-memory/package-lock.json
+!mcp-memory/dist/
+
+!image/kernel-bridge.py
+!image/entrypoint.sh
