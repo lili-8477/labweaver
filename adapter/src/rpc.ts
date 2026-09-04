@@ -659,6 +659,7 @@ export class RpcRouter {
           prompt,
           images,
           cwd: this.deps.defaultProjectCwd,
+          model: (await this.readSettings()).model as string | undefined,
           // Resume only if we've already captured a real SDK session UUID.
           resumeSessionId: chat.session_id ?? undefined,
           signal: ac.signal,

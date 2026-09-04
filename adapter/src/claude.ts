@@ -17,6 +17,8 @@ export interface RunTurnArgs {
   /** Optional image attachments to send as native content blocks. */
   images?: ImageRef[];
   cwd: string;
+  /** Model id from settings.json. Undefined falls back to the SDK default. */
+  model?: string;
   /** Prior SDK session UUID to resume; undefined for a new session. */
   resumeSessionId: string | undefined;
   signal: AbortSignal;
@@ -26,7 +28,7 @@ export interface RunTurnArgs {
 }
 
 export async function runTurn(args: RunTurnArgs): Promise<void> {
-  const { chatId, prompt, images = [], cwd, resumeSessionId, signal, onEvent, onSessionId } = args;
+  const { chatId, prompt, images = [], cwd, model, resumeSessionId, signal, onEvent, onSessionId } = args;
   const translator = new EventTranslator();
 
   // Point the SDK at the global CLI binary we installed in the image.
@@ -37,6 +39,8 @@ export async function runTurn(args: RunTurnArgs): Promise<void> {
 
   const options: Options = {
     cwd,
+    // Without this the SDK picks its own default and settings.json is inert.
+    ...(model ? { model } : {}),
     permissionMode: "bypassPermissions",
     abortController: { signal } as unknown as AbortController,
     includePartialMessages: true,
@@ -51,7 +55,7 @@ export async function runTurn(args: RunTurnArgs): Promise<void> {
     ...(resumeSessionId ? { resume: resumeSessionId } : {}),
   } as Options;
 
-  console.log(`[claude] runTurn chat=${chatId.slice(0, 8)} resume=${resumeSessionId?.slice(0, 8) ?? "none"} cwd=${cwd} imgs=${images.length}`);
+  console.log(`[claude] runTurn chat=${chatId.slice(0, 8)} resume=${resumeSessionId?.slice(0, 8) ?? "none"} cwd=${cwd} model=${model ?? "sdk-default"} imgs=${images.length}`);
 
   // With images, switch to streaming-input mode so we can pass structured
   // content blocks (text + base64 image) in one user message — model gets
