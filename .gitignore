@@ -12,3 +12,12 @@ hub/service-map.conf
 hub/postgres-data/
 hub/.env
 .worktrees/
+
+# Provisioning scripts encode the container-name -> ID_HASH -> service-ID
+# derivation. nginx treats a valid service ID in the lw_service cookie as
+# sufficient to reach a workspace's /upload/, so publishing the derivation
+# publishes a bearer key for every user. Keep them out of the repo.
+hub/scripts/
+
+# SSH client config: real cluster hostnames and account names.
+**/.ssh/
