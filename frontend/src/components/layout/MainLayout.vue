@@ -153,7 +153,7 @@ const connStatus = computed(() => {
         >
           <span class="hamburger">☰</span>
         </button>
-        <img class="logo-mark" src="/labweaver-mark.png" alt="" />
+        <img class="logo-mark" src="/labweaver-mark.svg" alt="" />
         <span class="logo">LabWeaver</span>
         <span class="conn-badge" :class="connStatus.cls">
           <span class="status-dot"></span>
