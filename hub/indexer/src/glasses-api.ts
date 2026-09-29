@@ -18,7 +18,9 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import {
   createRecording,
+  getRecordingParts,
   getRecordingState,
+  listRecordings,
   listFileNames,
   markComplete,
   storeFile,
@@ -37,6 +39,15 @@ const OWNER_RE        = /^[a-z0-9][a-z0-9-]*$/;             // add-user.sh rule
 const RECORDING_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;  // phone: yyyyMMdd-HHmmss-xxxx
 const SHA256_RE       = /^[0-9a-f]{64}$/;
 const INT_RE          = /^\d{1,12}$/;
+
+// nginx's internal location that serves hub/recordings (see hub/nginx.conf).
+// A download answers with X-Accel-Redirect to it, so nginx streams the file
+// with Range, ETag and sendfile, and the indexer never reads the bytes.
+export const ACCEL_PREFIX = "/_glasses_files";
+
+const ListQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
 
 const CreateBody = z.object({
   localId:   z.string().regex(RECORDING_ID_RE),
@@ -195,6 +206,44 @@ export function glassesRoutesPlugin(deps: GlassesApiDeps) {
         case "closed":       return reply.code(409).send({ error: "recording is complete" });
         case "no_recording": return reply.code(404).send({ error: "recording not found" });
       }
+    });
+
+    // GET /recordings — the owner's recordings, newest first.
+    instance.get(`${PREFIX}/recordings`, async (req, reply) => {
+      const owner = ownerOf(req, reply);
+      if (!owner) return reply;
+      const q = ListQuery.safeParse(req.query);
+      if (!q.success) return reply.code(400).send({ error: "limit must be 1 to 200" });
+      return { recordings: await listRecordings(deps.pool, owner, q.data.limit) };
+    });
+
+    // GET /recordings/:id/parts — state and muxed parts ([] until processed).
+    instance.get(`${PREFIX}/recordings/:id/parts`, async (req, reply) => {
+      const t = target(req, reply);
+      if (!t) return reply;
+      const found = await getRecordingParts(deps.pool, t.owner, t.recordingId);
+      if (!found) return reply.code(404).send({ error: "recording not found" });
+      return {
+        recordingId: t.recordingId,
+        state: found.state,
+        parts: found.parts.map((p) => ({ ...p, file: path.basename(p.file) })),
+      };
+    });
+
+    // GET /recordings/:id/parts/:n — the muxed pNNN.mp4, served by nginx.
+    instance.get(`${PREFIX}/recordings/:id/parts/:n`, async (req, reply) => {
+      const t = target(req, reply);
+      if (!t) return reply;
+      const n = (req.params as { n: string }).n;
+      if (!/^[1-9]\d{0,5}$/.test(n)) return reply.code(400).send({ error: "invalid part number" });
+      const found = await getRecordingParts(deps.pool, t.owner, t.recordingId);
+      if (!found) return reply.code(404).send({ error: "recording not found" });
+      const part = found.parts.find((p) => p.part === Number(n));
+      if (!part) return reply.code(404).send({ error: "part not found", state: found.state });
+      return reply
+        .header("X-Accel-Redirect", `${ACCEL_PREFIX}/${t.owner}/${t.recordingId}/${part.file}`)
+        .code(200)
+        .send();
     });
 
     // POST /recordings/:id/complete — checks the uploaded manifest.json.
