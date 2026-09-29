@@ -24,6 +24,7 @@ export interface Config {
   recordingsRoot:     string;
   glassesMaxChunkBytes: number;
   glassesMuxIntervalMs: number;
+  glassesProxySecret:   string;
   ffmpegBin:            string;
   ffprobeBin:           string;
 }
@@ -86,6 +87,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     recordingsRoot:       env.RECORDINGS_ROOT ?? "/recordings",
     glassesMaxChunkBytes: parseIntVar(env, "GLASSES_MAX_CHUNK_BYTES", 64 * 1024 * 1024),
     glassesMuxIntervalMs: parseIntVar(env, "GLASSES_MUX_INTERVAL_MS", 10_000),
+    glassesProxySecret:   env.GLASSES_PROXY_SECRET ?? "",
     ffmpegBin:            env.FFMPEG_BIN  ?? "ffmpeg",
     ffprobeBin:           env.FFPROBE_BIN ?? "ffprobe",
   };

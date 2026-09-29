@@ -2,13 +2,15 @@
 // docs/UPLOAD_API.md in lili-8477/labweaver-glasses.
 //
 // nginx authenticates the Bearer token, strips it, and passes the workspace
-// owner in X-Forwarded-User; this plugin trusts that header the same way the
-// memory and share APIs trust their `actor` (private docker network).
+// owner in X-Forwarded-User. User containers share the indexer's docker
+// network and could send that header themselves, so the owner is only
+// trusted alongside X-Glasses-Proxy-Secret, which only nginx knows
+// (GLASSES_PROXY_SECRET). With no secret configured every request is refused.
 //
 // Files land in <recordingsRoot>/<owner>/<recordingId>/<name> under the names
 // the phone uses, so scripts/mux-recording.sh from the glasses repo runs on them.
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -27,6 +29,7 @@ export interface GlassesApiDeps {
   pool:           Pool;
   recordingsRoot: string;
   maxChunkBytes:  number;
+  proxySecret:    string;   // must match nginx's X-Glasses-Proxy-Secret
 }
 
 const PREFIX          = "/api/glasses";
@@ -81,10 +84,16 @@ export function glassesRoutesPlugin(deps: GlassesApiDeps) {
       (_req, body, done) => done(null, body),
     );
 
+    const expected = Buffer.from(deps.proxySecret);
+    const fromProxy = (req: FastifyRequest): boolean => {
+      const got = Buffer.from(String(req.headers["x-glasses-proxy-secret"] ?? ""));
+      return expected.length > 0 && got.length === expected.length && timingSafeEqual(got, expected);
+    };
+
     // Resolves the owner, or sends 401 and returns null.
     const ownerOf = (req: FastifyRequest, reply: FastifyReply): string | null => {
       const owner = req.headers["x-forwarded-user"];
-      if (typeof owner === "string" && OWNER_RE.test(owner)) return owner;
+      if (fromProxy(req) && typeof owner === "string" && OWNER_RE.test(owner)) return owner;
       reply.code(401).send({ error: "unauthenticated" });
       return null;
     };
