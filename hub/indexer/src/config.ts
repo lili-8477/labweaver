@@ -23,6 +23,9 @@ export interface Config {
   shareAutoCloseIntervalHours:  number;
   recordingsRoot:     string;
   glassesMaxChunkBytes: number;
+  glassesMuxIntervalMs: number;
+  ffmpegBin:            string;
+  ffprobeBin:           string;
 }
 
 function parseIntVar(env: Record<string, string | undefined>, name: string, fallback: number): number {
@@ -82,5 +85,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     shareAutoCloseIntervalHours,
     recordingsRoot:       env.RECORDINGS_ROOT ?? "/recordings",
     glassesMaxChunkBytes: parseIntVar(env, "GLASSES_MAX_CHUNK_BYTES", 64 * 1024 * 1024),
+    glassesMuxIntervalMs: parseIntVar(env, "GLASSES_MUX_INTERVAL_MS", 10_000),
+    ffmpegBin:            env.FFMPEG_BIN  ?? "ffmpeg",
+    ffprobeBin:           env.FFPROBE_BIN ?? "ffprobe",
   };
 }
