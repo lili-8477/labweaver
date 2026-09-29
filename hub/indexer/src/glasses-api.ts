@@ -1,15 +1,15 @@
-// Upload API for the LabWeaver Glasses iOS app. The contract is DESIGN.md §7
-// in lili-8477/labweaver-glasses.
+// Upload API for the LabWeaver Glasses iOS app. The contract is
+// docs/UPLOAD_API.md in lili-8477/labweaver-glasses.
 //
 // nginx authenticates the Bearer token, strips it, and passes the workspace
 // owner in X-Forwarded-User; this plugin trusts that header the same way the
 // memory and share APIs trust their `actor` (private docker network).
 //
-// Files land in <recordingsRoot>/<owner>/<recordingId>/ under the names the
-// phone uses, so scripts/mux-recording.sh from the glasses repo runs on them.
+// Files land in <recordingsRoot>/<owner>/<recordingId>/<name> under the names
+// the phone uses, so scripts/mux-recording.sh from the glasses repo runs on them.
 
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
@@ -17,9 +17,10 @@ import { z } from "zod";
 import {
   createRecording,
   getRecordingState,
-  listChunkFiles,
+  listFileNames,
   markComplete,
-  storeChunk,
+  storeFile,
+  type FileRow,
 } from "./glasses-repo.js";
 
 export interface GlassesApiDeps {
@@ -28,21 +29,23 @@ export interface GlassesApiDeps {
   maxChunkBytes:  number;
 }
 
-const OWNER_RE        = /^[a-z0-9][a-z0-9-]*$/;           // add-user.sh rule
-const RECORDING_ID_RE = /^\d{8}-\d{6}-[0-9a-f]{4}$/;       // yyyyMMdd-HHmmss-xxxx
+const PREFIX          = "/api/glasses";
+const OWNER_RE        = /^[a-z0-9][a-z0-9-]*$/;             // add-user.sh rule
+const RECORDING_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;  // phone: yyyyMMdd-HHmmss-xxxx
 const SHA256_RE       = /^[0-9a-f]{64}$/;
+const INT_RE          = /^\d{1,12}$/;
 
 const CreateBody = z.object({
+  localId:   z.string().regex(RECORDING_ID_RE),
   startedAt: z.string().datetime({ offset: true }),
   device:    z.record(z.unknown()).default({}),
   config:    z.record(z.unknown()).default({}),
 });
 
-const ChunkParams = z.object({
-  part:  z.coerce.number().int().min(1),
-  track: z.enum(["video", "audio"]),
-  seq:   z.coerce.number().int().min(0),
-});
+const CompleteBody = z.object({
+  durationMs: z.number().int().nonnegative().optional(),
+  endedAt:    z.string().datetime({ offset: true }).optional(),
+}).passthrough();
 
 // Only the fields the server checks; the rest of the manifest is stored as is.
 const Manifest = z.object({
@@ -52,22 +55,18 @@ const Manifest = z.object({
   }).passthrough()),
 }).passthrough();
 
-/** Name of a chunk's file, matching Recorder.swift on the phone. */
-export function chunkFileName(part: number, track: "video" | "audio", seq: number): string {
-  return seq === 0
-    ? `p${String(part).padStart(3, "0")}-${track}-init.mp4`
-    : `seg-${String(seq).padStart(6, "0")}-${track}.m4s`;
-}
+type Kind = FileRow["kind"];
+type Track = "video" | "audio";
 
-async function exists(p: string): Promise<boolean> {
-  return access(p).then(() => true, () => false);
-}
-
-/** Writes next to the target, then renames, so readers never see half a file. */
-async function writeAtomic(target: string, data: Buffer | string): Promise<void> {
-  const tmp = tempPath(target);
-  await writeFile(tmp, data);
-  await rename(tmp, target);
+/** Kind and track implied by a file name, or null if the name is not allowed. */
+export function classifyName(name: string): { kind: Kind; track: Track | null; part?: number; seq?: number } | null {
+  let m = /^p(\d{3})-(video|audio)-init\.mp4$/.exec(name);
+  if (m) return { kind: "init", track: m[2] as Track, part: Number(m[1]) };
+  m = /^seg-(\d{6})-(video|audio)\.m4s$/.exec(name);
+  if (m) return { kind: "media", track: m[2] as Track, seq: Number(m[1]) };
+  if (name === "events.jsonl") return { kind: "events", track: null };
+  if (name === "manifest.json") return { kind: "manifest", track: null };
+  return null;
 }
 
 function tempPath(target: string): string {
@@ -77,18 +76,23 @@ function tempPath(target: string): string {
 export function glassesRoutesPlugin(deps: GlassesApiDeps) {
   return async function (instance: FastifyInstance) {
     instance.addContentTypeParser(
-      ["video/mp4", "video/iso.segment", "application/octet-stream", "application/x-ndjson"],
+      ["application/octet-stream", "video/mp4", "video/iso.segment", "application/x-ndjson"],
       { parseAs: "buffer", bodyLimit: deps.maxChunkBytes },
       (_req, body, done) => done(null, body),
     );
 
-    // Resolves owner and recording id, or sends the error and returns null.
-    const target = (req: FastifyRequest, reply: FastifyReply) => {
+    // Resolves the owner, or sends 401 and returns null.
+    const ownerOf = (req: FastifyRequest, reply: FastifyReply): string | null => {
       const owner = req.headers["x-forwarded-user"];
-      if (typeof owner !== "string" || !OWNER_RE.test(owner)) {
-        reply.code(401).send({ error: "unauthenticated" });
-        return null;
-      }
+      if (typeof owner === "string" && OWNER_RE.test(owner)) return owner;
+      reply.code(401).send({ error: "unauthenticated" });
+      return null;
+    };
+
+    // Resolves owner and recording id from the URL, or sends the error and returns null.
+    const target = (req: FastifyRequest, reply: FastifyReply) => {
+      const owner = ownerOf(req, reply);
+      if (!owner) return null;
       const recordingId = (req.params as { id: string }).id;
       if (!RECORDING_ID_RE.test(recordingId)) {
         reply.code(400).send({ error: "invalid recording id" });
@@ -97,99 +101,133 @@ export function glassesRoutesPlugin(deps: GlassesApiDeps) {
       return { owner, recordingId, dir: path.join(deps.recordingsRoot, owner, recordingId) };
     };
 
-    // PUT /api/glasses/recordings/:id — create (idempotent).
-    instance.put("/api/glasses/recordings/:id", async (req, reply) => {
-      const t = target(req, reply);
-      if (!t) return reply;
+    instance.get(`${PREFIX}/ping`, async (req, reply) => {
+      if (!ownerOf(req, reply)) return reply;
+      return { ok: true };
+    });
+
+    // POST /recordings — create (idempotent per owner + localId).
+    instance.post(`${PREFIX}/recordings`, async (req, reply) => {
+      const owner = ownerOf(req, reply);
+      if (!owner) return reply;
       const parsed = CreateBody.safeParse(req.body);
       if (!parsed.success) {
         return reply.code(400).send({ error: "validation failed", issues: parsed.error.issues });
       }
-      await mkdir(t.dir, { recursive: true });
-      const { created } = await createRecording(deps.pool, {
-        owner: t.owner, recordingId: t.recordingId, ...parsed.data,
-      });
-      return reply.code(created ? 201 : 200).send({ recordingId: t.recordingId });
+      const { localId, ...rest } = parsed.data;
+      await mkdir(path.join(deps.recordingsRoot, owner, localId), { recursive: true });
+      const { created } = await createRecording(deps.pool, { owner, recordingId: localId, ...rest });
+      return reply.code(created ? 201 : 200).send({ recordingId: localId });
     });
 
-    // PUT /api/glasses/recordings/:id/chunks/:part/:track/:seq — one fMP4 file.
-    instance.put("/api/glasses/recordings/:id/chunks/:part/:track/:seq", async (req, reply) => {
+    // PUT /recordings/:id/files/:name — one file, stored atomically.
+    instance.put(`${PREFIX}/recordings/:id/files/:name`, async (req, reply) => {
       const t = target(req, reply);
       if (!t) return reply;
-      const params = ChunkParams.safeParse(req.params);
-      if (!params.success) return reply.code(400).send({ error: "invalid chunk key" });
-      const body = req.body;
-      if (!Buffer.isBuffer(body) || body.length === 0) {
-        return reply.code(400).send({ error: "empty body" });
+      const name = (req.params as { name: string }).name;
+      const implied = classifyName(name);
+      if (!implied) return reply.code(400).send({ error: "invalid file name" });
+
+      const h = req.headers;
+      const header = (k: string) => (typeof h[k] === "string" ? (h[k] as string) : undefined);
+      const intHeader = (k: string): number | null | "bad" => {
+        const v = header(k);
+        if (v === undefined) return null;
+        return INT_RE.test(v) ? Number(v) : "bad";
+      };
+      const claimed = header("x-file-sha256");
+      if (!claimed || !SHA256_RE.test(claimed)) {
+        return reply.code(400).send({ error: "X-File-SHA256 must be lowercase hex" });
       }
-      const claimed = String(req.headers["x-chunk-sha256"] ?? "").toLowerCase();
-      if (!SHA256_RE.test(claimed)) return reply.code(400).send({ error: "missing X-Chunk-SHA256" });
+      if (header("x-file-kind") !== implied.kind) {
+        return reply.code(400).send({ error: `X-File-Kind must be ${implied.kind} for ${name}` });
+      }
+      const track = header("x-file-track");
+      if (track !== undefined && track !== implied.track) {
+        return reply.code(400).send({ error: "X-File-Track does not match the file name" });
+      }
+      const ints = {
+        part:       intHeader("x-file-part"),
+        seq:        intHeader("x-file-seq"),
+        startMs:    intHeader("x-file-start-ms"),
+        durationMs: intHeader("x-file-duration-ms"),
+      };
+      if (Object.values(ints).includes("bad")) {
+        return reply.code(400).send({ error: "X-File-Part/Seq/Start-Ms/Duration-Ms must be integers" });
+      }
+
+      const body = req.body;
+      if (!Buffer.isBuffer(body)) return reply.code(400).send({ error: "expected a raw body" });
       const sha256 = createHash("sha256").update(body).digest("hex");
       if (sha256 !== claimed) return reply.code(400).send({ error: "sha256 mismatch" });
 
-      const { part, track, seq } = params.data;
-      const file = chunkFileName(part, track, seq);
-      const final = path.join(t.dir, file);
-      const tmp = tempPath(final);
       const state = await getRecordingState(deps.pool, t.owner, t.recordingId);
       if (state === null) return reply.code(404).send({ error: "recording not found" });
+
+      const final = path.join(t.dir, name);
+      const tmp = tempPath(final);
       await writeFile(tmp, body);
-      const result = await storeChunk(
-        deps.pool,
-        { owner: t.owner, recordingId: t.recordingId, part, track, seq, file, sha256, bytes: body.length },
-        () => rename(tmp, final),
-      ).finally(() => unlink(tmp).catch(() => {}));   // no-op once renamed
+      const row: FileRow = {
+        owner: t.owner, recordingId: t.recordingId, name, kind: implied.kind, track: implied.track,
+        part:       (ints.part as number | null) ?? implied.part ?? null,
+        seq:        (ints.seq as number | null) ?? implied.seq ?? null,
+        startMs:    ints.startMs as number | null,
+        durationMs: ints.durationMs as number | null,
+        sha256, bytes: body.length,
+      };
+      const result = await storeFile(deps.pool, row, () => rename(tmp, final))
+        .finally(() => unlink(tmp).catch(() => {}));   // no-op once renamed
 
       switch (result.status) {
-        case "created":      return reply.code(201).send({ file });
+        case "created":      return reply.code(201).send({ ok: true });
         case "exists":       return result.sha256 === sha256
-          ? reply.code(200).send({ file })
-          : reply.code(409).send({ error: "chunk exists with a different sha256", file });
+          ? reply.code(200).send({ ok: true })
+          : reply.code(409).send({ error: "different bytes already stored under this name" });
         case "closed":       return reply.code(409).send({ error: "recording is complete" });
         case "no_recording": return reply.code(404).send({ error: "recording not found" });
       }
     });
 
-    // PUT /api/glasses/recordings/:id/events — the whole events.jsonl.
-    instance.put("/api/glasses/recordings/:id/events", async (req, reply) => {
+    // POST /recordings/:id/complete — checks the uploaded manifest.json.
+    instance.post(`${PREFIX}/recordings/:id/complete`, async (req, reply) => {
       const t = target(req, reply);
       if (!t) return reply;
-      if (!Buffer.isBuffer(req.body)) return reply.code(400).send({ error: "expected application/x-ndjson" });
+      const body = CompleteBody.safeParse(req.body ?? {});
+      if (!body.success) {
+        return reply.code(400).send({ error: "validation failed", issues: body.error.issues });
+      }
       const state = await getRecordingState(deps.pool, t.owner, t.recordingId);
       if (state === null) return reply.code(404).send({ error: "recording not found" });
-      if (state === "complete") return reply.code(409).send({ error: "recording is complete" });
-      await writeAtomic(path.join(t.dir, "events.jsonl"), req.body);
-      return reply.code(204).send();
-    });
+      if (state === "complete") return reply.code(202).send({ ok: true });
 
-    // POST /api/glasses/recordings/:id/complete — body is manifest.json.
-    instance.post("/api/glasses/recordings/:id/complete",
-      { bodyLimit: 16 * 1024 * 1024 },
-      async (req, reply) => {
-        const t = target(req, reply);
-        if (!t) return reply;
-        const parsed = Manifest.safeParse(req.body);
-        if (!parsed.success) {
-          return reply.code(400).send({ error: "validation failed", issues: parsed.error.issues });
-        }
-        const manifest = parsed.data;
-        if (manifest.recordingId !== undefined && manifest.recordingId !== t.recordingId) {
-          return reply.code(400).send({ error: "manifest recordingId does not match the URL" });
-        }
-        const state = await getRecordingState(deps.pool, t.owner, t.recordingId);
-        if (state === null) return reply.code(404).send({ error: "recording not found" });
-        if (state === "complete") return reply.code(202).send({ state });
+      const received = await listFileNames(deps.pool, t.owner, t.recordingId);
+      if (!received.has("manifest.json")) return reply.code(409).send({ missing: ["manifest.json"] });
 
-        const received = await listChunkFiles(deps.pool, t.owner, t.recordingId);
-        const missing = manifest.mediaParts
-          .flatMap((p) => p.files.map((f) => f.file))
-          .filter((f) => !received.has(f));
-        if (!(await exists(path.join(t.dir, "events.jsonl")))) missing.push("events.jsonl");
-        if (missing.length > 0) return reply.code(409).send({ missing });
+      let manifestJson: unknown;
+      try {
+        manifestJson = JSON.parse(await readFile(path.join(t.dir, "manifest.json"), "utf8"));
+      } catch {
+        return reply.code(400).send({ error: "manifest.json is not valid JSON" });
+      }
+      const manifest = Manifest.safeParse(manifestJson);
+      if (!manifest.success) {
+        return reply.code(400).send({ error: "manifest.json has no mediaParts[].files[].file" });
+      }
+      if (manifest.data.recordingId !== undefined && manifest.data.recordingId !== t.recordingId) {
+        return reply.code(400).send({ error: "manifest recordingId does not match the URL" });
+      }
 
-        await writeAtomic(path.join(t.dir, "manifest.json"), JSON.stringify(manifest, null, 2));
-        await markComplete(deps.pool, t.owner, t.recordingId, manifest);
-        return reply.code(202).send({ state: "complete" });
+      const missing = [
+        ...manifest.data.mediaParts.flatMap((p) => p.files.map((f) => f.file)),
+        "events.jsonl",
+      ].filter((f) => !received.has(f));
+      if (missing.length > 0) return reply.code(409).send({ missing });
+
+      await markComplete(deps.pool, {
+        owner: t.owner, recordingId: t.recordingId, manifest: manifest.data,
+        durationMs: body.data.durationMs ?? null, endedAt: body.data.endedAt ?? null,
       });
+      return reply.code(202).send({ ok: true });
+    });
   };
 }

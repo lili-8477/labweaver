@@ -8,11 +8,12 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMigrations } from "../src/migrate.js";
-import { chunkFileName, glassesRoutesPlugin } from "../src/glasses-api.js";
+import { classifyName, glassesRoutesPlugin } from "../src/glasses-api.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 const ID = "20260929-101500-ab12";
-const BASE = `/api/glasses/recordings/${ID}`;
+const API = "/api/glasses";
+const REC = `${API}/recordings/${ID}`;
 const USER = { "x-forwarded-user": "alice" };
 
 let pg: StartedPostgreSqlContainer;
@@ -21,34 +22,35 @@ let app: FastifyInstance;
 let root: string;
 
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+const KIND: Record<string, string> = { mp4: "init", m4s: "media", jsonl: "events", json: "manifest" };
 
-function create(headers: Record<string, string> = USER) {
+function create(headers: Record<string, string> = USER, localId = ID) {
   return app.inject({
-    method: "PUT", url: BASE, headers,
-    payload: { startedAt: "2026-09-29T10:15:00Z", device: { model: "rb" }, config: { fps: 24 } },
+    method: "POST", url: `${API}/recordings`, headers,
+    payload: { localId, startedAt: "2026-09-29T10:15:00Z",
+      device: { id: "d1", name: "RB Meta" }, config: { resolution: "medium", fps: 24 } },
   });
 }
 
-function putChunk(part: number, track: string, seq: number, body: Buffer, hash = sha(body)) {
+function putFile(name: string, body: Buffer | string, extra: Record<string, string> = {}, owner = "alice") {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
   return app.inject({
-    method: "PUT", url: `${BASE}/chunks/${part}/${track}/${seq}`,
-    headers: { ...USER, "content-type": "video/iso.segment", "x-chunk-sha256": hash },
-    payload: body,
+    method: "PUT", url: `${REC}/files/${name}`,
+    headers: {
+      "x-forwarded-user": owner, "content-type": "application/octet-stream",
+      "x-file-sha256": sha(buf), "x-file-kind": KIND[name.split(".").pop()!]!, ...extra,
+    },
+    payload: buf,
   });
 }
 
-function putEvents(text = '{"t":0,"type":"session_state","payload":{}}\n') {
-  return app.inject({
-    method: "PUT", url: `${BASE}/events`,
-    headers: { ...USER, "content-type": "application/x-ndjson" }, payload: text,
-  });
+function manifest(files: string[]) {
+  return JSON.stringify({ recordingId: ID, mediaParts: [{ index: 1, files: files.map((file) => ({ file })) }] });
 }
 
-function complete(files: string[]) {
-  return app.inject({
-    method: "POST", url: `${BASE}/complete`, headers: USER,
-    payload: { recordingId: ID, durationMs: 1000, mediaParts: [{ index: 1, files: files.map((file) => ({ file })) }] },
-  });
+function complete() {
+  return app.inject({ method: "POST", url: `${REC}/complete`, headers: USER,
+    payload: { durationMs: 1000, endedAt: "2026-09-29T10:16:00Z", fileCount: 4 } });
 }
 
 beforeAll(async () => {
@@ -71,146 +73,155 @@ beforeEach(async () => {
   await app.register(glassesRoutesPlugin({ pool, recordingsRoot: root, maxChunkBytes: 1024 * 1024 }));
 });
 
-describe("chunkFileName", () => {
-  it("matches the phone's names", () => {
-    expect(chunkFileName(1, "video", 0)).toBe("p001-video-init.mp4");
-    expect(chunkFileName(12, "audio", 0)).toBe("p012-audio-init.mp4");
-    expect(chunkFileName(3, "audio", 42)).toBe("seg-000042-audio.m4s");
+describe("classifyName", () => {
+  it("accepts the phone's four name shapes", () => {
+    expect(classifyName("p001-video-init.mp4")).toEqual({ kind: "init", track: "video", part: 1 });
+    expect(classifyName("seg-000042-audio.m4s")).toEqual({ kind: "media", track: "audio", seq: 42 });
+    expect(classifyName("events.jsonl")).toEqual({ kind: "events", track: null });
+    expect(classifyName("manifest.json")).toEqual({ kind: "manifest", track: null });
+  });
+
+  it("rejects anything else", () => {
+    for (const n of ["p1-video-init.mp4", "seg-000001-depth.m4s", "../manifest.json", "notes.txt"]) {
+      expect(classifyName(n)).toBeNull();
+    }
   });
 });
 
-describe("auth and ids", () => {
-  it("401 without a forwarded user", async () => {
-    expect((await create({})).statusCode).toBe(401);
+describe("auth and ping", () => {
+  it("ping is 200 {ok:true} for a forwarded user", async () => {
+    const res = await app.inject({ method: "GET", url: `${API}/ping`, headers: USER });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
   });
 
-  it("401 for a user name that fails the add-user.sh rule", async () => {
+  it("401 without a forwarded user, or with one that fails the add-user.sh rule", async () => {
+    expect((await app.inject({ method: "GET", url: `${API}/ping` })).statusCode).toBe(401);
     expect((await create({ "x-forwarded-user": "../etc" })).statusCode).toBe(401);
   });
-
-  it("400 for a recording id not in the phone's format", async () => {
-    const res = await app.inject({ method: "PUT", url: "/api/glasses/recordings/..%2Fx", headers: USER,
-      payload: { startedAt: "2026-09-29T10:15:00Z" } });
-    expect(res.statusCode).toBe(400);
-  });
 });
 
-describe("PUT recording", () => {
-  it("201 then 200, and creates the owner-scoped folder", async () => {
-    expect((await create()).statusCode).toBe(201);
-    expect((await create()).statusCode).toBe(200);
+describe("POST /recordings", () => {
+  it("201 then 200 with the same id, and creates the owner-scoped folder", async () => {
+    const first = await create();
+    expect(first.statusCode).toBe(201);
+    expect(first.json()).toEqual({ recordingId: ID });
+    const again = await create();
+    expect(again.statusCode).toBe(200);
+    expect(again.json()).toEqual({ recordingId: ID });
     expect(await readdir(path.join(root, "alice", ID))).toEqual([]);
   });
 
-  it("400 without startedAt", async () => {
-    const res = await app.inject({ method: "PUT", url: BASE, headers: USER, payload: {} });
+  it("400 for a missing startedAt or an unsafe localId", async () => {
+    const res = await app.inject({ method: "POST", url: `${API}/recordings`, headers: USER, payload: { localId: ID } });
     expect(res.statusCode).toBe(400);
+    expect((await create(USER, "../x")).statusCode).toBe(400);
   });
 });
 
-describe("PUT chunk", () => {
+describe("PUT files", () => {
   const body = Buffer.from("fmp4 segment bytes");
 
   it("404 before the recording exists", async () => {
-    expect((await putChunk(1, "video", 1, body)).statusCode).toBe(404);
+    expect((await putFile("seg-000001-video.m4s", body)).statusCode).toBe(404);
   });
 
-  it("201 stores the file under the phone's name; a retry is 200", async () => {
+  it("201 stores the file under its name; a retry is 200", async () => {
     await create();
-    const res = await putChunk(1, "video", 0, body);
-    expect(res.statusCode).toBe(201);
-    expect(res.json()).toEqual({ file: "p001-video-init.mp4" });
+    expect((await putFile("p001-video-init.mp4", body, { "x-file-track": "video", "x-file-part": "1" })).statusCode).toBe(201);
     expect(await readFile(path.join(root, "alice", ID, "p001-video-init.mp4"))).toEqual(body);
-    expect((await putChunk(1, "video", 0, body)).statusCode).toBe(200);
+    expect((await putFile("p001-video-init.mp4", body)).statusCode).toBe(200);
   });
 
-  it("init segments of different parts and tracks do not collide", async () => {
+  it("records the X-File-* headers", async () => {
     await create();
-    for (const [part, track] of [[1, "video"], [1, "audio"], [2, "video"]] as const) {
-      expect((await putChunk(part, track, 0, body)).statusCode).toBe(201);
-    }
+    await putFile("seg-000003-audio.m4s", body, {
+      "x-file-track": "audio", "x-file-part": "2", "x-file-seq": "3",
+      "x-file-start-ms": "20000", "x-file-duration-ms": "10000",
+    });
+    const r = await pool.query("SELECT kind, track, part, seq, start_ms, duration_ms, bytes FROM glasses_files");
+    expect(r.rows[0]).toEqual({ kind: "media", track: "audio", part: 2, seq: 3,
+      start_ms: "20000", duration_ms: "10000", bytes: String(body.length) });
   });
 
-  it("400 when the body does not match X-Chunk-SHA256, nothing stored", async () => {
+  it("400 for a hash mismatch, and nothing is stored", async () => {
     await create();
-    expect((await putChunk(1, "video", 1, body, "0".repeat(64))).statusCode).toBe(400);
+    const res = await putFile("seg-000001-video.m4s", body, { "x-file-sha256": "0".repeat(64) });
+    expect(res.statusCode).toBe(400);
     expect(await readdir(path.join(root, "alice", ID))).toEqual([]);
   });
 
-  it("409 for the same key with different bytes; the first file is kept", async () => {
+  it("400 for a bad name, a wrong kind or track, or a non-integer header", async () => {
     await create();
-    await putChunk(1, "audio", 5, body);
-    expect((await putChunk(1, "audio", 5, Buffer.from("other"))).statusCode).toBe(409);
+    expect((await putFile("notes.json", body)).statusCode).toBe(400);
+    expect((await putFile("seg-000001-video.m4s", body, { "x-file-kind": "init" })).statusCode).toBe(400);
+    expect((await putFile("seg-000001-video.m4s", body, { "x-file-track": "audio" })).statusCode).toBe(400);
+    expect((await putFile("seg-000001-video.m4s", body, { "x-file-seq": "one" })).statusCode).toBe(400);
+    expect((await putFile("seg-000001-video.m4s", body, { "x-file-sha256": sha(body).toUpperCase() })).statusCode).toBe(400);
+  });
+
+  it("409 for different bytes under the same name; the first file is kept", async () => {
+    await create();
+    await putFile("seg-000005-audio.m4s", body);
+    expect((await putFile("seg-000005-audio.m4s", "other")).statusCode).toBe(409);
     expect(await readFile(path.join(root, "alice", ID, "seg-000005-audio.m4s"))).toEqual(body);
-  });
-
-  it("409 for one media seq sent under a second part", async () => {
-    await create();
-    await putChunk(1, "video", 7, body);
-    expect((await putChunk(2, "video", 7, Buffer.from("other"))).statusCode).toBe(409);
-  });
-
-  it("400 for a bad track or seq", async () => {
-    await create();
-    expect((await putChunk(1, "depth", 1, body)).statusCode).toBe(400);
-    expect((await putChunk(0, "video", 1, body)).statusCode).toBe(400);
   });
 
   it("413 over the size limit", async () => {
     await create();
-    expect((await putChunk(1, "video", 1, Buffer.alloc(2 * 1024 * 1024))).statusCode).toBe(413);
+    expect((await putFile("seg-000001-video.m4s", Buffer.alloc(2 * 1024 * 1024))).statusCode).toBe(413);
   });
 
   it("owners are isolated", async () => {
     await create();
-    const res = await app.inject({
-      method: "PUT", url: `${BASE}/chunks/1/video/1`,
-      headers: { "x-forwarded-user": "bob", "content-type": "video/iso.segment", "x-chunk-sha256": sha(body) },
-      payload: body,
-    });
-    expect(res.statusCode).toBe(404);
+    expect((await putFile("seg-000001-video.m4s", body, {}, "bob")).statusCode).toBe(404);
   });
 });
 
-describe("events and complete", () => {
-  const body = Buffer.from("seg");
+describe("complete", () => {
+  const seg = Buffer.from("seg");
+  const files = ["p001-video-init.mp4", "seg-000001-video.m4s"];
 
-  it("events replace the previous copy", async () => {
+  it("409 [manifest.json] before the manifest is uploaded", async () => {
     await create();
-    expect((await putEvents("a\n")).statusCode).toBe(204);
-    expect((await putEvents("a\nb\n")).statusCode).toBe(204);
-    expect(await readFile(path.join(root, "alice", ID, "events.jsonl"), "utf8")).toBe("a\nb\n");
+    const res = await complete();
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toEqual({ missing: ["manifest.json"] });
   });
 
-  it("409 lists the missing files and events.jsonl", async () => {
+  it("409 lists the missing media files and events.jsonl", async () => {
     await create();
-    await putChunk(1, "video", 0, body);
-    const res = await complete(["p001-video-init.mp4", "seg-000001-video.m4s"]);
+    await putFile("p001-video-init.mp4", seg);
+    await putFile("manifest.json", manifest(files));
+    const res = await complete();
     expect(res.statusCode).toBe(409);
     expect(res.json()).toEqual({ missing: ["seg-000001-video.m4s", "events.jsonl"] });
   });
 
-  it("202 once everything arrived; writes manifest.json; repeat is 202; later uploads 409", async () => {
+  it("202 {ok:true} once everything arrived; repeat is 202; later uploads 409", async () => {
     await create();
-    await putChunk(1, "video", 0, body);
-    await putChunk(1, "video", 1, body);
-    await putEvents();
-    const files = ["p001-video-init.mp4", "seg-000001-video.m4s"];
-    expect((await complete(files)).statusCode).toBe(202);
-    const manifest = JSON.parse(await readFile(path.join(root, "alice", ID, "manifest.json"), "utf8"));
-    expect(manifest.recordingId).toBe(ID);
-    const row = await pool.query("SELECT state, manifest->>'durationMs' AS d FROM glasses_recordings");
-    expect(row.rows[0]).toEqual({ state: "complete", d: "1000" });
+    await putFile("p001-video-init.mp4", seg);
+    await putFile("seg-000001-video.m4s", seg);
+    await putFile("events.jsonl", '{"t":0,"type":"session_state","payload":{}}\n');
+    await putFile("manifest.json", manifest(files));
+    const res = await complete();
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toEqual({ ok: true });
+    const row = await pool.query(
+      "SELECT state, duration_ms, manifest->>'recordingId' AS m FROM glasses_recordings");
+    expect(row.rows[0]).toEqual({ state: "complete", duration_ms: "1000", m: ID });
 
-    expect((await complete(files)).statusCode).toBe(202);
-    expect((await putChunk(1, "video", 2, body)).statusCode).toBe(409);
-    expect((await putEvents()).statusCode).toBe(409);
+    expect((await complete()).statusCode).toBe(202);
+    expect((await putFile("seg-000002-video.m4s", seg)).statusCode).toBe(409);
   });
 
-  it("400 when the manifest names another recording", async () => {
+  it("400 when manifest.json is not JSON or names another recording", async () => {
     await create();
-    const res = await app.inject({ method: "POST", url: `${BASE}/complete`, headers: USER,
-      payload: { recordingId: "20260101-000000-0000", mediaParts: [] } });
-    expect(res.statusCode).toBe(400);
+    await putFile("manifest.json", "{not json");
+    expect((await complete()).statusCode).toBe(400);
+    await pool.query("TRUNCATE glasses_recordings CASCADE");
+    await create();
+    await putFile("manifest.json", JSON.stringify({ recordingId: "other", mediaParts: [] }));
+    expect((await complete()).statusCode).toBe(400);
   });
 });

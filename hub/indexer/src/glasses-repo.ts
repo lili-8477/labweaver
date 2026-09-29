@@ -1,22 +1,25 @@
-// Postgres access for glasses recordings (migration 0014). The media bytes
-// live on disk; these rows record what arrived and act as the upload ACK.
+// Postgres access for glasses recordings (migration 0014). The bytes live on
+// disk; these rows record what arrived and act as the upload ACK.
 
 import type { Pool } from "pg";
 
 export type RecordingState = "uploading" | "complete";
 
-export interface ChunkRow {
+export interface FileRow {
   owner:       string;
   recordingId: string;
-  part:        number;
-  track:       "video" | "audio";
-  seq:         number;
-  file:        string;
+  name:        string;
+  kind:        "init" | "media" | "events" | "manifest";
+  track:       "video" | "audio" | null;
+  part:        number | null;
+  seq:         number | null;
+  startMs:     number | null;
+  durationMs:  number | null;
   sha256:      string;
   bytes:       number;
 }
 
-export type StoreChunkResult =
+export type StoreFileResult =
   | { status: "created" }
   | { status: "exists"; sha256: string }
   | { status: "no_recording" }
@@ -47,13 +50,13 @@ export async function getRecordingState(
 }
 
 /**
- * Records a chunk and runs `place` (moving the file into place) in the same
+ * Records a file and runs `place` (moving it into place) in the same
  * transaction, so a row exists only if its file does. The recording row is
- * share-locked, which serializes chunk writes against `markComplete`.
+ * share-locked, which serializes file writes against `markComplete`.
  */
-export async function storeChunk(
-  pool: Pool, row: ChunkRow, place: () => Promise<void>,
-): Promise<StoreChunkResult> {
+export async function storeFile(
+  pool: Pool, row: FileRow, place: () => Promise<void>,
+): Promise<StoreFileResult> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -68,10 +71,12 @@ export async function storeChunk(
       return { status: state === "complete" ? "closed" : "no_recording" };
     }
     const ins = await client.query(
-      `INSERT INTO glasses_chunks (owner, recording_id, part, track, seq, file, sha256, bytes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO glasses_files (owner, recording_id, name, kind, track, part, seq,
+                                  start_ms, duration_ms, sha256, bytes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT DO NOTHING`,
-      [row.owner, row.recordingId, row.part, row.track, row.seq, row.file, row.sha256, row.bytes],
+      [row.owner, row.recordingId, row.name, row.kind, row.track, row.part, row.seq,
+       row.startMs, row.durationMs, row.sha256, row.bytes],
     );
     if (ins.rowCount === 1) {
       await place();
@@ -79,11 +84,8 @@ export async function storeChunk(
       return { status: "created" };
     }
     const existing = await client.query<{ sha256: string }>(
-      `SELECT sha256 FROM glasses_chunks
-       WHERE owner = $1 AND recording_id = $2
-         AND ((part = $3 AND track = $4 AND seq = $5) OR file = $6)
-       LIMIT 1`,
-      [row.owner, row.recordingId, row.part, row.track, row.seq, row.file],
+      `SELECT sha256 FROM glasses_files WHERE owner = $1 AND recording_id = $2 AND name = $3`,
+      [row.owner, row.recordingId, row.name],
     );
     await client.query("ROLLBACK");
     return { status: "exists", sha256: existing.rows[0]!.sha256 };
@@ -95,23 +97,24 @@ export async function storeChunk(
   }
 }
 
-export async function listChunkFiles(
+export async function listFileNames(
   pool: Pool, owner: string, recordingId: string,
 ): Promise<Set<string>> {
-  const r = await pool.query<{ file: string }>(
-    `SELECT file FROM glasses_chunks WHERE owner = $1 AND recording_id = $2`,
+  const r = await pool.query<{ name: string }>(
+    `SELECT name FROM glasses_files WHERE owner = $1 AND recording_id = $2`,
     [owner, recordingId],
   );
-  return new Set(r.rows.map((x) => x.file));
+  return new Set(r.rows.map((x) => x.name));
 }
 
-export async function markComplete(
-  pool: Pool, owner: string, recordingId: string, manifest: unknown,
-): Promise<void> {
+export async function markComplete(pool: Pool, args: {
+  owner: string; recordingId: string; manifest: unknown;
+  durationMs: number | null; endedAt: string | null;
+}): Promise<void> {
   await pool.query(
     `UPDATE glasses_recordings
-     SET state = 'complete', manifest = $3, completed_at = now()
+     SET state = 'complete', manifest = $3, duration_ms = $4, ended_at = $5, completed_at = now()
      WHERE owner = $1 AND recording_id = $2 AND state = 'uploading'`,
-    [owner, recordingId, manifest],
+    [args.owner, args.recordingId, args.manifest, args.durationMs, args.endedAt],
   );
 }
