@@ -24,6 +24,7 @@ import {
 } from "./memory-repo.js";
 import { writeDistillation } from "./distiller-repo.js";
 import { shareRoutesPlugin } from "./share-api.js";
+import { glassesRoutesPlugin } from "./glasses-api.js";
 import { cleanupOldSnapshots, autoCloseIdleRequests } from "./share-cleanup.js";
 import {
   submitShareRequest,
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
 
   await mkdir(cfg.shareSnapshotsDir, { recursive: true });
   logger.info({ dir: cfg.shareSnapshotsDir }, "share snapshots dir ready");
+  await mkdir(cfg.recordingsRoot, { recursive: true });
 
   const pool = new Pool({ connectionString: cfg.pgUrl, max: Math.max(10, cfg.maxConcurrentFiles * 2) });
 
@@ -170,6 +172,12 @@ async function main(): Promise<void> {
       withdrawShareRequest,
       getShareCapabilities,
     },
+  }));
+
+  await app.register(glassesRoutesPlugin({
+    pool,
+    recordingsRoot: cfg.recordingsRoot,
+    maxChunkBytes:  cfg.glassesMaxChunkBytes,
   }));
 
   await app.listen({ port: cfg.memoryApiPort, host: "0.0.0.0" });

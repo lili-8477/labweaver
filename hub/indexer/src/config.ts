@@ -21,6 +21,8 @@ export interface Config {
   shareCleanupIntervalHours:  number;
   shareAutoCloseIdleDays:       number;
   shareAutoCloseIntervalHours:  number;
+  recordingsRoot:     string;
+  glassesMaxChunkBytes: number;
 }
 
 function parseIntVar(env: Record<string, string | undefined>, name: string, fallback: number): number {
@@ -78,5 +80,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     shareCleanupIntervalHours,
     shareAutoCloseIdleDays,
     shareAutoCloseIntervalHours,
+    recordingsRoot:       env.RECORDINGS_ROOT ?? "/recordings",
+    glassesMaxChunkBytes: parseIntVar(env, "GLASSES_MAX_CHUNK_BYTES", 64 * 1024 * 1024),
   };
 }
