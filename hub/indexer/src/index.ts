@@ -199,7 +199,9 @@ async function main(): Promise<void> {
     pool,
     recordingsRoot: cfg.recordingsRoot,
     maxChunkBytes:  cfg.glassesMaxChunkBytes,
+    proxySecret:    cfg.glassesProxySecret,
   }));
+  if (!cfg.glassesProxySecret) logger.warn("GLASSES_PROXY_SECRET unset: /api/glasses/ rejects every request");
 
   await app.listen({ port: cfg.memoryApiPort, host: "0.0.0.0" });
   logger.info({ port: cfg.memoryApiPort }, "memory-api listening");

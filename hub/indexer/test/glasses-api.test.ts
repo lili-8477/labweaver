@@ -14,7 +14,8 @@ const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url))
 const ID = "20260929-101500-ab12";
 const API = "/api/glasses";
 const REC = `${API}/recordings/${ID}`;
-const USER = { "x-forwarded-user": "alice" };
+const SECRET = "proxy-secret-for-tests";
+const USER = { "x-forwarded-user": "alice", "x-glasses-proxy-secret": SECRET };
 
 let pg: StartedPostgreSqlContainer;
 let pool: Pool;
@@ -37,7 +38,7 @@ function putFile(name: string, body: Buffer | string, extra: Record<string, stri
   return app.inject({
     method: "PUT", url: `${REC}/files/${name}`,
     headers: {
-      "x-forwarded-user": owner, "content-type": "application/octet-stream",
+      "x-forwarded-user": owner, "x-glasses-proxy-secret": SECRET, "content-type": "application/octet-stream",
       "x-file-sha256": sha(buf), "x-file-kind": KIND[name.split(".").pop()!]!, ...extra,
     },
     payload: buf,
@@ -70,7 +71,7 @@ beforeEach(async () => {
   await app?.close();
   root = await mkdtemp(path.join(tmpdir(), "glasses-"));
   app = Fastify({ logger: false });
-  await app.register(glassesRoutesPlugin({ pool, recordingsRoot: root, maxChunkBytes: 1024 * 1024 }));
+  await app.register(glassesRoutesPlugin({ pool, recordingsRoot: root, maxChunkBytes: 1024 * 1024, proxySecret: SECRET }));
 });
 
 describe("classifyName", () => {
@@ -97,7 +98,23 @@ describe("auth and ping", () => {
 
   it("401 without a forwarded user, or with one that fails the add-user.sh rule", async () => {
     expect((await app.inject({ method: "GET", url: `${API}/ping` })).statusCode).toBe(401);
-    expect((await create({ "x-forwarded-user": "../etc" })).statusCode).toBe(401);
+    expect((await create({ ...USER, "x-forwarded-user": "../etc" })).statusCode).toBe(401);
+  });
+
+  it("401 for a forwarded user without the proxy secret, or with a wrong one", async () => {
+    // What a process in a user's container could send straight to the indexer.
+    expect((await create({ "x-forwarded-user": "alice" })).statusCode).toBe(401);
+    expect((await create({ "x-forwarded-user": "alice", "x-glasses-proxy-secret": "guess" })).statusCode).toBe(401);
+    expect((await create({ "x-forwarded-user": "alice", "x-glasses-proxy-secret": SECRET + "x" })).statusCode).toBe(401);
+  });
+
+  it("401 for everything when no secret is configured", async () => {
+    const open = Fastify({ logger: false });
+    await open.register(glassesRoutesPlugin({ pool, recordingsRoot: root, maxChunkBytes: 1024, proxySecret: "" }));
+    const res = await open.inject({ method: "GET", url: `${API}/ping`,
+      headers: { "x-forwarded-user": "alice", "x-glasses-proxy-secret": "" } });
+    expect(res.statusCode).toBe(401);
+    await open.close();
   });
 });
 
