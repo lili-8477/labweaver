@@ -215,6 +215,15 @@ describe("complete", () => {
     expect((await putFile("seg-000002-video.m4s", seg)).statusCode).toBe(409);
   });
 
+  it("after muxing (processed or mux_failed), complete is still 202 and uploads are 409", async () => {
+    await create();
+    for (const state of ["processed", "mux_failed"]) {
+      await pool.query("UPDATE glasses_recordings SET state = $1", [state]);
+      expect((await complete()).statusCode).toBe(202);
+      expect((await putFile("seg-000009-video.m4s", seg)).statusCode).toBe(409);
+    }
+  });
+
   it("400 when manifest.json is not JSON or names another recording", async () => {
     await create();
     await putFile("manifest.json", "{not json");

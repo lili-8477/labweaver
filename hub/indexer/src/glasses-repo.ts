@@ -3,7 +3,7 @@
 
 import type { Pool } from "pg";
 
-export type RecordingState = "uploading" | "complete";
+export type RecordingState = "uploading" | "complete" | "processed" | "mux_failed";
 
 export interface FileRow {
   owner:       string;
@@ -68,7 +68,7 @@ export async function storeFile(
     const state = rec.rows[0]?.state;
     if (state !== "uploading") {
       await client.query("ROLLBACK");
-      return { status: state === "complete" ? "closed" : "no_recording" };
+      return { status: state === undefined ? "no_recording" : "closed" };
     }
     const ins = await client.query(
       `INSERT INTO glasses_files (owner, recording_id, name, kind, track, part, seq,
@@ -116,5 +116,77 @@ export async function markComplete(pool: Pool, args: {
      SET state = 'complete', manifest = $3, duration_ms = $4, ended_at = $5, completed_at = now()
      WHERE owner = $1 AND recording_id = $2 AND state = 'uploading'`,
     [args.owner, args.recordingId, args.manifest, args.durationMs, args.endedAt],
+  );
+}
+
+// ─── Muxing (migration 0015) ────────────────────────────────────────────────
+
+export interface MuxCandidate {
+  owner:       string;
+  recordingId: string;
+  manifest:    unknown;
+}
+
+export interface PartRow {
+  part:       number;
+  file:       string;
+  bytes:      number;
+  durationMs: number | null;
+  width:      number | null;
+  height:     number | null;
+  hasAudio:   boolean;
+  startMs:    number | null;
+  endMs:      number | null;
+}
+
+/** Oldest completed recording that has not been muxed yet. */
+export async function nextRecordingToMux(pool: Pool): Promise<MuxCandidate | null> {
+  const r = await pool.query<{ owner: string; recording_id: string; manifest: unknown }>(
+    `SELECT owner, recording_id, manifest FROM glasses_recordings
+     WHERE state = 'complete' ORDER BY completed_at LIMIT 1`,
+  );
+  const row = r.rows[0];
+  return row ? { owner: row.owner, recordingId: row.recording_id, manifest: row.manifest } : null;
+}
+
+/** Replaces the recording's part rows and marks it processed. */
+export async function saveMuxResult(
+  pool: Pool, owner: string, recordingId: string, parts: PartRow[],
+): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `DELETE FROM glasses_parts WHERE owner = $1 AND recording_id = $2`, [owner, recordingId]);
+    for (const p of parts) {
+      await client.query(
+        `INSERT INTO glasses_parts (owner, recording_id, part, file, bytes, duration_ms,
+                                    width, height, has_audio, start_ms, end_ms)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [owner, recordingId, p.part, p.file, p.bytes, p.durationMs, p.width, p.height,
+         p.hasAudio, p.startMs, p.endMs],
+      );
+    }
+    await client.query(
+      `UPDATE glasses_recordings SET state = 'processed', mux_error = NULL, processed_at = now()
+       WHERE owner = $1 AND recording_id = $2`,
+      [owner, recordingId],
+    );
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function markMuxFailed(
+  pool: Pool, owner: string, recordingId: string, error: string,
+): Promise<void> {
+  await pool.query(
+    `UPDATE glasses_recordings SET state = 'mux_failed', mux_error = $3, processed_at = now()
+     WHERE owner = $1 AND recording_id = $2`,
+    [owner, recordingId, error],
   );
 }

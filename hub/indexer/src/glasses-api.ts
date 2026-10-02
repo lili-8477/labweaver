@@ -198,7 +198,7 @@ export function glassesRoutesPlugin(deps: GlassesApiDeps) {
       }
       const state = await getRecordingState(deps.pool, t.owner, t.recordingId);
       if (state === null) return reply.code(404).send({ error: "recording not found" });
-      if (state === "complete") return reply.code(202).send({ ok: true });
+      if (state !== "uploading") return reply.code(202).send({ ok: true });   // already complete
 
       const received = await listFileNames(deps.pool, t.owner, t.recordingId);
       if (!received.has("manifest.json")) return reply.code(409).send({ missing: ["manifest.json"] });

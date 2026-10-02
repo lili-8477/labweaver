@@ -11,6 +11,8 @@ RUN npx tsup src/index.ts --format esm --target node20 --clean --out-dir dist
 FROM node:20-alpine
 WORKDIR /app
 ENV NODE_ENV=production
+# ffmpeg/ffprobe for muxing glasses recordings (src/glasses-mux.ts).
+RUN apk add --no-cache ffmpeg
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist

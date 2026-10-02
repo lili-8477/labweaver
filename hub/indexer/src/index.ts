@@ -25,6 +25,7 @@ import {
 import { writeDistillation } from "./distiller-repo.js";
 import { shareRoutesPlugin } from "./share-api.js";
 import { glassesRoutesPlugin } from "./glasses-api.js";
+import { execRunner, runMuxOnce } from "./glasses-mux.js";
 import { cleanupOldSnapshots, autoCloseIdleRequests } from "./share-cleanup.js";
 import {
   submitShareRequest,
@@ -137,6 +138,26 @@ async function main(): Promise<void> {
   };
 
   startAutoCloseLoop();
+
+  // Muxes completed glasses recordings into muxed/pNNN.mp4 (glasses-mux.ts).
+  const startGlassesMuxLoop = (): void => {
+    const tools = { ffmpeg: cfg.ffmpegBin, ffprobe: cfg.ffprobeBin, run: execRunner };
+    const tick = async (): Promise<void> => {
+      try {
+        const result = await runMuxOnce(pool, cfg.recordingsRoot, tools);
+        if (result.processed > 0 || result.failed.length > 0) {
+          logger.info({ result }, "glasses mux pass");
+        }
+      } catch (err) {
+        logger.error({ err }, "glasses mux pass crashed");
+      } finally {
+        setTimeout(tick, cfg.glassesMuxIntervalMs);
+      }
+    };
+    setTimeout(tick, 5_000);
+  };
+
+  startGlassesMuxLoop();
 
   const app = buildApp({
     pool,
