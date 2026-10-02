@@ -119,8 +119,12 @@ services:
       SHARE_CLEANUP_INTERVAL_HOURS: "24"
       SHARE_AUTO_CLOSE_IDLE_DAYS: "30"
       SHARE_AUTO_CLOSE_INTERVAL_HOURS: "24"
+      RECORDINGS_ROOT: /recordings
     volumes:
       - ./workspaces:/workspaces
+      # Glasses recordings (/api/glasses/). Kept outside workspaces so the
+      # agent in a user's container cannot edit or delete the source media.
+      - ./recordings:/recordings
     depends_on:
       postgres:
         condition: service_healthy
