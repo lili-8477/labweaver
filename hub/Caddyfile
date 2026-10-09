@@ -1,3 +1,21 @@
-labweaver.selfai.cc {
-	reverse_proxy claude-bioflow-nginx:80
+# Both names are served during the labweaver.selfai.cc -> labweaver.ai move.
+# Caddy issues a cert per hostname, so a name listed here MUST already resolve
+# to this host or ACME fails and retries against Let's Encrypt's rate limit.
+# www.labweaver.ai is deliberately absent: it has no DNS record yet.
+#
+# NOTE: this file is a single-file bind mount, so a host-side edit swaps the
+# inode and the container keeps serving the old, detached copy --
+# `caddy reload` reports "config is unchanged". Restart, never reload.
+#
+# /v2/ is LabWeaver v2 (the dsh-based repo at ~/labweaver), served by its own
+# nginx on the labweaver-dev network, which this container also joins.
+# handle_path strips /v2 so v2's nginx sees the same paths as at a root.
+labweaver.ai, labweaver.selfai.cc {
+	redir /v2 /v2/
+	handle_path /v2/* {
+		reverse_proxy labweaver-dev-web:80
+	}
+	handle {
+		reverse_proxy claude-bioflow-nginx:80
+	}
 }
