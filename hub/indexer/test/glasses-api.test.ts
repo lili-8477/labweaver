@@ -251,3 +251,78 @@ describe("complete", () => {
     expect((await complete()).statusCode).toBe(400);
   });
 });
+
+describe("read routes", () => {
+  const get = (url: string, headers: Record<string, string> = USER) =>
+    app.inject({ method: "GET", url, headers });
+
+  async function seedRec(owner: string, id: string, startedAt: string, state: string, parts = 0) {
+    await pool.query(
+      `INSERT INTO glasses_recordings (owner, recording_id, started_at, ended_at, duration_ms, state)
+       VALUES ($1, $2, $3, $3::timestamptz + interval '1 minute', 60000, $4)`, [owner, id, startedAt, state]);
+    for (let i = 1; i <= parts; i++) {
+      await pool.query(
+        `INSERT INTO glasses_parts (owner, recording_id, part, file, bytes, duration_ms, width, height,
+                                    has_audio, start_ms, end_ms)
+         VALUES ($1, $2, $3, $4, 5278973, 87936, 360, 640, true, 6374, 94165)`,
+        [owner, id, i, `muxed/p00${i}.mp4`]);
+    }
+  }
+
+  it("lists the owner's recordings newest first, with part counts and a limit", async () => {
+    await seedRec("alice", "20260929-090000-aaaa", "2026-09-29T09:00:00Z", "processed", 2);
+    await seedRec("alice", "20260929-100000-bbbb", "2026-09-29T10:00:00Z", "uploading");
+    await seedRec("bob",   "20260929-110000-cccc", "2026-09-29T11:00:00Z", "processed", 1);
+    const res = await get(`${API}/recordings`);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ recordings: [
+      { recordingId: "20260929-100000-bbbb", startedAt: "2026-09-29T10:00:00.000Z",
+        endedAt: "2026-09-29T10:01:00.000Z", durationMs: 60000, state: "uploading", partCount: 0 },
+      { recordingId: "20260929-090000-aaaa", startedAt: "2026-09-29T09:00:00.000Z",
+        endedAt: "2026-09-29T09:01:00.000Z", durationMs: 60000, state: "processed", partCount: 2 },
+    ] });
+    expect((await get(`${API}/recordings?limit=1`)).json().recordings).toHaveLength(1);
+    expect((await get(`${API}/recordings?limit=0`)).statusCode).toBe(400);
+  });
+
+  it("parts: [] with the state before muxing, the rows after, 404 for unknown or another owner's", async () => {
+    await seedRec("alice", "r-waiting", "2026-09-29T09:00:00Z", "complete");
+    await seedRec("alice", "r-done", "2026-09-29T10:00:00Z", "processed", 1);
+    await seedRec("bob", "r-bob", "2026-09-29T10:00:00Z", "processed", 1);
+    expect((await get(`${REC.replace(ID, "r-waiting")}/parts`)).json())
+      .toEqual({ recordingId: "r-waiting", state: "complete", parts: [] });
+    expect((await get(`${API}/recordings/r-done/parts`)).json()).toEqual({
+      recordingId: "r-done", state: "processed",
+      parts: [{ part: 1, file: "p001.mp4", bytes: 5278973, durationMs: 87936, width: 360, height: 640,
+                hasAudio: true, startMs: 6374, endMs: 94165 }],
+    });
+    expect((await get(`${API}/recordings/nope/parts`)).statusCode).toBe(404);
+    expect((await get(`${API}/recordings/r-bob/parts`)).statusCode).toBe(404);
+  });
+
+  it("download hands the file to nginx via X-Accel-Redirect", async () => {
+    await seedRec("alice", "r-done", "2026-09-29T10:00:00Z", "processed", 2);
+    const res = await get(`${API}/recordings/r-done/parts/2`);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["x-accel-redirect"]).toBe("/_glasses_files/alice/r-done/muxed/p002.mp4");
+    expect(res.body).toBe("");
+  });
+
+  it("download: 404 with the state before muxing or for a missing part; 400 for a bad n", async () => {
+    await seedRec("alice", "r-waiting", "2026-09-29T09:00:00Z", "complete");
+    const res = await get(`${API}/recordings/r-waiting/parts/1`);
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: "part not found", state: "complete" });
+    expect((await get(`${API}/recordings/nope/parts/1`)).statusCode).toBe(404);
+    for (const n of ["0", "01", "x", "..%2F1"]) {
+      expect((await get(`${API}/recordings/r-waiting/parts/${n}`)).statusCode).toBe(400);
+    }
+  });
+
+  it("read routes need the proxy secret too", async () => {
+    await seedRec("alice", "r-done", "2026-09-29T10:00:00Z", "processed", 1);
+    for (const url of [`${API}/recordings`, `${API}/recordings/r-done/parts`, `${API}/recordings/r-done/parts/1`]) {
+      expect((await get(url, { "x-forwarded-user": "alice" })).statusCode).toBe(401);
+    }
+  });
+});

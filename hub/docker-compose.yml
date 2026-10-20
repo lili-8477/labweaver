@@ -46,6 +46,8 @@ services:
       - ./htpasswd:/etc/nginx/htpasswd:ro
       # Rendered with envsubst at start; carries GLASSES_PROXY_SECRET.
       - ./nginx-templates:/etc/nginx/templates:ro
+      # Glasses downloads (the /_glasses_files/ internal location).
+      - ./recordings:/recordings:ro
       # Read-only access for the /download/ endpoint. Per-user scoped via
       # $ws_user in the location block; `.env` etc. are mode 0600 so
       # nginx (unprivileged) can't even read them as a secondary safety net.

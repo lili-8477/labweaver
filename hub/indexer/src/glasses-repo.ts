@@ -190,3 +190,64 @@ export async function markMuxFailed(
     [owner, recordingId, error],
   );
 }
+
+// ─── Read side (downloads back to the phone) ────────────────────────────────
+
+export interface RecordingSummary {
+  recordingId: string;
+  startedAt:   string;
+  endedAt:     string | null;
+  durationMs:  number | null;
+  state:       RecordingState;
+  partCount:   number;
+}
+
+/** The owner's recordings, newest first. */
+export async function listRecordings(pool: Pool, owner: string, limit: number): Promise<RecordingSummary[]> {
+  const r = await pool.query<{
+    recording_id: string; started_at: Date; ended_at: Date | null;
+    duration_ms: string | null; state: RecordingState; part_count: number;
+  }>(
+    `SELECT r.recording_id, r.started_at, r.ended_at, r.duration_ms, r.state,
+            (SELECT count(*)::int FROM glasses_parts p
+             WHERE p.owner = r.owner AND p.recording_id = r.recording_id) AS part_count
+     FROM glasses_recordings r
+     WHERE r.owner = $1
+     ORDER BY r.started_at DESC, r.recording_id DESC
+     LIMIT $2`,
+    [owner, limit],
+  );
+  return r.rows.map((x) => ({
+    recordingId: x.recording_id,
+    startedAt:   x.started_at.toISOString(),
+    endedAt:     x.ended_at?.toISOString() ?? null,
+    durationMs:  x.duration_ms === null ? null : Number(x.duration_ms),
+    state:       x.state,
+    partCount:   x.part_count,
+  }));
+}
+
+/** The recording's state and muxed parts in order, or null if it does not exist. */
+export async function getRecordingParts(pool: Pool, owner: string, recordingId: string): Promise<{
+  state: RecordingState; parts: PartRow[];
+} | null> {
+  const state = await getRecordingState(pool, owner, recordingId);
+  if (state === null) return null;
+  const r = await pool.query<{
+    part: number; file: string; bytes: string; duration_ms: string | null; width: number | null;
+    height: number | null; has_audio: boolean; start_ms: string | null; end_ms: string | null;
+  }>(
+    `SELECT part, file, bytes, duration_ms, width, height, has_audio, start_ms, end_ms
+     FROM glasses_parts WHERE owner = $1 AND recording_id = $2 ORDER BY part`,
+    [owner, recordingId],
+  );
+  const num = (v: string | null) => (v === null ? null : Number(v));
+  return {
+    state,
+    parts: r.rows.map((x) => ({
+      part: x.part, file: x.file, bytes: Number(x.bytes), durationMs: num(x.duration_ms),
+      width: x.width, height: x.height, hasAudio: x.has_audio,
+      startMs: num(x.start_ms), endMs: num(x.end_ms),
+    })),
+  };
+}

@@ -30,6 +30,8 @@
   .lw-hero { display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,0.95fr); gap:60px; align-items:center; }
   .lw-cta { background:#8052ff; color:#ffffff; border-radius:24px; font-weight:600; letter-spacing:0.35px; text-transform:uppercase; display:inline-block; transition:background .15s ease; }
   .lw-cta:hover { background:#9670ff; color:#ffffff; }
+  .lw-cta-alt { background:transparent; color:#ffffff; border:1px solid #8052ff; border-radius:24px; font-weight:600; letter-spacing:0.35px; text-transform:uppercase; display:inline-block; transition:background .15s ease; }
+  .lw-cta-alt:hover { background:rgba(128,82,255,0.18); color:#ffffff; }
   a:focus-visible { outline:2px solid #ffb829; outline-offset:3px; border-radius:4px; }
   /* Hero film controls, overlaid bottom-right. The film's burned-in captions
      run along the bottom-LEFT and stop well short of this corner. */
@@ -75,6 +77,7 @@
       <p style="margin:30px 0 0; max-width:480px; font-size:18px; font-weight:200; line-height:1.5; color:#bdbdbd;">Everyone briefs their own AI from scratch. LabWeaver makes it one shared memory — skills, protocols and instruments woven into infrastructure that compounds.</p>
       <div style="display:flex; align-items:center; flex-wrap:wrap; gap:30px; margin-top:36px;">
         <a href="/app" data-connect class="lw-cta" style="padding:15px 22px; font-size:14px;">Connect to LabWeaver</a>
+        <a href="/v2/app" data-connect-v2 class="lw-cta-alt" style="padding:14px 21px; font-size:14px;">Try LabWeaver v2</a>
         <a href="https://github.com/lili-8477/labweaver" style="color:#ffffff; font-size:14px; font-weight:400;">Request access</a>
       </div>
       <div style="display:flex; flex-wrap:wrap; gap:36px; margin-top:60px; font-size:12px; line-height:1.5; color:#9a9a9a; text-transform:uppercase; letter-spacing:0.35px;">
@@ -277,6 +280,7 @@
     <h2 style="margin:0; font-size:clamp(44px, 6vw, 78px); font-weight:400; line-height:1.1; letter-spacing:-0.04em;">Weave your lab.</h2>
     <div style="display:flex; align-items:center; flex-wrap:wrap; gap:30px; margin-top:36px;">
       <a href="/app" data-connect class="lw-cta" style="padding:15px 22px; font-size:14px;">Connect to LabWeaver</a>
+        <a href="/v2/app" data-connect-v2 class="lw-cta-alt" style="padding:14px 21px; font-size:14px;">Try LabWeaver v2</a>
       <a href="https://github.com/lili-8477/labweaver" style="color:#ffffff; font-size:14px; font-weight:400;">Request access</a>
     </div>
   </div>
@@ -301,6 +305,11 @@
       // auto=true reconnects returning users straight into their session
       // (App.vue only auto-connects when a service ID is already stored).
       a.href = '/app?auto=true&nats=' + encodeURIComponent(ws)
+    })
+    // LabWeaver v2 is served under /v2/ on this host with its own NATS.
+    var ws2 = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/v2/ws/'
+    document.querySelectorAll('a[data-connect-v2]').forEach(function (a) {
+      a.href = '/v2/app?auto=true&nats=' + encodeURIComponent(ws2)
     })
   })()
 </script>
