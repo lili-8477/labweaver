@@ -15,6 +15,10 @@ labweaver.ai, labweaver.selfai.cc {
 	handle_path /v2/* {
 		reverse_proxy labweaver-dev-web:80
 	}
+	# The glasses upload API lives in v2 now (path kept, no strip).
+	handle /api/glasses/* {
+		reverse_proxy labweaver-dev-web:80
+	}
 	handle {
 		reverse_proxy claude-bioflow-nginx:80
 	}
