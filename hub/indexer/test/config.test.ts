@@ -118,4 +118,23 @@ describe("loadConfig", () => {
     const cfg = loadConfig({ PG_URL: 'postgres://x', SHARE_AUTO_CLOSE_INTERVAL_HOURS: '6' });
     expect(cfg.shareAutoCloseIntervalHours).toBe(6);
   });
+
+  it('memory lifecycle knobs default to 0.9 / 50 / 90 / 30 / 24 and read env overrides', () => {
+    expect(loadConfig({ PG_URL: 'x' })).toMatchObject({
+      memoryMergeSimilarity: 0.9, memoryDirCap: 50,
+      memoryRetentionStaleDays: 90, memoryRetentionPurgeDays: 30, memoryRetentionIntervalHours: 24,
+    });
+    expect(loadConfig({
+      PG_URL: 'x', MEMORY_MERGE_SIMILARITY: '0.85', MEMORY_DIR_CAP: '20',
+      MEMORY_RETENTION_STALE_DAYS: '60', MEMORY_RETENTION_PURGE_DAYS: '7', MEMORY_RETENTION_INTERVAL_HOURS: '6',
+    })).toMatchObject({
+      memoryMergeSimilarity: 0.85, memoryDirCap: 20,
+      memoryRetentionStaleDays: 60, memoryRetentionPurgeDays: 7, memoryRetentionIntervalHours: 6,
+    });
+  });
+
+  it('rejects MEMORY_MERGE_SIMILARITY outside (0, 1]', () => {
+    expect(() => loadConfig({ PG_URL: 'x', MEMORY_MERGE_SIMILARITY: '1.5' })).toThrow(/MEMORY_MERGE_SIMILARITY/);
+    expect(() => loadConfig({ PG_URL: 'x', MEMORY_MERGE_SIMILARITY: '0' })).toThrow(/MEMORY_MERGE_SIMILARITY/);
+  });
 });

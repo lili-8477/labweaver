@@ -13,9 +13,15 @@ import type {
   listMemories,
   getAuditTrail,
   getMetrics,
+  listDirs,
+  getDir,
+  memoryTree,
 } from "./memory-repo.js";
 import type { writeDistillation } from "./distiller-repo.js";
 import { PROMPT_VERSION } from "./distiller-prompts.js";
+import { InvalidDirError } from "./memory-dirs.js";
+import type { WritePolicy } from "./memory-merge.js";
+import { encodeProjectDir } from "./path-decode.js";
 
 // DI seam: production wires real repo functions; tests pass vi.fn stubs. Pool
 // and embedderClient travel as a bag so the same `repo.searchMemories` shape
@@ -23,6 +29,10 @@ import { PROMPT_VERSION } from "./distiller-prompts.js";
 export interface MemoryApiDeps {
   pool:           Pool;
   embedderClient: { embedTexts: (texts: string[]) => Promise<number[][]> };
+  // Cosine similarity at which a write merges into an existing entry of the
+  // same directory, and the live-entry cap per directory instance.
+  mergeSimilarity: number;
+  dirCap:          number;
   repo: {
     searchMemories:   typeof searchMemories;
     getMemory:        typeof getMemory;
@@ -36,8 +46,18 @@ export interface MemoryApiDeps {
     getAuditTrail:    typeof getAuditTrail;
     getMetrics:       typeof getMetrics;
     writeDistillation: typeof writeDistillation;
+    listDirs:         typeof listDirs;
+    getDir:           typeof getDir;
+    memoryTree:       typeof memoryTree;
   };
 }
+
+// Bodies longer than this are rejected at write: memories are meant to be
+// short, recallable facts; long material belongs in files the memory points to.
+export const MEMORY_BODY_MAX_CHARS = 4000;
+const MemoryBodyField = z.string().max(MEMORY_BODY_MAX_CHARS, {
+  message: `body exceeds ${MEMORY_BODY_MAX_CHARS} characters; split it into smaller memories or point to a file`,
+});
 
 // project_dir is tri-state: missing/undefined and explicit `null` both mean
 // "no project filter". The repo layer normalises null → undefined / vice versa
@@ -69,8 +89,10 @@ const WriteBody = z.object({
   type:        z.enum(["user", "feedback", "project", "reference"]),
   name:        z.string().min(1),
   description: z.string(),
-  body:        z.string(),
+  body:        MemoryBodyField,
   facets:      z.record(z.string(), z.array(z.string())).optional(),
+  // Target directory, e.g. "user/preferences"; defaults by (scope, type).
+  dir_key:     z.string().min(1).optional(),
 });
 
 const ForgetBody = z.object({
@@ -88,7 +110,7 @@ const UpdateBody = z.object({
   actor:       z.string().min(1),
   name:        z.string().min(1),
   description: z.string(),
-  body:        z.string().min(1),
+  body:        MemoryBodyField.min(1),
 });
 
 const RestoreBody = z.object({ actor: z.string().min(1) });
@@ -112,6 +134,26 @@ const ListQuery = z.object({
   sort:            z.enum(['created', 'hit']).optional(),
   limit:           z.coerce.number().int().positive().max(200).optional(),
   cursor:          z.string().datetime().optional(),
+});
+
+// Directory reads take the project as an encoded project_dir or, like
+// /memory/context, as a raw project_path encoded here.
+const DirsQuery = z.object({
+  username:     z.string().min(1),
+  project_dir:  z.string().optional(),
+  project_path: z.string().optional(),
+});
+const projectDirOf = (q: z.infer<typeof DirsQuery>): string | null =>
+  q.project_path ? encodeProjectDir(q.project_path) : (q.project_dir ?? null);
+
+const DirQuery = DirsQuery.extend({
+  limit: z.coerce.number().int().positive().max(100).optional(),
+});
+
+const TreeQuery = DirsQuery.extend({
+  include_deleted: z.union([z.literal('true'), z.literal('false')]).optional()
+                    .transform(v => v === 'true'),
+  limit:           z.coerce.number().int().positive().max(200).optional(),
 });
 
 const AuditQuery = z.object({
@@ -153,7 +195,71 @@ const DistillBody = z.object({
 export function buildApp(deps: MemoryApiDeps): FastifyInstance {
   const app = Fastify({ logger: false });
 
+  const policy: WritePolicy = {
+    embedderClient:  deps.embedderClient,
+    mergeSimilarity: deps.mergeSimilarity,
+    dirCap:          deps.dirCap,
+  };
+
   app.get("/healthz", async () => ({ ok: true }));
+
+  // GET /memory/dirs — the directories visible to the caller (org and user
+  // always, project ones with a project) with L0, live entry count, over_cap.
+  app.get("/memory/dirs", async (req, reply) => {
+    const parsed = DirsQuery.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "validation failed", issues: parsed.error.issues };
+    }
+    return await deps.repo.listDirs({
+      pool:        deps.pool,
+      username:    parsed.data.username,
+      project_dir: projectDirOf(parsed.data),
+      cap:         deps.dirCap,
+    });
+  });
+
+  // GET /memory/dirs/<dir_key> — one directory's L0 plus its top entries
+  // (L1). dir_key contains "/" ("project/decisions"); the wildcard takes it
+  // raw or URL-encoded.
+  app.get<{ Params: { "*": string } }>("/memory/dirs/*", async (req, reply) => {
+    const parsed = DirQuery.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "validation failed", issues: parsed.error.issues };
+    }
+    const dir = await deps.repo.getDir({
+      pool:        deps.pool,
+      username:    parsed.data.username,
+      project_dir: projectDirOf(parsed.data),
+      dir_key:     decodeURIComponent(req.params["*"]),
+      limit:       parsed.data.limit,
+      cap:         deps.dirCap,
+    });
+    if (dir === null) {
+      reply.code(404);
+      return { error: "directory not found" };
+    }
+    return dir;
+  });
+
+  // GET /memory/tree — every directory instance with L0, counts, over_cap and
+  // its memories' metadata (MemoryTree in memory-repo.ts).
+  app.get("/memory/tree", async (req, reply) => {
+    const parsed = TreeQuery.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "validation failed", issues: parsed.error.issues };
+    }
+    return await deps.repo.memoryTree({
+      pool:            deps.pool,
+      username:        parsed.data.username,
+      project_dir:     projectDirOf(parsed.data),
+      include_deleted: parsed.data.include_deleted,
+      limit:           parsed.data.limit,
+      cap:             deps.dirCap,
+    });
+  });
 
   // GET /memory/metrics — debug surface returning metrics across memory,
   // embedder_queue, and audit_log. No params, no auth (private docker network).
@@ -254,17 +360,24 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
       return { error: "validation failed", issues: parsed.error.issues };
     }
     const b = parsed.data;
-    return await deps.repo.writeUserMemory({
-      pool:        deps.pool,
-      username:    b.username,
-      scope:       b.scope,
-      project_dir: b.project_dir ?? null,
-      type:        b.type,
-      name:        b.name,
-      description: b.description,
-      body:        b.body,
-      facets:      b.facets,
-    });
+    try {
+      return await deps.repo.writeUserMemory({
+        pool:        deps.pool,
+        username:    b.username,
+        scope:       b.scope,
+        project_dir: b.project_dir ?? null,
+        type:        b.type,
+        name:        b.name,
+        description: b.description,
+        body:        b.body,
+        facets:      b.facets,
+        dir_key:     b.dir_key,
+        policy,
+      });
+    } catch (e) {
+      if (e instanceof InvalidDirError) { reply.code(400); return { error: e.message }; }
+      throw e;
+    }
   });
 
   // POST /memory/distill — agent-driven on-demand distill. Caller (the
@@ -278,7 +391,7 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
       return { error: "validation failed", issues: parsed.error.issues };
     }
     const b = parsed.data;
-    await deps.repo.writeDistillation(deps.pool, {
+    const { written, merged } = await deps.repo.writeDistillation(deps.pool, {
       sessionMeta: {
         username:          b.username,
         project_dir:       b.project_dir ?? null,
@@ -286,11 +399,11 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
       },
       result: { summary: b.summary, observations: b.observations },
       promptVersion: PROMPT_VERSION,
+      policy,
     });
-    // Counts (1 summary + N observations) are best-effort; the underlying
-    // insert is idempotent so dedup may suppress some rows. Returning the
-    // attempted count keeps the surface honest without an extra SELECT.
-    return { ok: true, attempted: 1 + b.observations.length };
+    // attempted = 1 summary + N observations; the rest of attempted was
+    // dropped as duplicates of existing rows.
+    return { ok: true, attempted: 1 + b.observations.length, written, merged };
   });
 
   // POST /memory/forget — soft-delete with username scoping; idempotent

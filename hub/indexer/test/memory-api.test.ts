@@ -7,7 +7,11 @@ import type {
   TimelineEntry,
   MemoryContext,
   ListItem,
+  DirSummary,
+  DirDetail,
+  MemoryTree,
 } from "../src/memory-repo.js";
+import { InvalidDirError } from "../src/memory-dirs.js";
 
 // Tiny test-double factory: every repo function is a vi.fn() with a sensible
 // default return. Tests override on a per-case basis with mockResolvedValueOnce.
@@ -24,12 +28,15 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
   getAuditTrail:    ReturnType<typeof vi.fn>;
   getMetrics:       ReturnType<typeof vi.fn>;
   writeDistillation: ReturnType<typeof vi.fn>;
+  listDirs:         ReturnType<typeof vi.fn>;
+  getDir:           ReturnType<typeof vi.fn>;
+  memoryTree:       ReturnType<typeof vi.fn>;
 } } {
   const repo = {
     searchMemories:   vi.fn(async (): Promise<SearchHit[]>     => []),
     getMemory:        vi.fn(async (): Promise<MemoryDetail | null> => null),
     timelineMemories: vi.fn(async (): Promise<TimelineEntry[]> => []),
-    writeUserMemory:  vi.fn(async (): Promise<{ memory_id: string | null }> => ({ memory_id: "m-1" })),
+    writeUserMemory:  vi.fn(async (): Promise<{ memory_id: string | null; dir_key: string; merged: boolean }> => ({ memory_id: "m-1", dir_key: "user/preferences", merged: false })),
     forgetMemory:     vi.fn(async (): Promise<{ ok: boolean }> => ({ ok: true })),
     getContext:       vi.fn(async (): Promise<MemoryContext>   => ({ system_prompt: "", memory_ids: [] })),
     updateMemory:     vi.fn(async (): Promise<{ ok: boolean; reason?: 'not_found' | 'forbidden' | 'distilled' }> => ({ ok: true })),
@@ -46,11 +53,16 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
       distill_cursor_lag_seconds_max: 0,
       audit_log_size: 0,
     })),
-    writeDistillation: vi.fn(async (): Promise<void> => {}),
+    writeDistillation: vi.fn(async (): Promise<{ written: number; merged: number }> => ({ written: 0, merged: 0 })),
+    listDirs:         vi.fn(async (): Promise<DirSummary[]> => []),
+    getDir:           vi.fn(async (): Promise<DirDetail | null> => null),
+    memoryTree:       vi.fn(async (): Promise<MemoryTree> => ({ cap: 50, limit: 50, dirs: [] })),
   };
   const deps: MemoryApiDeps = {
     pool: {} as Pool,
     embedderClient: { embedTexts: vi.fn(async () => []) },
+    mergeSimilarity: 0.9,
+    dirCap:          50,
     repo,
   };
   return { deps, repo };
@@ -249,6 +261,42 @@ describe("memory-api", () => {
       });
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ memory_id: null });
+    });
+
+    it("forwards dir_key and the merge/cap policy", async () => {
+      depsBag.repo.writeUserMemory.mockResolvedValueOnce({ memory_id: "old-id", dir_key: "user/notes", merged: true });
+      const res = await app.inject({
+        method:  "POST",
+        url:     "/memory/write",
+        payload: { username: "alice", scope: "user", type: "user", name: "n", description: "d", body: "b", dir_key: "user/notes" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ memory_id: "old-id", dir_key: "user/notes", merged: true });
+      const arg = depsBag.repo.writeUserMemory.mock.calls[0]![0];
+      expect(arg.dir_key).toBe("user/notes");
+      expect(arg.policy).toMatchObject({ mergeSimilarity: 0.9, dirCap: 50, embedderClient: depsBag.deps.embedderClient });
+    });
+
+    it("400 with the repo's message for a directory outside the scope", async () => {
+      depsBag.repo.writeUserMemory.mockRejectedValueOnce(new InvalidDirError("project/decisions", "user"));
+      const res = await app.inject({
+        method:  "POST",
+        url:     "/memory/write",
+        payload: { username: "alice", scope: "user", type: "user", name: "n", description: "d", body: "b", dir_key: "project/decisions" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "directory 'project/decisions' does not exist in scope 'user'" });
+    });
+
+    it("400 when body exceeds 4000 characters, with a clear message", async () => {
+      const res = await app.inject({
+        method:  "POST",
+        url:     "/memory/write",
+        payload: { username: "alice", scope: "user", type: "user", name: "n", description: "d", body: "x".repeat(4001) },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.stringify(res.json())).toContain("body exceeds 4000 characters");
+      expect(depsBag.repo.writeUserMemory).not.toHaveBeenCalled();
     });
 
     it("400 when scope is missing", async () => {
@@ -640,12 +688,13 @@ describe("memory-api", () => {
     it("happy path: forwards summary+observations to writeDistillation, returns attempted count", async () => {
       const res = await app.inject({ method: "POST", url: "/memory/distill", payload: validBody });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ ok: true, attempted: 2 });
+      expect(res.json()).toEqual({ ok: true, attempted: 2, written: 0, merged: 0 });
       expect(depsBag.repo.writeDistillation).toHaveBeenCalledTimes(1);
       const arg = depsBag.repo.writeDistillation.mock.calls[0]![1];
       expect(arg.sessionMeta.username).toBe("alice");
       expect(arg.sessionMeta.project_dir).toBe("-home-alice-proj");
       expect(arg.sessionMeta.source_session_id).toBeNull();
+      expect(arg.policy).toMatchObject({ mergeSimilarity: 0.9, dirCap: 50 });
       expect(arg.result.summary).toEqual(validBody.summary);
       expect(arg.result.observations).toEqual(validBody.observations);
     });
@@ -657,7 +706,7 @@ describe("memory-api", () => {
         payload: { ...validBody, observations: [] },
       });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ ok: true, attempted: 1 });
+      expect(res.json()).toEqual({ ok: true, attempted: 1, written: 0, merged: 0 });
     });
 
     it("source_session_id is forwarded when provided", async () => {
@@ -728,6 +777,71 @@ describe("memory-api", () => {
       expect(res.json()).toEqual(mockMetrics);
       expect(depsBag.repo.getMetrics).toHaveBeenCalledTimes(1);
       expect(depsBag.repo.getMetrics).toHaveBeenCalledWith(depsBag.deps.pool);
+    });
+  });
+
+  // ────────────────────────────── /memory/dirs, /memory/tree ───────────────
+
+  describe("GET /memory/dirs", () => {
+    it("forwards username, project_dir and the cap", async () => {
+      const dirs: DirSummary[] = [
+        { dir_key: "user/notes", scope: "user", l0: "Personal notes", entry_count: 2, over_cap: false, updated_at: null },
+      ];
+      depsBag.repo.listDirs.mockResolvedValueOnce(dirs);
+      const res = await app.inject({ method: "GET", url: "/memory/dirs?username=alice&project_dir=-w-p" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual(dirs);
+      expect(depsBag.repo.listDirs.mock.calls[0]![0]).toMatchObject({ username: "alice", project_dir: "-w-p", cap: 50 });
+    });
+
+    it("encodes project_path into project_dir", async () => {
+      await app.inject({ method: "GET", url: "/memory/dirs?username=alice&project_path=%2Fworkspace%2Fpbmc3k" });
+      expect(depsBag.repo.listDirs.mock.calls[0]![0].project_dir).toBe("-workspace-pbmc3k");
+    });
+
+    it("400 without username", async () => {
+      const res = await app.inject({ method: "GET", url: "/memory/dirs" });
+      expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe("GET /memory/dirs/<dir_key>", () => {
+    it.each([
+      ["raw", "/memory/dirs/project/decisions?username=alice&project_dir=-w-p&limit=5"],
+      ["encoded", "/memory/dirs/project%2Fdecisions?username=alice&project_dir=-w-p&limit=5"],
+    ])("takes a %s dir_key", async (_label, url) => {
+      depsBag.repo.getDir.mockResolvedValueOnce({
+        dir_key: "project/decisions", scope: "project", l0: "x", entry_count: 0, over_cap: false, updated_at: null, entries: [],
+      });
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode).toBe(200);
+      expect(depsBag.repo.getDir.mock.calls[0]![0]).toMatchObject({
+        username: "alice", project_dir: "-w-p", dir_key: "project/decisions", limit: 5, cap: 50,
+      });
+    });
+
+    it("404 when the directory is unknown or not visible", async () => {
+      const res = await app.inject({ method: "GET", url: "/memory/dirs/user/nope?username=alice" });
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toEqual({ error: "directory not found" });
+    });
+  });
+
+  describe("GET /memory/tree", () => {
+    it("forwards filters and returns the tree", async () => {
+      const res = await app.inject({
+        method: "GET", url: "/memory/tree?username=alice&include_deleted=true&limit=10",
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ cap: 50, limit: 50, dirs: [] });
+      expect(depsBag.repo.memoryTree.mock.calls[0]![0]).toMatchObject({
+        username: "alice", project_dir: null, include_deleted: true, limit: 10, cap: 50,
+      });
+    });
+
+    it("400 when limit exceeds 200", async () => {
+      const res = await app.inject({ method: "GET", url: "/memory/tree?username=alice&limit=201" });
+      expect(res.statusCode).toBe(400);
     });
   });
 });
