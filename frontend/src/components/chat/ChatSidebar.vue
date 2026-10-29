@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { formatDate } from '@/utils/format'
+import type { ChatInfo } from '@/types'
 
 const chat = useChatStore()
 
@@ -16,10 +17,59 @@ function cleanName(name: string | undefined): string {
 }
 const editingId = ref<string | null>(null)
 const editName = ref('')
+const newProjectName = ref<string | null>(null)
 
-async function handleNewChat() {
-  const chatId = await chat.createChat()
-  if (chatId) chat.selectChat(chatId)
+// Folded project groups (by dir; '' = no project), remembered per browser.
+const FOLD_KEY = 'labweaver.sidebar.folded'
+const folded = ref(new Set<string>(readFolded()))
+function readFolded(): string[] {
+  try { return JSON.parse(localStorage.getItem(FOLD_KEY) || '[]') } catch { return [] }
+}
+watch(folded, f => {
+  try { localStorage.setItem(FOLD_KEY, JSON.stringify([...f])) } catch { /* private mode */ }
+})
+
+interface Group { dir: string; name: string; latest: string; chats: ChatInfo[] }
+
+/** Chats grouped by project folder, plus "No project" for unbound chats.
+ *  Groups sort by their most recent chat; a project with no chats yet by
+ *  its folder's mtime. chat.chats is already newest-first. */
+const groups = computed<Group[]>(() => {
+  const byDir = new Map<string, ChatInfo[]>()
+  for (const p of chat.projects) byDir.set(p.dir, [])
+  for (const c of chat.chats) {
+    const dir = c.project_dir || ''
+    if (!byDir.has(dir)) byDir.set(dir, [])
+    byDir.get(dir)!.push(c)
+  }
+  const modified = new Map(chat.projects.map(p => [p.dir, p.modified_at]))
+  return [...byDir].map(([dir, chats]) => ({
+    dir,
+    name: dir ? dir.split('/').pop()! : 'No project',
+    latest: chats[0]?.last_activity_date || modified.get(dir) || '',
+    chats,
+  })).sort((a, b) => b.latest.localeCompare(a.latest))
+})
+
+function toggle(dir: string) {
+  const next = new Set(folded.value)
+  if (!next.delete(dir)) next.add(dir)
+  folded.value = next
+}
+
+async function newChatIn(dir: string) {
+  const chatId = await chat.createChat(undefined, dir || undefined)
+  if (!chatId) return
+  if (folded.value.has(dir)) toggle(dir)
+  chat.selectChat(chatId)
+}
+
+async function saveNewProject() {
+  const name = newProjectName.value?.trim()
+  newProjectName.value = null
+  if (!name) return
+  const dir = await chat.createProject(name)
+  if (dir) await newChatIn(dir)
 }
 
 function startRename(chatId: string, name: string) {
@@ -45,48 +95,78 @@ async function handleDelete(chatId: string) {
   <div class="chat-sidebar">
     <div class="sidebar-header">
       <span class="title">Chats</span>
-      <button class="btn-new" @click="handleNewChat" title="New Chat">+</button>
+      <div class="header-actions">
+        <button class="btn-project" @click="newProjectName = ''" title="New project">New project</button>
+        <button class="btn-new" @click="newChatIn('')" title="New chat without a project">+</button>
+      </div>
     </div>
 
     <div class="chat-list">
-      <div
-        v-for="c in chat.chats"
-        :key="c.id"
-        class="chat-item"
-        :class="{ active: c.id === chat.activeChatId }"
-        @click="chat.selectChat(c.id)"
-      >
-        <div class="chat-item-content">
-          <template v-if="editingId === c.id">
-            <input
-              v-model="editName"
-              class="rename-input"
-              @keyup.enter="saveRename(c.id)"
-              @keyup.escape="editingId = null"
-              @blur="saveRename(c.id)"
-              @click.stop
-              autofocus
-            />
-          </template>
-          <template v-else>
-            <div class="chat-name">{{ cleanName(c.name) }}</div>
-            <div class="chat-meta">
-              <span v-if="c.running" class="running-dot"></span>
-              {{ formatDate(c.last_activity_date) }}
+      <input
+        v-if="newProjectName !== null"
+        v-model="newProjectName"
+        class="rename-input new-project-input"
+        placeholder="Project name, then Enter"
+        @keyup.enter="saveNewProject"
+        @keyup.escape="newProjectName = null"
+        @blur="saveNewProject"
+        autofocus
+      />
+
+      <div v-for="g in groups" :key="g.dir" class="project">
+        <div class="project-header" :title="g.dir || 'Chats not bound to a project'" @click="toggle(g.dir)">
+          <span class="twisty" :class="{ open: !folded.has(g.dir) }">&#9656;</span>
+          <span class="project-name" :class="{ none: !g.dir }">{{ g.name }}</span>
+          <span class="project-count">{{ g.chats.length }}</span>
+          <button
+            class="action-btn project-new"
+            :title="g.dir ? `New chat in ${g.name}` : 'New chat without a project'"
+            @click.stop="newChatIn(g.dir)"
+          >+</button>
+        </div>
+
+        <template v-if="!folded.has(g.dir)">
+          <div
+            v-for="c in g.chats"
+            :key="c.id"
+            class="chat-item"
+            :class="{ active: c.id === chat.activeChatId }"
+            @click="chat.selectChat(c.id)"
+          >
+            <div class="chat-item-content">
+              <template v-if="editingId === c.id">
+                <input
+                  v-model="editName"
+                  class="rename-input"
+                  @keyup.enter="saveRename(c.id)"
+                  @keyup.escape="editingId = null"
+                  @blur="saveRename(c.id)"
+                  @click.stop
+                  autofocus
+                />
+              </template>
+              <template v-else>
+                <div class="chat-name">{{ cleanName(c.name) }}</div>
+                <div class="chat-meta">
+                  <span v-if="c.running" class="running-dot"></span>
+                  {{ formatDate(c.last_activity_date) }}
+                </div>
+              </template>
             </div>
-          </template>
-        </div>
-        <div class="chat-actions" @click.stop>
-          <button class="action-btn" @click="startRename(c.id, c.name || '')" title="Rename">
-            &#9998;
-          </button>
-          <button class="action-btn danger" @click="handleDelete(c.id)" title="Delete">
-            &times;
-          </button>
-        </div>
+            <div class="chat-actions" @click.stop>
+              <button class="action-btn" @click="startRename(c.id, c.name || '')" title="Rename">
+                &#9998;
+              </button>
+              <button class="action-btn danger" @click="handleDelete(c.id)" title="Delete">
+                &times;
+              </button>
+            </div>
+          </div>
+          <div v-if="g.chats.length === 0" class="project-empty">No chats yet</div>
+        </template>
       </div>
 
-      <div v-if="chat.chats.length === 0" class="empty">
+      <div v-if="groups.length === 0" class="empty">
         No chats yet. Click + to start.
       </div>
     </div>
@@ -107,10 +187,39 @@ async function handleDelete(chatId: string) {
   line-height: 1;
 }
 .btn-new:hover { background: var(--accent-hover); }
+.header-actions { display: flex; align-items: center; gap: 6px; }
+.btn-project {
+  height: 28px; padding: 0 8px; background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.8em;
+}
+.btn-project:hover { background: var(--bg-tertiary); color: var(--text-primary); }
 
 .chat-list { flex: 1; overflow-y: auto; padding: 4px 8px; }
+.new-project-input { margin: 4px 0 6px; padding: 6px 8px; }
+
+.project { margin-bottom: 4px; }
+.project-header {
+  display: flex; align-items: center; gap: 4px; padding: 6px 8px;
+  border-radius: var(--radius); cursor: pointer; user-select: none;
+}
+.project-header:hover { background: var(--bg-tertiary); }
+.twisty {
+  flex: none; width: 16px; color: var(--text-secondary); font-size: 0.9em;
+  display: inline-flex; justify-content: center; transition: transform 0.1s;
+}
+.twisty.open { transform: rotate(90deg); }
+.project-name {
+  flex: 1; min-width: 0; font-size: 0.85em; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.project-name.none { font-weight: 500; color: var(--text-muted); }
+.project-count { font-size: 0.75em; color: var(--text-muted); }
+.project-new { opacity: 0; transition: opacity 0.1s; }
+.project-header:hover .project-new { opacity: 1; }
+.project-empty { padding: 2px 0 6px 28px; font-size: 0.75em; color: var(--text-muted); }
+
 .chat-item {
-  display: flex; align-items: center; padding: 8px 12px;
+  display: flex; align-items: center; padding: 8px 12px 8px 28px;
   border-radius: var(--radius); cursor: pointer;
   margin-bottom: 2px; transition: background 0.1s;
 }

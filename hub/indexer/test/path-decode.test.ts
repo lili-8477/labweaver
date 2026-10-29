@@ -66,4 +66,9 @@ describe("encodeProjectDir", () => {
   it("normalizes a missing leading slash", () => {
     expect(encodeProjectDir("workspace")).toBe("-workspace");
   });
+
+  it("replaces every non-alphanumeric character, like Claude Code", () => {
+    expect(encodeProjectDir("/workspace/local_projects/pbmc.v2-ab12"))
+      .toBe("-workspace-local-projects-pbmc-v2-ab12");
+  });
 });

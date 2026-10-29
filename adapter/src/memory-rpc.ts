@@ -14,10 +14,18 @@ interface ListParams {
   cursor?: string;
 }
 
+// Directory reads take the project as an encoded project_dir or a raw
+// project_path (absolute cwd), which memory-api encodes.
+interface DirsParams {
+  project_dir?: string;
+  project_path?: string;
+}
+
 interface WriteParams {
   scope: "user" | "project" | "org";
   project_dir?: string | null;
   type: "user" | "feedback" | "project" | "reference";
+  dir_key?: string;
   name: string;
   description: string;
   body: string;
@@ -57,6 +65,20 @@ export class MemoryRpcClient {
 
   async list(qs: ListParams): Promise<unknown> {
     return this.fetchJson("/memory/list", { username: this.username, ...qs });
+  }
+
+  async dirs(qs: DirsParams): Promise<unknown> {
+    return this.fetchJson("/memory/dirs", { username: this.username, ...qs });
+  }
+
+  // dir_key keeps its "/" ("project/decisions"): the API route takes it raw.
+  async dir(dirKey: string, qs: DirsParams & { limit?: number }): Promise<unknown> {
+    const path = dirKey.split("/").map(encodeURIComponent).join("/");
+    return this.fetchJson(`/memory/dirs/${path}`, { username: this.username, ...qs });
+  }
+
+  async tree(qs: DirsParams & { include_deleted?: boolean; limit?: number }): Promise<unknown> {
+    return this.fetchJson("/memory/tree", { username: this.username, ...qs });
   }
 
   async write(p: WriteParams): Promise<unknown> {

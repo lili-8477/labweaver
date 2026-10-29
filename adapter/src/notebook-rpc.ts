@@ -192,6 +192,11 @@ export class NotebookManager {
     return k;
   }
 
+  /** Kernels whose process is still alive (culled ones stay in the map). */
+  get kernelCount(): number {
+    return [...this.kernels.values()].filter((k) => k.getSnapshot().running).length;
+  }
+
   /** Shut every per-notebook kernel down. Used on adapter teardown. */
   shutdownAll(): void {
     for (const k of this.kernels.values()) k.shutdown();

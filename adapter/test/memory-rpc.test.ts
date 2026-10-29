@@ -215,6 +215,32 @@ describe("MemoryRpcClient", () => {
     });
   });
 
+  describe("dirs / dir / tree", () => {
+    it("dirs: GET /memory/dirs with username + project", async () => {
+      state = { nextResponse: { status: 200, body: [{ dir_key: "user/notes" }] } };
+      const client = new MemoryRpcClient(baseUrl, "alice");
+      const result = await client.dirs({ project_path: "/workspace/p" });
+      expect(state.lastReq!.method).toBe("GET");
+      expect(state.lastReq!.url).toBe("/memory/dirs?username=alice&project_path=%2Fworkspace%2Fp");
+      expect(result).toEqual([{ dir_key: "user/notes" }]);
+    });
+
+    it("dir: keeps the dir_key slash in the path", async () => {
+      state = { nextResponse: { status: 200, body: { dir_key: "project/decisions", entries: [] } } };
+      const client = new MemoryRpcClient(baseUrl, "alice");
+      await client.dir("project/decisions", { project_dir: "-w-p", limit: 5 });
+      expect(state.lastReq!.url).toBe("/memory/dirs/project/decisions?username=alice&project_dir=-w-p&limit=5");
+    });
+
+    it("tree: GET /memory/tree with optional params", async () => {
+      state = { nextResponse: { status: 200, body: { cap: 50, limit: 50, dirs: [] } } };
+      const client = new MemoryRpcClient(baseUrl, "alice");
+      const result = await client.tree({ include_deleted: true });
+      expect(state.lastReq!.url).toBe("/memory/tree?username=alice&include_deleted=true");
+      expect(result).toEqual({ cap: 50, limit: 50, dirs: [] });
+    });
+  });
+
   describe("write", () => {
     it("POST /memory/write with username + params", async () => {
       state = { nextResponse: { status: 201, body: { id: "mem-456" } } };

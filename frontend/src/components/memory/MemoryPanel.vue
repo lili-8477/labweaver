@@ -18,6 +18,12 @@
  *   a window.matchMedia watcher. The back button on MemoryDetail is not exposed here
  *   because MemoryDetail doesn't accept props — instead the panel renders a back button
  *   in the narrow-detail header row.
+ *
+ * Tree view:
+ *   A List / Tree toggle swaps MemoryList for MemoryTree (choice kept in localStorage).
+ *   In tree view the search input filters the loaded tree client-side instead of
+ *   running a server search, and the scope/source filters are hidden (the tree groups
+ *   by scope itself). MemoryDetail is shared by both views.
  */
 
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
@@ -26,8 +32,43 @@ import { memoryService } from '@/services/memory'
 import type { MemoryListItem, MemorySource, ScopeTier } from '@/types'
 import MemoryList from './MemoryList.vue'
 import MemoryDetail from './MemoryDetail.vue'
+import MemoryTree from './MemoryTree.vue'
 
 const store = useMemoryStore()
+
+// ── List / Tree view ──────────────────────────────────────────────────────────
+
+const VIEW_KEY = 'bioflow-memory-view'
+const view = ref<'list' | 'tree'>(
+  (() => {
+    try { if (localStorage.getItem(VIEW_KEY) === 'tree') return 'tree' } catch { /* ignore */ }
+    return 'list'
+  })()
+)
+
+// Each switch reloads the target view so it reflects edits made in the other.
+function setView(v: 'list' | 'tree') {
+  if (view.value === v) return
+  view.value = v
+  try { localStorage.setItem(VIEW_KEY, v) } catch { /* ignore */ }
+  if (v === 'tree') {
+    store.loadTree()
+  } else if (searchInput.value.trim()) {
+    scheduleSearch(searchInput.value)
+  } else {
+    searchActive.value = false
+    store.loadFirstPage()
+  }
+}
+
+function setIncludeDeleted(v: boolean) {
+  if (view.value === 'tree') {
+    store.filters.include_deleted = v
+    store.loadTree()
+  } else {
+    store.setFilter({ include_deleted: v })
+  }
+}
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
@@ -57,7 +98,7 @@ function scheduleSearch(val: string) {
 }
 
 function onSearchInput() {
-  scheduleSearch(searchInput.value)
+  if (view.value === 'list') scheduleSearch(searchInput.value)
 }
 
 function onSearchKeydown(e: KeyboardEvent) {
@@ -66,7 +107,7 @@ function onSearchKeydown(e: KeyboardEvent) {
 
 function clearSearch() {
   searchInput.value = ''
-  if (searchActive.value) {
+  if (searchActive.value && view.value === 'list') {
     searchActive.value = false
     store.loadFirstPage()
   }
@@ -175,7 +216,8 @@ watch(() => store.selected, (val) => {
 onMounted(() => {
   // This is the single source of truth for the initial load — MemoryList.vue
   // no longer calls loadFirstPage() itself.
-  store.loadFirstPage()
+  if (view.value === 'tree') store.loadTree()
+  else store.loadFirstPage()
 
   window.addEventListener('mousemove', onSplitMousemove)
   window.addEventListener('mouseup', onSplitMouseup)
@@ -207,36 +249,49 @@ onUnmounted(() => {
             v-model="searchInput"
             class="search-input"
             type="search"
-            placeholder="Search memories…"
-            aria-label="Search memories"
+            :placeholder="view === 'tree' ? 'Filter tree…' : 'Search memories…'"
+            :aria-label="view === 'tree' ? 'Filter memory tree' : 'Search memories'"
             @input="onSearchInput"
             @keydown="onSearchKeydown"
           />
           <button v-if="searchInput" class="search-clear" @click="clearSearch" aria-label="Clear search">×</button>
         </div>
+        <div class="view-toggle" role="group" aria-label="View">
+          <button
+            v-for="v in (['list', 'tree'] as const)"
+            :key="v"
+            class="scope-tab"
+            :class="{ active: view === v }"
+            :aria-pressed="view === v"
+            @click="setView(v)"
+          >{{ v === 'list' ? 'List' : 'Tree' }}</button>
+        </div>
       </div>
 
       <!-- Scope tabs -->
       <div class="filter-row" role="tablist" aria-label="Scope">
-        <button
-          v-for="tab in scopeTabs"
-          :key="String(tab.value)"
-          class="scope-tab"
-          :class="{ active: activeScope === tab.value }"
-          role="tab"
-          :aria-selected="activeScope === tab.value"
-          @click="setScope(tab.value)"
-        >{{ tab.label }}</button>
+        <template v-if="view === 'list'">
+          <button
+            v-for="tab in scopeTabs"
+            :key="String(tab.value)"
+            class="scope-tab"
+            :class="{ active: activeScope === tab.value }"
+            role="tab"
+            :aria-selected="activeScope === tab.value"
+            @click="setScope(tab.value)"
+          >{{ tab.label }}</button>
 
-        <span class="filter-spacer" />
+          <span class="filter-spacer" />
 
-        <!-- Source chip -->
-        <button
-          class="source-chip"
-          :class="{ 'chip-active': store.filters.source !== undefined }"
-          @click="cycleSource"
-          :title="sourceLabel"
-        >{{ sourceLabel }}</button>
+          <!-- Source chip -->
+          <button
+            class="source-chip"
+            :class="{ 'chip-active': store.filters.source !== undefined }"
+            @click="cycleSource"
+            :title="sourceLabel"
+          >{{ sourceLabel }}</button>
+        </template>
+        <span v-else class="filter-spacer" />
 
         <!-- Include deleted -->
         <label class="deleted-label">
@@ -244,7 +299,7 @@ onUnmounted(() => {
             type="checkbox"
             class="deleted-cb"
             :checked="store.filters.include_deleted"
-            @change="store.setFilter({ include_deleted: ($event.target as HTMLInputElement).checked })"
+            @change="setIncludeDeleted(($event.target as HTMLInputElement).checked)"
           />
           Deleted
         </label>
@@ -258,7 +313,10 @@ onUnmounted(() => {
         <div v-if="narrowView === 'detail'" class="narrow-back-row">
           <button class="btn-back" @click="narrowView = 'list'">‹ Back</button>
         </div>
-        <MemoryList v-if="narrowView === 'list'" class="pane-fill" />
+        <template v-if="narrowView === 'list'">
+          <MemoryTree v-if="view === 'tree'" :filter="searchInput" class="pane-fill" />
+          <MemoryList v-else class="pane-fill" />
+        </template>
         <MemoryDetail v-else class="pane-fill" />
       </div>
     </template>
@@ -274,7 +332,8 @@ onUnmounted(() => {
           class="split-pane pane-list"
           :style="{ height: splitPercent + '%' }"
         >
-          <MemoryList class="pane-fill" />
+          <MemoryTree v-if="view === 'tree'" :filter="searchInput" class="pane-fill" />
+          <MemoryList v-else class="pane-fill" />
         </div>
 
         <!-- Drag handle -->
@@ -306,6 +365,9 @@ onUnmounted(() => {
 }
 
 .search-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3) 0;
 }
 
@@ -313,7 +375,11 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   align-items: center;
+  flex: 1;
+  min-width: 0;
 }
+
+.view-toggle { display: flex; gap: 2px; flex-shrink: 0; }
 
 .search-icon {
   position: absolute;

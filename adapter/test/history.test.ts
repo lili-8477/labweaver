@@ -158,4 +158,17 @@ describe("readSessionMessages", () => {
     expect(msgs).toHaveLength(1);
     expect(msgs[0]).toMatchObject({ role: "user", content: "hello" });
   });
+
+  it("reads a project cwd's transcript from Claude Code's encoded dir (_ and . become -)", async () => {
+    const projectCwd = "/workspace/local_projects/pbmc.v2-ab12";
+    const dir = path.join(home, ".claude", "projects", "-workspace-local-projects-pbmc-v2-ab12");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, `${chatId}.jsonl`),
+      jsonl([{ type: "user", message: { role: "user", content: "in project" } }]),
+      "utf8",
+    );
+    const msgs = await readSessionMessages(home, projectCwd, chatId);
+    expect(msgs).toEqual([{ role: "user", content: "in project" }]);
+  });
 });

@@ -17,6 +17,9 @@ export interface RunTurnArgs {
   /** Optional image attachments to send as native content blocks. */
   images?: ImageRef[];
   cwd: string;
+  /** Where project settings, hooks, .mcp.json and .claude/ are read from
+   *  when it differs from cwd. Also becomes CLAUDE_PROJECT_DIR. */
+  projectConfigRoot: string;
   /** Model id from settings.json. Undefined falls back to the SDK default. */
   model?: string;
   /** Prior SDK session UUID to resume; undefined for a new session. */
@@ -28,7 +31,7 @@ export interface RunTurnArgs {
 }
 
 export async function runTurn(args: RunTurnArgs): Promise<void> {
-  const { chatId, prompt, images = [], cwd, model, resumeSessionId, signal, onEvent, onSessionId } = args;
+  const { chatId, prompt, images = [], cwd, projectConfigRoot, model, resumeSessionId, signal, onEvent, onSessionId } = args;
   const translator = new EventTranslator();
 
   // Point the SDK at the global CLI binary we installed in the image.
@@ -39,6 +42,7 @@ export async function runTurn(args: RunTurnArgs): Promise<void> {
 
   const options: Options = {
     cwd,
+    projectConfigRoot,
     // Without this the SDK picks its own default and settings.json is inert.
     ...(model ? { model } : {}),
     permissionMode: "bypassPermissions",

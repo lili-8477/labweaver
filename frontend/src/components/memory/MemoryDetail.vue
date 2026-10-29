@@ -116,6 +116,7 @@ async function submitShare() {
           <span class="badge badge-scope">[{{ store.selected.scope_tier }}]</span>
           <span class="badge badge-source">{{ store.selected.source === 'distilled' ? '[distilled]' : '[manual]' }}</span>
           <span class="badge badge-type">[{{ store.selected.type }}]</span>
+          <span v-if="store.selected.dir_key" class="badge badge-dir" title="Directory">{{ store.selected.dir_key }}</span>
           <span v-if="store.selected.deleted_at !== null" class="badge badge-deleted">[deleted]</span>
         </div>
       </div>
@@ -284,6 +285,7 @@ async function submitShare() {
 .badge-source  { background: var(--success-soft); color: var(--success); }
 .badge-type    { background: color-mix(in oklch, var(--info) 14%, transparent); color: var(--info); }
 .badge-deleted { background: var(--danger-soft); color: var(--danger); }
+.badge-dir     { background: var(--bg-tertiary); color: var(--text-secondary); font-family: var(--font-mono); }
 
 .divider { border: none; border-top: 1px solid var(--border-soft); margin: var(--space-3) 0; }
 

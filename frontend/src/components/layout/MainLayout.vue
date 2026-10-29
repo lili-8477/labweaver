@@ -15,6 +15,8 @@ import AgentPanel from '@/components/agents/AgentPanel.vue'
 import MemoryPanel from '@/components/memory/MemoryPanel.vue'
 import SharePanel from '@/components/share/SharePanel.vue'
 import SkillsPanel from '@/components/skills/SkillsPanel.vue'
+import ManagerPanel from '@/components/manager/ManagerPanel.vue'
+import { fleetService } from '@/services/fleet'
 import { useNotebookStore } from '@/stores/notebook'
 import { useShareStore } from '@/stores/share'
 import { useSkillsStore } from '@/stores/skills'
@@ -26,7 +28,7 @@ const nb = useNotebookStore()
 const shareStore = useShareStore()
 const skillsStore = useSkillsStore()
 
-type RightPanel = 'none' | 'files' | 'notebook' | 'agents' | 'memory' | 'share' | 'skills'
+type RightPanel = 'none' | 'files' | 'notebook' | 'agents' | 'memory' | 'share' | 'skills' | 'manager'
 
 const STORAGE_KEY = 'bioflow-layout'
 interface LayoutState {
@@ -52,6 +54,8 @@ const layout = ref<LayoutState>(
   })(),
 )
 const rightPanel = ref<RightPanel>('none')
+// Button visibility only — the adapter refuses fleet_status unless it is the manager.
+const isManager = ref(false)
 
 function persist() {
   try {
@@ -61,8 +65,10 @@ function persist() {
 
 onMounted(async () => {
   await chat.loadChats()
+  chat.loadProjects()
   files.loadTree()
   shareStore.loadCapabilities()
+  fleetService.isManager().then(v => { isManager.value = v })
 })
 
 function togglePanel(panel: RightPanel) {
@@ -203,6 +209,13 @@ const connStatus = computed(() => {
           @click="togglePanel('notebook')"
           title="Notebook"
         >Notebook</button>
+        <button
+          v-if="isManager"
+          class="tb-btn"
+          :class="{ active: rightPanel === 'manager' }"
+          @click="togglePanel('manager')"
+          title="Manager: all user containers"
+        >Manager</button>
         <span class="divider" />
         <button class="tb-btn disconnect" @click="conn.disconnect()" title="Disconnect">
           Disconnect
@@ -249,6 +262,7 @@ const connStatus = computed(() => {
           <MemoryPanel v-else-if="rightPanel === 'memory'" />
           <SharePanel v-else-if="rightPanel === 'share'" />
           <SkillsPanel v-else-if="rightPanel === 'skills'" />
+          <ManagerPanel v-else-if="rightPanel === 'manager'" />
         </aside>
       </template>
     </div>

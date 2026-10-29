@@ -3,13 +3,14 @@ import { ref, computed } from 'vue'
 import { natsService } from '@/services/nats'
 import { extractTextContent } from '@/utils/content'
 import type {
-  ChatInfo, ChatMessage, StreamMessage, StreamChunk,
+  ChatInfo, ProjectInfo, ChatMessage, StreamMessage, StreamChunk,
   StepMessage, ChatFinished, AgentInfo,
   StepMessageData, TimelineStep, HarnessProgress,
 } from '@/types'
 
 export const useChatStore = defineStore('chat', () => {
   const chats = ref<ChatInfo[]>([])
+  const projects = ref<ProjectInfo[]>([])
   const activeChatId = ref<string | null>(null)
   const messages = ref<ChatMessage[]>([])
   const streamingText = ref('')
@@ -59,9 +60,30 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function createChat(name?: string): Promise<string | null> {
+  async function loadProjects() {
+    try {
+      const result = await natsService.invoke('list_projects') as { success: boolean; projects: ProjectInfo[] }
+      if (result?.success) projects.value = result.projects
+    } catch (e) {
+      console.warn('Failed to load projects:', e)
+    }
+  }
+
+  /** Create a project folder under local_projects/; returns its dir. */
+  async function createProject(name: string): Promise<string | null> {
+    const result = await natsService.invoke('create_project', { name }) as {
+      success: boolean; project: ProjectInfo
+    }
+    if (!result?.success) return null
+    await loadProjects()
+    return result.project.dir
+  }
+
+  /** projectDir binds the new chat to a project: its turns run there. */
+  async function createChat(name?: string, projectDir?: string): Promise<string | null> {
     const result = await natsService.invoke('create_chat', {
       chat_name: name || undefined,
+      project_dir: projectDir,
     }) as { success: boolean; chat_id: string }
     if (result?.success) {
       await loadChats()
@@ -459,25 +481,13 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** Bind a chat to a project directory. Pass empty string to unbind. */
-  async function setChatProjectDir(chatId: string, projectDir: string): Promise<void> {
-    await natsService.invoke('set_chat_project_dir', {
-      chat_id: chatId,
-      project_dir: projectDir,
-    })
-    // Update the local list so the UI doesn't have to wait for a list_chats
-    // round-trip to reflect the binding.
-    const c = chats.value.find(x => x.id === chatId)
-    if (c) c.project_dir = projectDir || null
-  }
-
   return {
-    chats, activeChatId, activeChat, messages, streamingText, isStreaming,
+    chats, projects, activeChatId, activeChat, messages, streamingText, isStreaming,
     sending, agents, activeAgent,
     liveTimeline, completedTimelines,
     harnessActive, harnessInstalled, harnessProgress, harnessProject,
-    loadChats, createChat, deleteChat, selectChat, sendMessage,
+    loadChats, loadProjects, createProject, createChat, deleteChat, selectChat, sendMessage,
     stopChat, loadAgents, setActiveAgent, updateChatName,
-    refreshHarnessMode, refreshHarnessProgress, setChatProjectDir,
+    refreshHarnessMode, refreshHarnessProgress,
   }
 })

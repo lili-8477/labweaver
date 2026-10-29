@@ -1,4 +1,4 @@
-// Tests for the nine memory_* RPC dispatch branches in RpcRouter.
+// Tests for the memory_* RPC dispatch branches in RpcRouter.
 // Uses vi.fn() stubs for MemoryRpcClient — no real HTTP or PG needed.
 
 import { describe, it, expect, vi } from "vitest";
@@ -38,6 +38,9 @@ function makeMemoryClient(overrides: Partial<{
   forget: ReturnType<typeof vi.fn>;
   restore: ReturnType<typeof vi.fn>;
   audit: ReturnType<typeof vi.fn>;
+  dirs: ReturnType<typeof vi.fn>;
+  dir: ReturnType<typeof vi.fn>;
+  tree: ReturnType<typeof vi.fn>;
 }> = {}): MemoryRpcClient {
   return {
     search: overrides.search ?? vi.fn().mockResolvedValue([]),
@@ -49,6 +52,9 @@ function makeMemoryClient(overrides: Partial<{
     forget: overrides.forget ?? vi.fn().mockResolvedValue({ ok: true }),
     restore: overrides.restore ?? vi.fn().mockResolvedValue({ ok: true }),
     audit: overrides.audit ?? vi.fn().mockResolvedValue({ rows: [] }),
+    dirs: overrides.dirs ?? vi.fn().mockResolvedValue([]),
+    dir: overrides.dir ?? vi.fn().mockResolvedValue({}),
+    tree: overrides.tree ?? vi.fn().mockResolvedValue({ cap: 50, limit: 50, dirs: [] }),
   } as unknown as MemoryRpcClient;
 }
 
@@ -139,6 +145,33 @@ describe("RpcRouter memory_* dispatch", () => {
       expect(res.success).toBe(true);
       expect(res.items).toEqual(items);
       expect(res.next_cursor).toBe("tok");
+    });
+  });
+
+  describe("memory_dirs / memory_dir / memory_tree", () => {
+    it("memory_dirs wraps the list as {success, dirs}", async () => {
+      const dirs = [{ dir_key: "user/notes", entry_count: 1 }];
+      const dirsFn = vi.fn().mockResolvedValue(dirs);
+      const router = makeRouter(makeMemoryClient({ dirs: dirsFn }));
+      const res = await router.dispatch("memory_dirs", { project_dir: "-w-p" }) as Record<string, unknown>;
+      expect(dirsFn).toHaveBeenCalledWith({ project_dir: "-w-p" });
+      expect(res).toEqual({ success: true, dirs });
+    });
+
+    it("memory_dir passes dir_key separately and wraps as {success, dir}", async () => {
+      const dirFn = vi.fn().mockResolvedValue({ dir_key: "project/decisions", entries: [] });
+      const router = makeRouter(makeMemoryClient({ dir: dirFn }));
+      const res = await router.dispatch("memory_dir", { dir_key: "project/decisions", project_dir: "-w-p", limit: 5 }) as Record<string, unknown>;
+      expect(dirFn).toHaveBeenCalledWith("project/decisions", { project_dir: "-w-p", limit: 5 });
+      expect(res).toEqual({ success: true, dir: { dir_key: "project/decisions", entries: [] } });
+    });
+
+    it("memory_tree spreads the tree alongside success", async () => {
+      const treeFn = vi.fn().mockResolvedValue({ cap: 50, limit: 10, dirs: [{ dir_key: "user/notes" }] });
+      const router = makeRouter(makeMemoryClient({ tree: treeFn }));
+      const res = await router.dispatch("memory_tree", { limit: 10 }) as Record<string, unknown>;
+      expect(treeFn).toHaveBeenCalledWith({ limit: 10 });
+      expect(res).toEqual({ success: true, cap: 50, limit: 10, dirs: [{ dir_key: "user/notes" }] });
     });
   });
 
@@ -256,6 +289,9 @@ describe("RpcRouter memory_* dispatch", () => {
         ["memory_forget", { memory_id: "m1" }],
         ["memory_restore", { memory_id: "m1" }],
         ["memory_audit", { memory_id: "m1" }],
+        ["memory_dirs", {}],
+        ["memory_dir", { dir_key: "user/notes" }],
+        ["memory_tree", {}],
       ] as const;
 
       for (const [method, params] of methods) {
