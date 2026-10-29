@@ -34,7 +34,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Claude Code CLI — pinned. Bump deliberately.
-RUN npm install -g @anthropic-ai/claude-code@2.1.178
+RUN npm install -g @anthropic-ai/claude-code@2.1.312
 
 # 2b. Pre-install torch + CUDA-13 wheel stack (~2.5 GB) so agents don't
 #     have to pull it on every container recreate. `--no-cache-dir` saves

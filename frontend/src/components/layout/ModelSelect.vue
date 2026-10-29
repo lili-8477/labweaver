@@ -3,12 +3,13 @@ import { ref, onMounted } from 'vue'
 import { natsService } from '@/services/nats'
 
 const MODELS = [
-  { id: 'claude-opus-4-8',    label: 'Opus 4.8',    hint: 'Strongest reasoning · most expensive' },
-  { id: 'claude-sonnet-4-6',  label: 'Sonnet 4.6',  hint: 'Balanced · default' },
-  { id: 'claude-haiku-4-5',   label: 'Haiku 4.5',   hint: 'Cheapest · fastest' },
+  { id: 'claude-fable-5-1',   label: 'Fable 5.1',   hint: 'Most capable · most expensive' },
+  { id: 'claude-opus-5-5',    label: 'Opus 5.5',    hint: 'Strong reasoning' },
+  { id: 'claude-sonnet-5-5',  label: 'Sonnet 5.5',  hint: 'Balanced · default' },
+  { id: 'claude-haiku-5-5',   label: 'Haiku 5.5',   hint: 'Cheapest · fastest' },
 ] as const
 
-const current = ref<string>('claude-sonnet-4-6')
+const current = ref<string>('claude-sonnet-5-5')
 const saving = ref(false)
 const error = ref<string>('')
 
