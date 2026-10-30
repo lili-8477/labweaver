@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { KernelBridge, IOPubEvent } from "./kernel.js";
+import { variablesCode } from "./kernel-introspect.js";
 
 /**
  * Factory for per-notebook kernels. Receives the stable sessionId the
@@ -393,32 +394,15 @@ export class NotebookManager {
         return { success: true, variables: {}, kernel_session_id: sessionId };
       }
       // Run a small introspection snippet in the kernel and parse its
-      // stdout (JSON). We pay ~10-50ms per call for a running kernel.
-      const code =
-        "import json as _j, types as _t\n" +
-        "_SKIP = {'In','Out','get_ipython','exit','quit','open'}\n" +
-        "_o = {}\n" +
-        "for _k, _v in list(globals().items()):\n" +
-        "    if _k.startswith('_'): continue\n" +
-        "    if _k in _SKIP: continue\n" +
-        "    if isinstance(_v, _t.ModuleType): continue\n" +
-        "    _tn = type(_v).__name__\n" +
-        "    try:\n" +
-        "        _r = repr(_v)\n" +
-        "        if len(_r) > 200: _r = _r[:200] + '...'\n" +
-        "    except Exception:\n" +
-        "        _r = '<repr failed>'\n" +
-        "    _shape = None\n" +
-        "    try:\n" +
-        "        _shape = str(tuple(_v.shape)) if hasattr(_v, 'shape') else None\n" +
-        "    except Exception:\n" +
-        "        pass\n" +
-        "    _o[_k] = {'type': _tn, 'repr': _r, 'shape': _shape}\n" +
-        "print(_j.dumps(_o))\n";
+      // stdout (JSON). We pay ~10-50ms per call for a running kernel. The
+      // notebook's own kernelspec must be passed: the bridge replaces a
+      // running kernel whose spec differs, which would wipe an R session.
       try {
+        const kernelspec = this.kernelspecOf(await this.readFile(relPath));
         const { stdout } = await existing.executeAndCollect(
           "__vars_introspect__",
-          code,
+          variablesCode(kernelspec),
+          kernelspec,
         );
         const variables = JSON.parse(stdout.trim() || "{}");
         return { success: true, variables, kernel_session_id: sessionId };

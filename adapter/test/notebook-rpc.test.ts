@@ -1,8 +1,9 @@
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NotebookManager } from "../src/notebook-rpc.js";
+import type { KernelBridge } from "../src/kernel.js";
 
 describe("NotebookManager", () => {
   let root: string;
@@ -88,5 +89,37 @@ describe("NotebookManager", () => {
 
   it("rejects paths that escape the workspace root", async () => {
     await expect(nm.readNotebook("../etc/passwd")).rejects.toThrow();
+  });
+
+  describe("variables", () => {
+    function fakeKernel(stdout: string) {
+      const executeAndCollect = vi.fn(async () => ({ reply: { status: "ok" }, stdout }));
+      const kernel = { restart: vi.fn(), executeAndCollect } as unknown as KernelBridge;
+      return { kernel, executeAndCollect };
+    }
+
+    it("runs R introspection in an R notebook's own kernel", async () => {
+      const { kernel, executeAndCollect } = fakeKernel('{"x":{"type":"integer","repr":"int 1","shape":null}}');
+      const rnm = new NotebookManager(root, () => kernel);
+      await rnm.createNotebook("r.ipynb", "r");
+      await rnm.manageKernel("r.ipynb", "restart");
+      const res = (await rnm.manageKernel("r.ipynb", "variables")) as { variables: Record<string, unknown> };
+      // Passing "python3" here would make the bridge replace the R kernel.
+      const [, code, spec] = executeAndCollect.mock.calls[0] as unknown as [string, string, string];
+      expect(spec).toBe("ir");
+      expect(code).toContain("globalenv()");
+      expect(res.variables).toEqual({ x: { type: "integer", repr: "int 1", shape: null } });
+    });
+
+    it("runs Python introspection in a Python notebook", async () => {
+      const { kernel, executeAndCollect } = fakeKernel("{}");
+      const pnm = new NotebookManager(root, () => kernel);
+      await pnm.createNotebook("p.ipynb", "python");
+      await pnm.manageKernel("p.ipynb", "restart");
+      await pnm.manageKernel("p.ipynb", "variables");
+      const [, code, spec] = executeAndCollect.mock.calls[0] as unknown as [string, string, string];
+      expect(spec).toBe("python3");
+      expect(code).toContain("globals()");
+    });
   });
 });
