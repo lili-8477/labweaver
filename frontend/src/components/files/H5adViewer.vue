@@ -410,13 +410,15 @@ const imgSrc = computed(() => pngB64.value ? `data:image/png;base64,${pngB64.val
 
 <style scoped>
 .h5ad-overlay {
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   position: fixed; inset: 0; z-index: 100;
   background: rgba(0, 0, 0, 0.6);
   display: flex; align-items: center; justify-content: center;
 }
 .h5ad-panel {
   width: 90vw; height: 88vh;
-  background: var(--bg-primary);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   display: flex; flex-direction: column; overflow: hidden;
@@ -508,7 +510,9 @@ const imgSrc = computed(() => pngB64.value ? `data:image/png;base64,${pngB64.val
   position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
   margin-top: 2px;
   max-height: 240px; overflow-y: auto;
-  background: var(--bg-primary);
+  background: var(--bg-elevated);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow-lg);
@@ -539,7 +543,7 @@ const imgSrc = computed(() => pngB64.value ? `data:image/png;base64,${pngB64.val
 }
 
 .btn-run {
-  padding: 6px 18px; background: var(--accent); color: #fff;
+  padding: 6px 18px; background: var(--accent); color: var(--on-accent);
   border: none; border-radius: var(--radius); font-size: 0.85em;
   cursor: pointer;
 }

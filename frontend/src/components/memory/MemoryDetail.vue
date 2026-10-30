@@ -344,7 +344,7 @@ async function submitShare() {
   padding: var(--space-1) var(--space-3); border-radius: var(--radius);
   font-size: var(--text-sm); border: 1px solid transparent; transition: background 0.1s, opacity 0.1s;
 }
-.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); border-color: var(--border); }
@@ -363,9 +363,11 @@ async function submitShare() {
   background: rgb(0 0 0 / 0.45);
   display: flex; align-items: center; justify-content: center;
   z-index: 100;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
 .share-modal {
-  background: var(--bg-primary);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: var(--space-4);

@@ -55,7 +55,7 @@ onMounted(loadCurrent)
   display: inline-flex; align-items: center; gap: 6px;
   padding: 2px 6px 2px 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-pill);
   background: var(--bg-secondary);
   font-size: var(--text-sm);
 }

@@ -297,7 +297,7 @@ watch(() => props.chatId, (id) => loadCollapsed(id))
   color: var(--success);
 }
 .next-badge {
-  background: var(--accent); color: #fff;
+  background: var(--accent); color: var(--on-accent);
 }
 
 .feedback-note {

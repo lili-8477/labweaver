@@ -5,6 +5,7 @@ import { useChatStore } from '@/stores/chat'
 import { isDisplayableMessage, extractTextContent } from '@/utils/content'
 import type { ChatMessage } from '@/types'
 import ChatMessageComp from '@/components/chat/ChatMessage.vue'
+import RequestIndex from '@/components/chat/RequestIndex.vue'
 import ExecutionTimeline from '@/components/chat/ExecutionTimeline.vue'
 import HarnessChecklist from '@/components/chat/HarnessChecklist.vue'
 import { isImage, makeAttachment, uploadAttachment, discardAttachmentFile, type ChatAttachment } from '@/services/chat-attachments'
@@ -110,6 +111,13 @@ function hasBubbleBody(msg: ChatMessage): boolean {
   return extractTextContent(msg.content).trim().length > 0
 }
 
+/** Label for the request index: the request's first line, minus attached-image lines. */
+function requestLabel(msg: ChatMessage): string | undefined {
+  if (msg.role !== 'user') return undefined
+  const text = extractTextContent(msg.content).replace(/^\[image: [^\]]*\]\n?/gm, '').trim()
+  return text.split('\n')[0].slice(0, 120) || 'Image'
+}
+
 function send() {
   if (!hasContent.value || chat.sending) return
   if (voiceOn.value) stopVoice()
@@ -159,7 +167,20 @@ function autosize() {
 }
 
 watch(input, () => { void nextTick(autosize) })
+
+// Wrapping changes when the chat pane is resized, so re-fit on width changes
+// (height changes are our own and are ignored).
+let editorWidth = 0
+const editorResize = new ResizeObserver(([entry]) => {
+  const w = entry.contentRect.width
+  if (w !== editorWidth) { editorWidth = w; autosize() }
+})
+watch(inputRef, (ta, old) => {
+  if (old?.parentElement) editorResize.unobserve(old.parentElement)
+  if (ta?.parentElement) editorResize.observe(ta.parentElement)
+})
 onMounted(autosize)
+onBeforeUnmount(() => editorResize.disconnect())
 
 function handleKeydown(e: KeyboardEvent) {
   if (slashMenuRef.value?.handleKey(e)) {
@@ -547,10 +568,11 @@ watch(
         :chat-id="chat.activeChatId"
       />
 
+      <div class="messages-row">
       <div ref="messagesEl" class="messages">
         <!-- Rendered messages with inline timelines -->
         <template v-for="(msg, i) in displayMessages" :key="i">
-          <ChatMessageComp v-if="hasBubbleBody(msg)" :message="msg" />
+          <ChatMessageComp v-if="hasBubbleBody(msg)" :message="msg" :data-request="requestLabel(msg)" />
           <!-- Show timeline below assistant messages that had tool activity -->
           <ExecutionTimeline
             v-if="msg.role === 'assistant' && getTimelineForDisplayMsg(i)"
@@ -580,6 +602,8 @@ watch(
           </div>
           <span class="thinking-text">Agent is thinking...</span>
         </div>
+      </div>
+      <RequestIndex :scroller="messagesEl" :version="displayMessages.length" />
       </div>
 
       <!-- Hints -->
@@ -675,9 +699,10 @@ watch(
         <div class="input-row">
           <div class="input-editor">
             <!-- Mirror layer: re-prints the text with the leading /command
-                 token colored. Sits behind the transparent textarea. -->
+                 token colored. Sits behind the transparent textarea. The
+                 trailing space makes a final newline render as a line. -->
             <div ref="highlightRef" class="input-highlight" aria-hidden="true">
-              <span class="cmd-token">{{ inputSegments.cmd }}</span>{{ inputSegments.rest }}
+              <span class="cmd-token">{{ inputSegments.cmd }}</span>{{ inputSegments.rest }}{{ ' ' }}
             </div>
             <textarea
               ref="inputRef"
@@ -740,7 +765,9 @@ watch(
 .empty-state h3 { margin-bottom: 8px; color: var(--text-secondary); }
 .empty-state p { font-size: 0.9em; }
 
-.messages { flex: 1; overflow-y: auto; padding: 16px; }
+.messages-row { flex: 1; min-height: 0; display: flex; }
+/* position: relative makes this the offsetParent RequestIndex measures against. */
+.messages { flex: 1; min-width: 0; overflow-y: auto; padding: 16px; position: relative; }
 
 .streaming-msg { opacity: 0.95; }
 
@@ -913,10 +940,14 @@ watch(
 .input-highlight,
 .message-input {
   padding: 10px 14px;
-  min-height: 40px; max-height: 200px;
+  /* Grows with the text up to ~a third of the window, then scrolls. */
+  min-height: 40px; max-height: clamp(120px, 35vh, 360px);
   font: inherit; font-size: 0.95em; line-height: 1.4;
   white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word;
   box-sizing: border-box;
+  /* Reserve the scrollbar lane in both, so wrapping matches once the
+     textarea starts scrolling. */
+  scrollbar-gutter: stable;
 }
 
 .message-input {
@@ -934,14 +965,14 @@ watch(
   color: var(--text-primary);
   overflow: hidden; pointer-events: none; z-index: 0;
 }
-.input-highlight .cmd-token { color: var(--accent); font-weight: 600; }
+.input-highlight .cmd-token { color: var(--accent); }
 
 .btn-send, .btn-stop {
   width: 40px; height: 40px; border-radius: var(--radius);
   border: none; display: flex; align-items: center; justify-content: center;
   font-size: 1.1em;
 }
-.btn-send { background: var(--accent); color: #fff; }
+.btn-send { background: var(--accent); color: var(--on-accent); }
 .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-send:hover:not(:disabled) { background: var(--accent-hover); }
 .btn-stop { background: var(--danger); color: #fff; }
