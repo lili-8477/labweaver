@@ -92,3 +92,41 @@ export async function createProject(workspaceRoot: string, name: string): Promis
     }
   }
 }
+
+export interface ProjectNotebooks extends ProjectInfo {
+  /** Workspace-relative .ipynb paths, most recently modified first. */
+  notebooks: Array<{ path: string; modified_at: string }>;
+}
+
+// Data folders can be deep and wide; stop well before a walk gets slow.
+const NOTEBOOK_WALK_DEPTH = 6;
+const NOTEBOOK_WALK_DIRS = 2000;
+
+/** Projects holding at least one notebook, each with its notebooks. Hidden
+ *  folders, `_`-folders, checkpoints and node_modules are skipped. */
+export async function listProjectNotebooks(workspaceRoot: string): Promise<ProjectNotebooks[]> {
+  const out: ProjectNotebooks[] = [];
+  let budget = NOTEBOOK_WALK_DIRS;
+  const walk = async (abs: string, depth: number, found: ProjectNotebooks["notebooks"]): Promise<void> => {
+    if (budget-- <= 0) return;
+    const entries = await fs.readdir(abs, { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      if (/^[._]/.test(e.name) || e.name === "node_modules") continue;
+      const child = path.join(abs, e.name);
+      if (e.isDirectory() && depth < NOTEBOOK_WALK_DEPTH) {
+        await walk(child, depth + 1, found);
+      } else if (e.isFile() && e.name.endsWith(".ipynb")) {
+        const st = await fs.stat(child).catch(() => null);
+        if (st) found.push({ path: path.relative(workspaceRoot, child), modified_at: st.mtime.toISOString() });
+      }
+    }
+  };
+  for (const project of await listProjects(workspaceRoot)) {
+    const notebooks: ProjectNotebooks["notebooks"] = [];
+    await walk(path.join(workspaceRoot, project.dir), 1, notebooks);
+    if (notebooks.length === 0) continue;
+    notebooks.sort((a, b) => b.modified_at.localeCompare(a.modified_at));
+    out.push({ ...project, notebooks });
+  }
+  return out.sort((a, b) => b.notebooks[0]!.modified_at.localeCompare(a.notebooks[0]!.modified_at));
+}

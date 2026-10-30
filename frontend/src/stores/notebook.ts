@@ -440,24 +440,29 @@ export const useNotebookStore = defineStore('notebook', () => {
     }
   }
 
-  async function runAll() {
-    for (const cell of cells.value) {
+  // Run code cells from `start` down, stopping at the first error. An error
+  // left over from an earlier run must not stop this one before it starts.
+  async function runFrom(start: number) {
+    lastExecutionError.value = null
+    for (const cell of cells.value.slice(start)) {
       if (cell.cell_type !== 'code') continue
-      if (lastExecutionError.value) break
       await executeCell(cell.id)
+      if (lastExecutionError.value) break
     }
   }
 
+  async function runAll() {
+    await runFrom(0)
+  }
+
   async function runBelow() {
-    if (!selectedCellId.value) return runAll()
     const startIdx = cells.value.findIndex((c) => c.id === selectedCellId.value)
-    if (startIdx < 0) return
-    for (let i = startIdx; i < cells.value.length; i++) {
-      const c = cells.value[i]
-      if (c.cell_type !== 'code') continue
-      if (lastExecutionError.value) break
-      await executeCell(c.id)
-    }
+    await runFrom(Math.max(startIdx, 0))
+  }
+
+  async function restartAndRunAll() {
+    await restartKernel()
+    await runAll()
   }
 
   async function runAndAdvance(cellId?: string) {
@@ -726,7 +731,7 @@ export const useNotebookStore = defineStore('notebook', () => {
     // actions
     openNotebook, createNotebook, refreshNotebook, closeNotebook,
     addCell, insertCell, updateCell, deleteCell, moveCell, changeCellType,
-    executeCell, runAll, runBelow, runAndAdvance,
+    executeCell, runAll, runBelow, restartAndRunAll, runAndAdvance,
     interruptKernel, restartKernel, refreshKernelStatus,
     clearCellOutputs, clearAllOutputs, toggleOutputCollapsed,
     copyCell, cutCell, pasteCell,

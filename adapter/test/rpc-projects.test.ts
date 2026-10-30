@@ -202,3 +202,26 @@ describe("rename_project / delete_project", () => {
     expect(list.projects).toEqual([]);
   });
 });
+
+describe("list_project_notebooks", () => {
+  it("lists projects with notebooks, skipping hidden folders and checkpoints", async () => {
+    const put = async (rel: string) => {
+      await fs.mkdir(path.dirname(path.join(ws, rel)), { recursive: true });
+      await fs.writeFile(path.join(ws, rel), "{}");
+    };
+    await put("local_projects/pbmc/analysis.ipynb");
+    await put("local_projects/pbmc/scripts/qc.ipynb");
+    await put("local_projects/pbmc/.ipynb_checkpoints/qc-checkpoint.ipynb");
+    await put("local_projects/pbmc/_attachments/old.ipynb");
+    await put("local_projects/empty/data.csv");
+    const r = makeRouter();
+    const res = (await r.dispatch("list_project_notebooks", {})) as {
+      projects: { dir: string; notebooks: { path: string }[] }[];
+    };
+    expect(res.projects.map((p) => p.dir)).toEqual(["local_projects/pbmc"]);
+    expect(res.projects[0]!.notebooks.map((n) => n.path).sort()).toEqual([
+      "local_projects/pbmc/analysis.ipynb",
+      "local_projects/pbmc/scripts/qc.ipynb",
+    ]);
+  });
+});

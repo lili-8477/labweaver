@@ -6,9 +6,11 @@ import CellOutputView from '@/components/notebook/CellOutputView.vue'
 import CellInsertBar from '@/components/notebook/CellInsertBar.vue'
 import NotebookToolbar from '@/components/notebook/NotebookToolbar.vue'
 import VariableInspector from '@/components/notebook/VariableInspector.vue'
+import NotebookList from '@/components/notebook/NotebookList.vue'
 
 const nb = useNotebookStore()
 const newNotebookPath = ref('')
+const newNotebookLanguage = ref<'python' | 'r'>('python')
 const showCreateForm = ref(false)
 const showVariables = ref(false)
 const editorHasFocus = ref(false)
@@ -24,10 +26,21 @@ async function createNotebook() {
   if (!newNotebookPath.value.trim()) return
   let path = newNotebookPath.value.trim()
   if (!path.endsWith('.ipynb')) path += '.ipynb'
-  await nb.createNotebook(path)
+  await nb.createNotebook(path, newNotebookLanguage.value)
   showCreateForm.value = false
   newNotebookPath.value = ''
 }
+
+function startCreate(dir = '') {
+  newNotebookPath.value = dir ? `${dir}/untitled.ipynb` : ''
+  showCreateForm.value = true
+}
+
+// "local_projects/demo/scripts/a.ipynb" → "demo/scripts", shown under the name.
+const notebookFolder = computed(() => {
+  const p = nb.filePath ?? ''
+  return p.slice(0, p.lastIndexOf('/')).replace(/^local_projects\//, '')
+})
 
 function selectPrev() {
   const idx = nb.cells.findIndex((c) => c.id === nb.selectedCellId)
@@ -117,8 +130,19 @@ watch(
     <!-- Header: title + actions -->
     <div class="nb-header">
       <div class="nb-title">
-        <span class="title-label">Notebook</span>
-        <span v-if="notebookName" class="notebook-name" :title="nb.filePath || ''">{{ notebookName }}</span>
+        <button
+          v-if="nb.notebook || nb.loading"
+          class="back-btn"
+          title="All notebooks"
+          @click="nb.closeNotebook()"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+        <span v-if="!notebookName" class="title-label">Notebooks</span>
+        <span v-else class="title-stack" :title="nb.filePath || ''">
+          <span class="notebook-name">{{ notebookName }}</span>
+          <span v-if="notebookFolder" class="notebook-folder">{{ notebookFolder }}</span>
+        </span>
       </div>
       <div class="nb-actions">
         <button
@@ -130,15 +154,9 @@ watch(
         >Vars</button>
         <button
           class="icon-btn"
-          @click="showCreateForm = !showCreateForm"
+          @click="showCreateForm ? (showCreateForm = false) : startCreate()"
           title="New notebook"
         >+ New</button>
-        <button
-          v-if="nb.notebook"
-          class="icon-btn"
-          @click="nb.closeNotebook()"
-          title="Close notebook"
-        >×</button>
       </div>
     </div>
 
@@ -146,10 +164,14 @@ watch(
     <div v-if="showCreateForm" class="create-form">
       <input
         v-model="newNotebookPath"
-        placeholder="path/to/notebook.ipynb"
+        placeholder="local_projects/<project>/notebook.ipynb"
         @keyup.enter="createNotebook"
         autofocus
       />
+      <select v-model="newNotebookLanguage" class="lang-select" title="Kernel">
+        <option value="python">Python</option>
+        <option value="r">R</option>
+      </select>
       <button class="btn-sm" @click="createNotebook">Create</button>
       <button class="btn-sm ghost" @click="showCreateForm = false">Cancel</button>
     </div>
@@ -157,11 +179,8 @@ watch(
     <!-- Loading -->
     <div v-if="nb.loading" class="empty">Loading notebook…</div>
 
-    <!-- No notebook open -->
-    <div v-else-if="!nb.notebook" class="empty">
-      <p class="empty-title">No notebook open</p>
-      <p class="hint">Open a <code>.ipynb</code> file from the file tree,<br>or create a new one.</p>
-    </div>
+    <!-- No notebook open: every project's notebooks -->
+    <NotebookList v-else-if="!nb.notebook" @create="startCreate" />
 
     <!-- Notebook -->
     <template v-else>
@@ -315,9 +334,28 @@ watch(
 }
 .nb-title {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
+}
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+}
+.back-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.title-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
 }
 .title-label {
   font-family: var(--font-display);
@@ -326,8 +364,16 @@ watch(
   letter-spacing: -0.01em;
 }
 .notebook-name {
+  font-weight: var(--fw-semi);
+  font-size: 0.9em;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notebook-folder {
   font-family: var(--font-mono);
-  font-size: 0.78em;
+  font-size: 0.72em;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -363,6 +409,14 @@ watch(
   font-family: var(--font-mono);
   font-size: 0.82em;
 }
+.lang-select {
+  padding: 4px 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 0.8em;
+}
 .btn-sm {
   padding: 4px 10px;
   background: var(--accent);
@@ -381,21 +435,6 @@ watch(
   padding: 48px 20px;
   text-align: center;
   color: var(--text-muted);
-}
-.empty-title {
-  font-family: var(--font-display);
-  font-size: var(--text-xl);
-  font-weight: var(--fw-semi);
-  letter-spacing: -0.015em;
-  margin-bottom: var(--space-2);
-  color: var(--text-primary);
-}
-.hint { font-size: 0.82em; line-height: 1.6; }
-.hint code {
-  font-family: var(--font-mono);
-  background: var(--bg-tertiary);
-  padding: 1px 5px;
-  border-radius: 3px;
 }
 
 .nb-scroll {

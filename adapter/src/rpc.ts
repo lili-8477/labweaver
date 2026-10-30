@@ -15,7 +15,7 @@ import { H5adService } from "./h5ad-rpc.js";
 import { KernelBridge, type IOPubEvent } from "./kernel.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
 import { NotebookManager } from "./notebook-rpc.js";
-import { createProject, listProjects, renameProject, trashProject } from "./projects.js";
+import { createProject, listProjectNotebooks, listProjects, renameProject, trashProject } from "./projects.js";
 import { ShareRpcClient } from "./share-rpc.js";
 import { listOrgSkills } from "./org-skills-rpc.js";
 import { listUserSkills, readUserSkillManifest } from "./skills-rpc.js";
@@ -242,6 +242,9 @@ export class RpcRouter {
 
       case "list_projects":
         return { success: true, projects: await listProjects(this.deps.workspaceRoot) };
+
+      case "list_project_notebooks":
+        return { success: true, projects: await listProjectNotebooks(this.deps.workspaceRoot) };
 
       case "create_project": {
         const name = (params.name as string | undefined)?.trim();

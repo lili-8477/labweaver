@@ -68,6 +68,11 @@ export interface ProjectInfo {
   modified_at: string
 }
 
+/** A project and the notebooks in it (adapter list_project_notebooks). */
+export interface ProjectNotebooks extends ProjectInfo {
+  notebooks: { path: string; modified_at: string }[]
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
