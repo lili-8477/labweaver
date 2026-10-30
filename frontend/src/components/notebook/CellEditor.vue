@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import type { NotebookCell } from '@/types'
 import { getMonaco, defaultCellEditorOptions } from '@/utils/monaco'
+import { useNotebookStore } from '@/stores/notebook'
 import { renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps<{
@@ -33,6 +34,7 @@ const emit = defineEmits<{
   (e: 'focus-editor', focused: boolean): void
 }>()
 
+const nb = useNotebookStore()
 const editorEl = ref<HTMLElement | null>(null)
 const rootEl = ref<HTMLElement | null>(null)
 let editor: import('monaco-editor').editor.IStandaloneCodeEditor | null = null
@@ -50,9 +52,10 @@ async function initEditor() {
   if (!editorEl.value || editor) return
   const monaco = await getMonaco()
 
+  const kernelspec = nb.notebook?.metadata?.kernelspec as { language?: string } | undefined
   const language =
     props.cell.cell_type === 'code'
-      ? 'python'
+      ? (kernelspec?.language?.toLowerCase() === 'r' ? 'r' : 'python')
       : props.cell.cell_type === 'markdown'
         ? 'markdown'
         : 'plaintext'
@@ -79,18 +82,22 @@ async function initEditor() {
     }, 500)
   })
 
+  // Hand a pending (debounced) edit to the store now, e.g. before a run.
+  const flush = () => {
+    if (debounceTimer && editor) {
+      clearTimeout(debounceTimer)
+      debounceTimer = null
+      emit('update', editor.getValue())
+    }
+  }
+
   editor.onDidFocusEditorText(() => {
     emit('select')
     emit('focus-editor', true)
   })
   editor.onDidBlurEditorText(() => {
     emit('focus-editor', false)
-    // Flush any pending debounce immediately on blur
-    if (debounceTimer && editor) {
-      clearTimeout(debounceTimer)
-      debounceTimer = null
-      emit('update', editor.getValue())
-    }
+    flush()
     if (isMarkdown.value) emit('end-edit-markdown')
   })
 
@@ -99,13 +106,13 @@ async function initEditor() {
     id: 'execute-cell',
     label: 'Run Cell',
     keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
-    run: () => emit('execute'),
+    run: () => { flush(); emit('execute') },
   })
   editor.addAction({
     id: 'execute-cell-advance',
     label: 'Run Cell and Advance',
     keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.Enter],
-    run: () => emit('execute-advance'),
+    run: () => { flush(); emit('execute-advance') },
   })
   editor.addAction({
     id: 'exit-edit-mode',
@@ -119,11 +126,13 @@ async function initEditor() {
   })
 }
 
-// Keep editor value in sync when source mutates externally (e.g. paste).
+// Keep editor value in sync when source mutates externally (e.g. paste, an
+// agent edit). Not while the user is typing in it: a refresh can carry a copy
+// older than their last keystrokes.
 watch(
   () => props.cell.source,
   (val) => {
-    if (editor && editor.getValue() !== val) {
+    if (editor && !editor.hasTextFocus() && editor.getValue() !== val) {
       editor.setValue(val)
     }
   },

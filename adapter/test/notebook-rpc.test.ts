@@ -91,6 +91,50 @@ describe("NotebookManager", () => {
     await expect(nm.readNotebook("../etc/passwd")).rejects.toThrow();
   });
 
+  it("overlapping edits to one notebook all land", async () => {
+    await nm.createNotebook("c.ipynb", "python");
+    const a = (await nm.addCell("c.ipynb", "code", "a", undefined)) as { cell_id: string };
+    await Promise.all([
+      nm.updateCell("c.ipynb", a.cell_id, "a2"),
+      nm.addCell("c.ipynb", "code", "b", a.cell_id),
+      nm.addCell("c.ipynb", "code", "c", undefined),
+    ]);
+    const res = (await nm.readNotebook("c.ipynb")) as { notebook: { cells: Array<{ source: string }> } };
+    expect(res.notebook.cells.map((c) => c.source)).toEqual(["a2", "b", "c"]);
+  });
+
+  it("update_cell replies without the notebook body", async () => {
+    await nm.createNotebook("u.ipynb", "python");
+    const a = (await nm.addCell("u.ipynb", "code", "x", undefined)) as { cell_id: string };
+    const res = (await nm.updateCell("u.ipynb", a.cell_id, "y")) as Record<string, unknown>;
+    expect(res.success).toBe(true);
+    expect(res).not.toHaveProperty("notebook");
+  });
+
+  it("a finished run keeps edits made while it was running", async () => {
+    let finish!: () => void;
+    const kernel = {
+      sessionId: "k1",
+      execute: vi.fn(() => new Promise((resolve) => {
+        finish = () => resolve({ status: "ok", execution_count: 7 });
+      })),
+    } as unknown as KernelBridge;
+    const knm = new NotebookManager(root, () => kernel);
+    await knm.createNotebook("r.ipynb", "python");
+    const a = (await knm.addCell("r.ipynb", "code", "slow()", undefined)) as { cell_id: string };
+    const run = knm.executeCell("r.ipynb", a.cell_id);
+    await vi.waitFor(() => expect(kernel.execute).toHaveBeenCalled());
+    await knm.addCell("r.ipynb", "code", "added during run", a.cell_id);
+    await knm.updateCell("r.ipynb", a.cell_id, "slow(edited)");
+    finish();
+    await run;
+    const res = (await knm.readNotebook("r.ipynb")) as {
+      notebook: { cells: Array<{ source: string; execution_count: number | null }> };
+    };
+    expect(res.notebook.cells.map((c) => c.source)).toEqual(["slow(edited)", "added during run"]);
+    expect(res.notebook.cells[0]!.execution_count).toBe(7);
+  });
+
   describe("variables", () => {
     function fakeKernel(stdout: string) {
       const executeAndCollect = vi.fn(async () => ({ reply: { status: "ok" }, stdout }));

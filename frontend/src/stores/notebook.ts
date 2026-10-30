@@ -96,6 +96,7 @@ export const useNotebookStore = defineStore('notebook', () => {
   // ─────────────────────────────────────────────────────────────────────
 
   async function openNotebook(path: string) {
+    if (filePath.value === path && notebook.value) return refreshNotebook()
     loading.value = true
     // Each notebook has its own kernel and its own variable namespace —
     // drop the previous notebook's per-kernel state immediately so the
@@ -147,9 +148,33 @@ export const useNotebookStore = defineStore('notebook', () => {
     return result
   }
 
-  async function refreshNotebook() {
-    if (filePath.value) await openNotebook(filePath.value)
+  /**
+   * Take a fresh copy of the open notebook — from a mutation's reply when it
+   * carries one, else re-read — without the loading screen, so every open
+   * cell keeps its editor, the scroll position and the selection.
+   */
+  async function refreshNotebook(reply?: Partial<NotebookInfo>) {
+    const path = filePath.value
+    if (!path) return
+    let info = reply?.notebook ? reply : null
+    if (!info) {
+      info = (await natsService.proxyToolset(
+        'read_notebook',
+        { notebook_path: path, validate: false },
+        'notebook',
+      )) as NotebookInfo
+    }
+    if (filePath.value !== path || !info?.notebook?.cells) return
+    notebook.value = info.notebook
+    if (info.version) version.value = info.version
+    if (!notebook.value.cells.some((c) => c.id === selectedCellId.value)) {
+      selectedCellId.value = notebook.value.cells[0]?.id ?? null
+    }
   }
+
+  // Source edits go out one at a time, and a run waits for them, so a cell
+  // runs what was last typed (the adapter reads the source from the file).
+  let pendingWrites: Promise<unknown> = Promise.resolve()
 
   function closeNotebook() {
     if (notebookSubId) {
@@ -211,12 +236,12 @@ export const useNotebookStore = defineStore('notebook', () => {
         execute: false,
       },
       'notebook',
-    )) as { success: boolean; cell_id: string; kernel_session_id?: string }
+    )) as Partial<NotebookInfo> & { success: boolean; cell_id: string; kernel_session_id?: string }
 
     captureKernelSessionId(result)
 
     if (result?.success !== false) {
-      await refreshNotebook()
+      await refreshNotebook(result)
       if (result?.cell_id) selectedCellId.value = result.cell_id
     }
     return result
@@ -237,19 +262,16 @@ export const useNotebookStore = defineStore('notebook', () => {
     if (!filePath.value) return
     const cell = notebook.value?.cells.find((c) => c.id === cellId)
     if (cell) cell.source = source
+    const path = filePath.value
     saving.value = true
+    const write = pendingWrites.then(() => natsService.proxyToolset(
+      'update_cell',
+      { notebook_path: path, cell_id: cellId, content: source, execute: false },
+      'notebook',
+    ))
+    pendingWrites = write.catch(() => undefined)
     try {
-      const result = (await natsService.proxyToolset(
-        'update_cell',
-        {
-          notebook_path: filePath.value,
-          cell_id: cellId,
-          content: source,
-          execute: false,
-        },
-        'notebook',
-      )) as Record<string, unknown>
-      captureKernelSessionId(result)
+      captureKernelSessionId((await write) as Record<string, unknown>)
     } finally {
       saving.value = false
     }
@@ -262,9 +284,9 @@ export const useNotebookStore = defineStore('notebook', () => {
       'delete_cell',
       { notebook_path: filePath.value, cell_id: cellId },
       'notebook',
-    )) as Record<string, unknown>
+    )) as Partial<NotebookInfo> & Record<string, unknown>
     captureKernelSessionId(result)
-    await refreshNotebook()
+    await refreshNotebook(result)
     if (cells.value.length) {
       selectedCellId.value = cells.value[Math.min(idx, cells.value.length - 1)].id
     } else {
@@ -297,9 +319,9 @@ export const useNotebookStore = defineStore('notebook', () => {
         'move_cell',
         { notebook_path: filePath.value, cell_id: cellId, below_cell_id: belowCellId },
         'notebook',
-      )) as Record<string, unknown>
+      )) as Partial<NotebookInfo> & Record<string, unknown>
       captureKernelSessionId(result)
-      await refreshNotebook()
+      await refreshNotebook(result)
     } catch (e) {
       console.error('move_cell failed:', e)
     }
@@ -347,16 +369,10 @@ export const useNotebookStore = defineStore('notebook', () => {
     cellStreamOutputs.value.set(cellId, [])
     lastExecutionError.value = null
 
-    // Flush any pending in-memory edits for this cell to disk BEFORE
-    // the adapter reads it back. Monaco's onDidChangeModelContent updates
-    // notebook.value.cells[i].source synchronously, but the actual
-    // update_cell RPC is debounced 500ms — so clicking Run within that
-    // window would execute the stale on-disk version.
-    const target = notebook.value?.cells.find((c) => c.id === cellId)
-    if (target && target.cell_type === 'code') {
-      const src = Array.isArray(target.source) ? target.source.join('') : (target.source ?? '')
-      await updateCell(cellId, src)
-    }
+    // The adapter reads the source from disk, so let queued saves land
+    // first. CellEditor flushes its debounced edit (on blur, or right before
+    // a Run shortcut), which queues it here synchronously.
+    await pendingWrites
 
     try {
       const result = (await natsService.proxyToolset(
@@ -418,7 +434,8 @@ export const useNotebookStore = defineStore('notebook', () => {
   async function runAndAdvance(cellId?: string) {
     const id = cellId ?? selectedCellId.value
     if (!id) return
-    await executeCell(id)
+    // Move on right away, as Jupyter does; the run continues in the background.
+    void executeCell(id)
     const idx = cells.value.findIndex((c) => c.id === id)
     if (idx === cells.value.length - 1) {
       await addCell('code', '', { relativeTo: id, side: 'after' })

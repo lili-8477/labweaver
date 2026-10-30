@@ -109,6 +109,23 @@ export class NotebookManager {
   /** One kernel per notebook, keyed by the resolved absolute path. */
   private kernels = new Map<string, KernelBridge>();
 
+  /** Tail of each notebook's write queue, keyed like `kernels`. */
+  private writeQueues = new Map<string, Promise<unknown>>();
+
+  /**
+   * Run a read-modify-write of one .ipynb after the previous one finishes.
+   * Every edit rewrites the whole file, so two overlapping edits (an
+   * autosave racing an add_cell) would otherwise drop one of them.
+   */
+  private serialize<T>(relPath: string, fn: () => Promise<T>): Promise<T> {
+    const key = this.resolve(relPath);
+    const run = (this.writeQueues.get(key) ?? Promise.resolve()).then(fn, fn);
+    const tail = run.catch(() => undefined);
+    this.writeQueues.set(key, tail);
+    void tail.then(() => { if (this.writeQueues.get(key) === tail) this.writeQueues.delete(key); });
+    return run;
+  }
+
   private resolve(relPath: string): string {
     const normalized = path.normalize(relPath).replace(/^(\.\.[/\\])+/, "");
     const abs = path.resolve(this.root, normalized);
@@ -246,40 +263,52 @@ export class NotebookManager {
     source: string,
     position: string | undefined,
   ): Promise<unknown> {
-    const nb = await this.readFile(relPath);
-    const newCell = normalizeCell({ cell_type: cellType, source, outputs: [] });
+    return this.serialize(relPath, async () => {
+      const nb = await this.readFile(relPath);
+      const newCell = normalizeCell({ cell_type: cellType, source, outputs: [] });
 
-    if (!position) {
-      nb.cells.push(newCell);
-    } else if (/^\d+$/.test(position)) {
-      // Numeric index: insert AT this position (new cell becomes cells[N]).
-      const idx = Math.min(parseInt(position, 10), nb.cells.length);
-      nb.cells.splice(idx, 0, newCell);
-    } else {
-      // Cell id: insert AFTER that cell.
-      const idx = nb.cells.findIndex((c) => c.id === position);
-      if (idx < 0) nb.cells.push(newCell);
-      else nb.cells.splice(idx + 1, 0, newCell);
-    }
+      if (!position) {
+        nb.cells.push(newCell);
+      } else if (/^\d+$/.test(position)) {
+        // Numeric index: insert AT this position (new cell becomes cells[N]).
+        const idx = Math.min(parseInt(position, 10), nb.cells.length);
+        nb.cells.splice(idx, 0, newCell);
+      } else {
+        // Cell id: insert AFTER that cell.
+        const idx = nb.cells.findIndex((c) => c.id === position);
+        if (idx < 0) nb.cells.push(newCell);
+        else nb.cells.splice(idx + 1, 0, newCell);
+      }
 
-    await this.writeFile(relPath, nb);
-    return { ...this.info(relPath, nb), cell_id: newCell.id };
+      await this.writeFile(relPath, nb);
+      return { ...this.info(relPath, nb), cell_id: newCell.id };
+    });
   }
 
+  /**
+   * The editor autosaves through this while the user types, so the reply
+   * leaves the notebook out: echoing every output (plots included) back on
+   * each save made typing lag on notebooks with figures.
+   */
   async updateCell(relPath: string, cellId: string, source: string): Promise<unknown> {
-    const nb = await this.readFile(relPath);
-    const cell = nb.cells.find((c) => c.id === cellId);
-    if (!cell) throw new Error(`cell not found: ${cellId}`);
-    cell.source = source;
-    await this.writeFile(relPath, nb);
-    return this.info(relPath, nb);
+    return this.serialize(relPath, async () => {
+      const nb = await this.readFile(relPath);
+      const cell = nb.cells.find((c) => c.id === cellId);
+      if (!cell) throw new Error(`cell not found: ${cellId}`);
+      cell.source = source;
+      await this.writeFile(relPath, nb);
+      const { notebook: _omit, ...rest } = this.info(relPath, nb);
+      return rest;
+    });
   }
 
   async deleteCell(relPath: string, cellId: string): Promise<unknown> {
-    const nb = await this.readFile(relPath);
-    nb.cells = nb.cells.filter((c) => c.id !== cellId);
-    await this.writeFile(relPath, nb);
-    return this.info(relPath, nb);
+    return this.serialize(relPath, async () => {
+      const nb = await this.readFile(relPath);
+      nb.cells = nb.cells.filter((c) => c.id !== cellId);
+      await this.writeFile(relPath, nb);
+      return this.info(relPath, nb);
+    });
   }
 
   async moveCell(
@@ -287,19 +316,21 @@ export class NotebookManager {
     cellId: string,
     belowCellId: string | undefined,
   ): Promise<unknown> {
-    const nb = await this.readFile(relPath);
-    const idx = nb.cells.findIndex((c) => c.id === cellId);
-    if (idx < 0) throw new Error(`cell not found: ${cellId}`);
-    const [cell] = nb.cells.splice(idx, 1);
-    if (!cell) throw new Error(`cell splice failed: ${cellId}`);
-    if (!belowCellId) {
-      nb.cells.unshift(cell);
-    } else {
-      const below = nb.cells.findIndex((c) => c.id === belowCellId);
-      nb.cells.splice(below + 1, 0, cell);
-    }
-    await this.writeFile(relPath, nb);
-    return this.info(relPath, nb);
+    return this.serialize(relPath, async () => {
+      const nb = await this.readFile(relPath);
+      const idx = nb.cells.findIndex((c) => c.id === cellId);
+      if (idx < 0) throw new Error(`cell not found: ${cellId}`);
+      const [cell] = nb.cells.splice(idx, 1);
+      if (!cell) throw new Error(`cell splice failed: ${cellId}`);
+      if (!belowCellId) {
+        nb.cells.unshift(cell);
+      } else {
+        const below = nb.cells.findIndex((c) => c.id === belowCellId);
+        nb.cells.splice(below + 1, 0, cell);
+      }
+      await this.writeFile(relPath, nb);
+      return this.info(relPath, nb);
+    });
   }
 
   async executeCell(relPath: string, cellId: string): Promise<unknown> {
@@ -318,9 +349,16 @@ export class NotebookManager {
     }
     const kernelspec = this.kernelspecOf(nb);
     const reply = await kernel.execute(cellId, cell.source, kernelspec);
-    // Persist execution_count back into the cell so reloads keep it.
-    cell.execution_count = reply.execution_count;
-    await this.writeFile(relPath, nb);
+    // Persist execution_count back into the cell so reloads keep it. Re-read
+    // first: the run may have taken minutes, and edits made meanwhile must
+    // not be overwritten by the copy read before it started.
+    await this.serialize(relPath, async () => {
+      const fresh = await this.readFile(relPath);
+      const ran = fresh.cells.find((c) => c.id === cellId);
+      if (!ran) return;
+      ran.execution_count = reply.execution_count;
+      await this.writeFile(relPath, fresh);
+    });
     return {
       success: reply.status !== "error",
       status: reply.status,
