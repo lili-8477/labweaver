@@ -15,7 +15,7 @@ import { H5adService } from "./h5ad-rpc.js";
 import { KernelBridge, type IOPubEvent } from "./kernel.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
 import { NotebookManager } from "./notebook-rpc.js";
-import { createProject, listProjects } from "./projects.js";
+import { createProject, listProjects, renameProject, trashProject } from "./projects.js";
 import { ShareRpcClient } from "./share-rpc.js";
 import { listOrgSkills } from "./org-skills-rpc.js";
 import { listUserSkills, readUserSkillManifest } from "./skills-rpc.js";
@@ -247,6 +247,19 @@ export class RpcRouter {
         const name = (params.name as string | undefined)?.trim();
         if (!name) throw new Error("name required");
         return { success: true, project: await createProject(this.deps.workspaceRoot, name) };
+      }
+
+      case "rename_project": {
+        await renameProject(this.deps.workspaceRoot, params.project_dir, String(params.name ?? ""));
+        return { success: true };
+      }
+
+      case "delete_project": {
+        // Trash the folder first: if that fails, the chats are untouched.
+        const trashedTo = await trashProject(this.deps.workspaceRoot, params.project_dir);
+        const deleted = await this.chats.deleteByProject(params.project_dir as string);
+        for (const id of deleted) this.mutexes.delete(id);
+        return { success: true, trashed_to: trashedTo, deleted_chats: deleted.length };
       }
 
       case "delete_chat": {

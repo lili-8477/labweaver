@@ -79,6 +79,22 @@ export const useChatStore = defineStore('chat', () => {
     return result.project.dir
   }
 
+  /** Set a project's display name; its folder keeps its name. */
+  async function renameProject(dir: string, name: string) {
+    await natsService.invoke('rename_project', { project_dir: dir, name })
+    await loadProjects()
+  }
+
+  /** Move the project folder to local_projects/.trash and delete its chats. */
+  async function deleteProject(dir: string) {
+    await natsService.invoke('delete_project', { project_dir: dir })
+    if (chats.value.some(c => c.id === activeChatId.value && c.project_dir === dir)) {
+      activeChatId.value = null
+      messages.value = []
+    }
+    await Promise.all([loadProjects(), loadChats()])
+  }
+
   /** projectDir binds the new chat to a project: its turns run there. */
   async function createChat(name?: string, projectDir?: string): Promise<string | null> {
     const result = await natsService.invoke('create_chat', {
@@ -486,7 +502,8 @@ export const useChatStore = defineStore('chat', () => {
     sending, agents, activeAgent,
     liveTimeline, completedTimelines,
     harnessActive, harnessInstalled, harnessProgress, harnessProject,
-    loadChats, loadProjects, createProject, createChat, deleteChat, selectChat, sendMessage,
+    loadChats, loadProjects, createProject, renameProject, deleteProject,
+    createChat, deleteChat, selectChat, sendMessage,
     stopChat, loadAgents, setActiveAgent, updateChatName,
     refreshHarnessMode, refreshHarnessProgress,
   }

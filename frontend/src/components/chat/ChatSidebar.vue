@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import { formatDate } from '@/utils/format'
 import type { ChatInfo } from '@/types'
@@ -29,27 +29,74 @@ watch(folded, f => {
   try { localStorage.setItem(FOLD_KEY, JSON.stringify([...f])) } catch { /* private mode */ }
 })
 
+// Pinned projects (by dir) sort first, remembered per browser.
+const PIN_KEY = 'labweaver.sidebar.pinned'
+const pinned = ref(new Set<string>(readPinned()))
+function readPinned(): string[] {
+  try { return JSON.parse(localStorage.getItem(PIN_KEY) || '[]') } catch { return [] }
+}
+watch(pinned, p => {
+  try { localStorage.setItem(PIN_KEY, JSON.stringify([...p])) } catch { /* private mode */ }
+})
+
 interface Group { dir: string; name: string; latest: string; chats: ChatInfo[] }
 
 /** Chats grouped by project folder, plus "No project" for unbound chats.
- *  Groups sort by their most recent chat; a project with no chats yet by
- *  its folder's mtime. chat.chats is already newest-first. */
+ *  Only projects with chats are shown (folders without chats are plain data
+ *  dirs). Pinned groups first, then by most recent chat; chat.chats is
+ *  already newest-first. */
 const groups = computed<Group[]>(() => {
   const byDir = new Map<string, ChatInfo[]>()
-  for (const p of chat.projects) byDir.set(p.dir, [])
   for (const c of chat.chats) {
     const dir = c.project_dir || ''
     if (!byDir.has(dir)) byDir.set(dir, [])
     byDir.get(dir)!.push(c)
   }
-  const modified = new Map(chat.projects.map(p => [p.dir, p.modified_at]))
+  const names = new Map(chat.projects.map(p => [p.dir, p.name]))
+  const rank = (g: Group) => (pinned.value.has(g.dir) ? 0 : 1)
   return [...byDir].map(([dir, chats]) => ({
     dir,
-    name: dir ? dir.split('/').pop()! : 'No project',
-    latest: chats[0]?.last_activity_date || modified.get(dir) || '',
+    name: dir ? names.get(dir) ?? dir.split('/').pop()! : 'No project',
+    latest: chats[0]?.last_activity_date || '',
     chats,
-  })).sort((a, b) => b.latest.localeCompare(a.latest))
+  })).sort((a, b) => rank(a) - rank(b) || b.latest.localeCompare(a.latest))
 })
+
+// Project "⋯" menu (one open at a time) and inline project rename.
+const menuDir = ref<string | null>(null)
+const renamingDir = ref<string | null>(null)
+const projectName = ref('')
+function closeMenu() { menuDir.value = null }
+onMounted(() => document.addEventListener('click', closeMenu))
+onBeforeUnmount(() => document.removeEventListener('click', closeMenu))
+
+function togglePin(dir: string) {
+  const next = new Set(pinned.value)
+  if (!next.delete(dir)) next.add(dir)
+  pinned.value = next
+  closeMenu()
+}
+
+function startProjectRename(g: Group) {
+  renamingDir.value = g.dir
+  projectName.value = g.name
+  closeMenu()
+}
+
+async function saveProjectRename(dir: string) {
+  if (renamingDir.value !== dir) return
+  renamingDir.value = null
+  const name = projectName.value.trim()
+  if (name) await chat.renameProject(dir, name)
+}
+
+async function handleDeleteProject(g: Group) {
+  closeMenu()
+  const n = g.chats.length
+  if (!confirm(`Delete project "${g.name}" and its ${n} chat${n === 1 ? '' : 's'}?\n\nThe folder is moved to local_projects/.trash, so its files can be recovered.`)) return
+  await chat.deleteProject(g.dir)
+  if (pinned.value.has(g.dir)) togglePin(g.dir)
+}
 
 function toggle(dir: string) {
   const next = new Set(folded.value)
@@ -114,15 +161,43 @@ async function handleDelete(chatId: string) {
       />
 
       <div v-for="g in groups" :key="g.dir" class="project">
-        <div class="project-header" :title="g.dir || 'Chats not bound to a project'" @click="toggle(g.dir)">
+        <div
+          class="project-header"
+          :class="{ 'menu-open': menuDir === g.dir }"
+          :title="g.dir || 'Chats not bound to a project'"
+          @click="toggle(g.dir)"
+        >
           <span class="twisty" :class="{ open: !folded.has(g.dir) }">&#9656;</span>
-          <span class="project-name" :class="{ none: !g.dir }">{{ g.name }}</span>
+          <input
+            v-if="renamingDir === g.dir"
+            v-model="projectName"
+            class="rename-input"
+            @keyup.enter="saveProjectRename(g.dir)"
+            @keyup.escape="renamingDir = null"
+            @blur="saveProjectRename(g.dir)"
+            @click.stop
+            autofocus
+          />
+          <span v-else class="project-name" :class="{ none: !g.dir }">{{ g.name }}</span>
+          <span v-if="pinned.has(g.dir)" class="pin-mark" title="Pinned">&#128204;</span>
           <span class="project-count">{{ g.chats.length }}</span>
           <button
             class="action-btn project-new"
             :title="g.dir ? `New chat in ${g.name}` : 'New chat without a project'"
             @click.stop="newChatIn(g.dir)"
           >+</button>
+          <div v-if="g.dir" class="project-menu-wrap" @click.stop>
+            <button
+              class="action-btn project-more"
+              title="Project options"
+              @click="menuDir = menuDir === g.dir ? null : g.dir"
+            >&#8943;</button>
+            <div v-if="menuDir === g.dir" class="project-menu">
+              <button @click="togglePin(g.dir)">{{ pinned.has(g.dir) ? 'Unpin' : 'Pin' }}</button>
+              <button @click="startProjectRename(g)">Rename</button>
+              <button class="danger" @click="handleDeleteProject(g)">Delete</button>
+            </div>
+          </div>
         </div>
 
         <template v-if="!folded.has(g.dir)">
@@ -181,7 +256,7 @@ async function handleDelete(chatId: string) {
 }
 .title { font-weight: 600; font-size: 0.9em; }
 .btn-new {
-  width: 28px; height: 28px; background: var(--accent); color: #fff;
+  width: 28px; height: 28px; background: var(--accent); color: var(--on-accent);
   border: none; border-radius: var(--radius); font-size: 1.2em;
   display: flex; align-items: center; justify-content: center;
   line-height: 1;
@@ -204,8 +279,8 @@ async function handleDelete(chatId: string) {
 }
 .project-header:hover { background: var(--bg-tertiary); }
 .twisty {
-  flex: none; width: 16px; color: var(--text-secondary); font-size: 0.9em;
-  display: inline-flex; justify-content: center; transition: transform 0.1s;
+  flex: none; width: 22px; height: 22px; color: var(--text-secondary); font-size: 1.35em;
+  display: inline-flex; align-items: center; justify-content: center; transition: transform 0.1s;
 }
 .twisty.open { transform: rotate(90deg); }
 .project-name {
@@ -214,8 +289,24 @@ async function handleDelete(chatId: string) {
 }
 .project-name.none { font-weight: 500; color: var(--text-muted); }
 .project-count { font-size: 0.75em; color: var(--text-muted); }
-.project-new { opacity: 0; transition: opacity 0.1s; }
-.project-header:hover .project-new { opacity: 1; }
+.project-new, .project-more { opacity: 0; transition: opacity 0.1s; }
+.project-header:hover .project-new, .project-header:hover .project-more,
+.project-header.menu-open .project-more { opacity: 1; }
+.pin-mark { font-size: 0.7em; opacity: 0.8; }
+.project-menu-wrap { position: relative; }
+.project-menu {
+  position: absolute; right: 0; top: 26px; z-index: 20; min-width: 120px;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  -webkit-backdrop-filter: var(--glass-filter); backdrop-filter: var(--glass-filter);
+  border-radius: var(--radius); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.project-menu button {
+  padding: 6px 10px; text-align: left; background: transparent; border: none;
+  color: var(--text-primary); border-radius: 4px; font-size: 0.85em;
+}
+.project-menu button:hover { background: var(--bg-tertiary); }
+.project-menu button.danger { color: var(--danger); }
 .project-empty { padding: 2px 0 6px 28px; font-size: 0.75em; color: var(--text-muted); }
 
 .chat-item {

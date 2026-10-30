@@ -35,6 +35,11 @@ const chats = {
   }),
   setSessionUuid: vi.fn(async () => undefined),
   touch: vi.fn(async () => undefined),
+  deleteByProject: vi.fn(async (dir: string) => {
+    const ids = [...rows.values()].filter((r) => r.project_dir === dir).map((r) => r.chat_id);
+    for (const id of ids) rows.delete(id);
+    return ids;
+  }),
 };
 
 function makeRouter() {
@@ -159,5 +164,41 @@ describe("chat cwd", () => {
     await fs.writeFile(path.join(dir, "s1.jsonl"), JSON.stringify({ type: "user", message: { content: "hello" } }) + "\n");
     const res = await makeRouter().dispatch("get_chat_messages", { chat_id: "c1" }) as { messages: unknown[] };
     expect(res.messages).toEqual([{ role: "user", content: "hello" }]);
+  });
+});
+
+describe("rename_project / delete_project", () => {
+  const dir = "local_projects/pbmc";
+  beforeEach(async () => {
+    await fs.mkdir(path.join(ws, dir), { recursive: true });
+    await fs.writeFile(path.join(ws, dir, "data.csv"), "a,b\n");
+  });
+
+  it("rename sets the display name and keeps the folder", async () => {
+    const r = makeRouter();
+    await r.dispatch("rename_project", { project_dir: dir, name: "  PBMC QC  " });
+    const res = (await r.dispatch("list_projects", {})) as { projects: { dir: string; name: string }[] };
+    expect(res.projects).toEqual([expect.objectContaining({ dir, name: "PBMC QC" })]);
+  });
+
+  it("rejects paths outside local_projects and missing projects", async () => {
+    const r = makeRouter();
+    await expect(r.dispatch("rename_project", { project_dir: "local_projects/../etc", name: "x" })).rejects.toThrow(/not a project/);
+    await expect(r.dispatch("delete_project", { project_dir: "local_projects/.trash" })).rejects.toThrow(/not a project/);
+    await expect(r.dispatch("delete_project", { project_dir: "local_projects/nope" })).rejects.toThrow(/not found/);
+  });
+
+  it("delete moves the folder to .trash and deletes only that project's chats", async () => {
+    rows.set("a", chatRow("a", { project_dir: dir }));
+    rows.set("b", chatRow("b", { project_dir: null }));
+    const r = makeRouter();
+    const res = (await r.dispatch("delete_project", { project_dir: dir })) as { trashed_to: string; deleted_chats: number };
+    expect(res.deleted_chats).toBe(1);
+    expect([...rows.keys()]).toEqual(["b"]);
+    await expect(fs.stat(path.join(ws, dir))).rejects.toThrow();
+    expect(res.trashed_to).toMatch(/^local_projects\/\.trash\/pbmc-/);
+    expect(await fs.readFile(path.join(ws, res.trashed_to, "data.csv"), "utf8")).toBe("a,b\n");
+    const list = (await r.dispatch("list_projects", {})) as { projects: unknown[] };
+    expect(list.projects).toEqual([]);
   });
 });

@@ -151,4 +151,13 @@ export class ChatsRepo {
       [chatId, this.username],
     );
   }
+
+  /** Delete every chat bound to a project; returns their ids. */
+  async deleteByProject(projectDir: string): Promise<string[]> {
+    const { rows } = await this.pool.query<{ chat_id: string }>(
+      `DELETE FROM chats WHERE project_dir = $1 AND username = $2 RETURNING chat_id`,
+      [projectDir, this.username],
+    );
+    return rows.map((r) => r.chat_id);
+  }
 }

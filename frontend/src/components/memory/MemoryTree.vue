@@ -182,7 +182,7 @@ const isOpen = (n: DirNode) => n.memories.length > 0 && (!!query.value || openDi
   color: var(--text-muted); font-variant-numeric: tabular-nums;
 }
 
-.caret { display: inline-block; width: 10px; flex-shrink: 0; font-size: 9px; color: var(--text-muted); transition: transform 0.12s; }
+.caret { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex-shrink: 0; font-size: 15px; color: var(--text-secondary); transition: transform 0.12s; }
 .caret.open { transform: rotate(90deg); }
 .caret.hidden { visibility: hidden; }
 
