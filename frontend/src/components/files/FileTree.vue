@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useFileStore } from '@/stores/files'
 import { useUploadsStore } from '@/stores/uploads'
 import { queueUpload, cancelUpload, retryUpload } from '@/services/upload'
@@ -40,9 +41,10 @@ function isProtectedMountPoint(path: string): boolean {
   return PROTECTED_MOUNT_POINTS.has(path)
 }
 
-// State: which dirs are expanded, their loaded children, loading status
-const expandedDirs = ref<Set<string>>(new Set())
-const dirChildren = ref<Map<string, FileEntry[]>>(new Map())
+// State: which dirs are expanded and their loaded children live in the store,
+// so the tree reopens where it was left; loading status is local.
+const { expandedDirs, dirChildren, treeScrollTop } = storeToRefs(files)
+const treeContent = ref<HTMLDivElement | null>(null)
 const loadingDirs = ref<Set<string>>(new Set())
 
 // Retry support: keep the original File handle off the Pinia store (Vue's
@@ -158,7 +160,7 @@ async function commitRename(fe: FlatEntry) {
       return
     }
     cancelRename()
-    await reloadTreeFromRoot()
+    await reloadTreeFromRoot({ from: fe.path, to: targetPath })
   } finally {
     renameInFlight = false
   }
@@ -189,10 +191,15 @@ function showTreeError(msg: string) {
 
 onMounted(() => {
   if (files.tree.length === 0) files.loadTree()
+  else nextTick(() => { if (treeContent.value) treeContent.value.scrollTop = treeScrollTop.value })
   if (dirInput.value) {
     dirInput.value.setAttribute('webkitdirectory', '')
     dirInput.value.setAttribute('directory', '')
   }
+})
+
+onBeforeUnmount(() => {
+  treeScrollTop.value = treeContent.value?.scrollTop ?? 0
 })
 
 const visibleEntries = computed<FlatEntry[]>(() => {
@@ -230,33 +237,41 @@ async function toggleDir(path: string) {
     loadingDirs.value.add(path)
     loadingDirs.value = new Set(loadingDirs.value)
     try {
-      const result = await natsService.proxyToolset('list_files', {
-        sub_dir: path,
-        recursive: false,
-      }, 'file_manager') as { success: boolean; files: Array<{ name: string; type: string; size?: number }> }
-
-      if (result?.success && Array.isArray(result.files)) {
-        const children: FileEntry[] = result.files
-          .filter(f => f.name !== '.executor')
-          .map(f => ({
-            name: f.name,
-            path: `${path}/${f.name}`,
-            type: (f.type === 'directory' ? 'directory' : 'file') as 'file' | 'directory',
-            size: f.size,
-          }))
-          .sort((a, b) => {
-            if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
-            return a.name.localeCompare(b.name)
-          })
+      const children = await fetchChildren(path)
+      if (children) {
         dirChildren.value.set(path, children)
         dirChildren.value = new Map(dirChildren.value)
       }
-    } catch (e) {
-      console.error('Failed to list directory:', path, e)
     } finally {
       loadingDirs.value.delete(path)
       loadingDirs.value = new Set(loadingDirs.value)
     }
+  }
+}
+
+/** One directory's entries, folders first; null if it can't be listed (gone). */
+async function fetchChildren(path: string): Promise<FileEntry[] | null> {
+  try {
+    const result = await natsService.proxyToolset('list_files', {
+      sub_dir: path,
+      recursive: false,
+    }, 'file_manager') as { success: boolean; files: Array<{ name: string; type: string; size?: number }> }
+    if (!result?.success || !Array.isArray(result.files)) return null
+    return result.files
+      .filter(f => f.name !== '.executor')
+      .map(f => ({
+        name: f.name,
+        path: `${path}/${f.name}`,
+        type: (f.type === 'directory' ? 'directory' : 'file') as 'file' | 'directory',
+        size: f.size,
+      }))
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
+  } catch (e) {
+    console.error('Failed to list directory:', path, e)
+    return null
   }
 }
 
@@ -325,10 +340,18 @@ function downloadUrl(filePath: string): string {
   return `/download/${segs.join('/')}`
 }
 
-async function reloadTreeFromRoot() {
-  dirChildren.value.clear()
-  expandedDirs.value.clear()
-  await files.loadTree()
+/** Re-list the root and every open folder without folding the tree. A moved
+ *  or renamed folder stays open under its new path; folders that no longer
+ *  list (deleted) are dropped. */
+async function reloadTreeFromRoot(moved?: { from: string; to: string }) {
+  const open = [...expandedDirs.value].map(p =>
+    moved && (p === moved.from || p.startsWith(`${moved.from}/`)) ? moved.to + p.slice(moved.from.length) : p,
+  )
+  const [, lists] = await Promise.all([files.loadTree(), Promise.all(open.map(fetchChildren))])
+  const children = new Map<string, FileEntry[]>()
+  open.forEach((p, i) => { if (lists[i]) children.set(p, lists[i]) })
+  dirChildren.value = children
+  expandedDirs.value = new Set(children.keys())
 }
 
 function refresh() {
@@ -560,7 +583,7 @@ async function doMove(from: string, to: string) {
     showTreeError(`Move failed: ${result.error}`)
     return
   }
-  await reloadTreeFromRoot()
+  await reloadTreeFromRoot({ from, to })
 }
 
 function onCancelUpload(id: string) {
@@ -618,9 +641,10 @@ function onClearUploads() {
       <button class="icon-btn sm" @click="showNewInput = false">&times;</button>
     </div>
 
-    <div v-if="files.loading" class="loading">Loading...</div>
+    <div v-if="files.loading && files.tree.length === 0" class="loading">Loading...</div>
 
     <div
+      ref="treeContent"
       class="tree-content"
       :class="{ 'drag-over-pane': dragOverPath === null && isDraggingFiles }"
       @dragover="onDragOver($event, null)"
