@@ -125,6 +125,10 @@ export class NotebookManager {
   /** Tail of each notebook's write queue, keyed like `kernels`. */
   private writeQueues = new Map<string, Promise<unknown>>();
 
+  /** mtime of each notebook as this manager last read or wrote it, keyed
+   *  like `kernels`; replies carry it so the UI skips its own saves. */
+  private mtimes = new Map<string, number>();
+
   /**
    * Run a read-modify-write of one .ipynb after the previous one finishes.
    * Every edit rewrites the whole file, so two overlapping edits (an
@@ -154,6 +158,7 @@ export class NotebookManager {
 
   private async readFile(relPath: string): Promise<NotebookFile> {
     const abs = this.resolve(relPath);
+    this.mtimes.set(abs, (await fs.stat(abs)).mtimeMs);
     const raw = await fs.readFile(abs, "utf8");
     let parsed: unknown;
     try {
@@ -173,6 +178,7 @@ export class NotebookManager {
     if (hadMissingIds) {
       normalized.nbformat_minor = Math.max(normalized.nbformat_minor, 5);
       await writeAtomic(abs, JSON.stringify(normalized, null, 1));
+      this.mtimes.set(abs, (await fs.stat(abs)).mtimeMs);
     }
     return normalized;
   }
@@ -181,6 +187,13 @@ export class NotebookManager {
     const abs = this.resolve(relPath);
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await writeAtomic(abs, JSON.stringify(nb, null, 1));
+    this.mtimes.set(abs, (await fs.stat(abs)).mtimeMs);
+  }
+
+  /** The file's modification time, so the UI can tell when something else
+   *  (the agent, a script) rewrote the notebook it has open. */
+  async statNotebook(relPath: string): Promise<unknown> {
+    return { success: true, mtime: (await fs.stat(this.resolve(relPath))).mtimeMs };
   }
 
   private info(relPath: string, nb: NotebookFile): Record<string, unknown> {
@@ -188,6 +201,7 @@ export class NotebookManager {
       success: true,
       file_path: relPath,
       version: this.bumpVersion(relPath),
+      mtime: this.mtimes.get(this.resolve(relPath)),
       cell_count: nb.cells.length,
       notebook: nb,
     };
@@ -377,6 +391,7 @@ export class NotebookManager {
       status: reply.status,
       execution_count: reply.execution_count,
       error: reply.error,
+      mtime: this.mtimes.get(this.resolve(relPath)),
       kernel_session_id: kernel.sessionId,
     };
   }
@@ -474,6 +489,8 @@ export class NotebookManager {
     switch (method) {
       case "read_notebook":
         return this.readNotebook(p);
+      case "stat_notebook":
+        return this.statNotebook(p);
       case "create_notebook":
         return this.createNotebook(p, (args.language as string) ?? "python");
       case "add_cell": {

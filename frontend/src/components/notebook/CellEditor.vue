@@ -77,6 +77,10 @@ async function initEditor() {
 
   editor.onDidChangeModelContent(() => {
     if (debounceTimer) clearTimeout(debounceTimer)
+    debounceTimer = null
+    // Text the store already holds (an outside edit synced in below) needs no
+    // save; echoing it back could undo the agent's next edit to this cell.
+    if (editor?.getValue() === props.cell.source) return
     debounceTimer = setTimeout(() => {
       if (editor) emit('update', editor.getValue())
     }, 500)

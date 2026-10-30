@@ -103,6 +103,21 @@ describe("NotebookManager", () => {
     expect(res.notebook.cells.map((c) => c.source)).toEqual(["a2", "b", "c"]);
   });
 
+  it("replies carry the mtime stat_notebook reports until someone else writes", async () => {
+    await nm.createNotebook("m.ipynb", "python");
+    const a = (await nm.addCell("m.ipynb", "code", "1", undefined)) as { cell_id: string };
+    const own = (await nm.updateCell("m.ipynb", a.cell_id, "2")) as { mtime: number };
+    expect((await nm.dispatch("stat_notebook", { notebook_path: "m.ipynb" })) as { mtime: number })
+      .toEqual({ success: true, mtime: own.mtime });
+
+    const abs = path.join(root, "m.ipynb");
+    const later = new Date(own.mtime + 5000);
+    await fs.writeFile(abs, await fs.readFile(abs, "utf8"));
+    await fs.utimes(abs, later, later);
+    const after = (await nm.dispatch("stat_notebook", { notebook_path: "m.ipynb" })) as { mtime: number };
+    expect(after.mtime).not.toBe(own.mtime);
+  });
+
   it("update_cell replies without the notebook body", async () => {
     await nm.createNotebook("u.ipynb", "python");
     const a = (await nm.addCell("u.ipynb", "code", "x", undefined)) as { cell_id: string };

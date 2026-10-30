@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { natsService } from '@/services/nats'
 import type {
   Notebook, NotebookCell, NotebookInfo,
@@ -70,6 +70,7 @@ export const useNotebookStore = defineStore('notebook', () => {
   function captureKernelSessionId(result: unknown): string | null {
     if (!result || typeof result !== 'object') return null
     const r = result as Record<string, unknown>
+    if (typeof r.mtime === 'number') fileMtime = r.mtime
     const id = (r.kernel_session_id as string) ?? null
     if (id && id !== kernelSessionId.value) {
       kernelSessionId.value = id
@@ -120,6 +121,7 @@ export const useNotebookStore = defineStore('notebook', () => {
         notebook.value = nb as Notebook
         filePath.value = path
         version.value = (result as NotebookInfo)?.version || 0
+        fileMtime = (result as NotebookInfo)?.mtime ?? null
         selectedCellId.value = notebook.value.cells[0]?.id ?? null
 
         // Ask the backend for an active kernel session (if any) so we can
@@ -167,10 +169,37 @@ export const useNotebookStore = defineStore('notebook', () => {
     if (filePath.value !== path || !info?.notebook?.cells) return
     notebook.value = info.notebook
     if (info.version) version.value = info.version
+    if (info.mtime) fileMtime = info.mtime
     if (!notebook.value.cells.some((c) => c.id === selectedCellId.value)) {
       selectedCellId.value = notebook.value.cells[0]?.id ?? null
     }
   }
+
+  // The agent edits notebooks on disk too. While one is open, check its
+  // mtime every 1.5s and take a fresh copy when it moved past the last one
+  // this tab read or wrote. A failed check (file mid-write) retries next tick.
+  let fileMtime: number | null = null
+  let checking = false
+  async function checkForOutsideChanges() {
+    const path = filePath.value
+    if (!path || checking || loading.value || saving.value || document.hidden) return
+    checking = true
+    try {
+      const r = (await natsService.proxyToolset(
+        'stat_notebook', { notebook_path: path }, 'notebook',
+      )) as { mtime?: number }
+      if (filePath.value === path && r?.mtime && r.mtime !== fileMtime) await refreshNotebook()
+    } catch {
+      // retry on the next tick
+    } finally {
+      checking = false
+    }
+  }
+  let changeTimer: ReturnType<typeof setInterval> | null = null
+  watch(filePath, (path) => {
+    if (changeTimer) clearInterval(changeTimer)
+    changeTimer = path ? setInterval(checkForOutsideChanges, 1500) : null
+  })
 
   // Source edits go out one at a time, and a run waits for them, so a cell
   // runs what was last typed (the adapter reads the source from the file).

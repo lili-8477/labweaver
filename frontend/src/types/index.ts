@@ -253,6 +253,8 @@ export interface Notebook {
 export interface NotebookInfo {
   file_path: string
   version: number
+  /** File mtime (ms) as the adapter last read or wrote it. */
+  mtime?: number
   cell_count: number
   notebook: Notebook
 }
