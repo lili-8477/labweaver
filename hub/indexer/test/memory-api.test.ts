@@ -11,6 +11,7 @@ import type {
   DirDetail,
   MemoryTree,
 } from "../src/memory-repo.js";
+import type { MemoryGraph } from "../src/memory-graph.js";
 import { InvalidDirError } from "../src/memory-dirs.js";
 
 // Tiny test-double factory: every repo function is a vi.fn() with a sensible
@@ -31,6 +32,7 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
   listDirs:         ReturnType<typeof vi.fn>;
   getDir:           ReturnType<typeof vi.fn>;
   memoryTree:       ReturnType<typeof vi.fn>;
+  memoryGraph:      ReturnType<typeof vi.fn>;
 } } {
   const repo = {
     searchMemories:   vi.fn(async (): Promise<SearchHit[]>     => []),
@@ -57,12 +59,14 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
     listDirs:         vi.fn(async (): Promise<DirSummary[]> => []),
     getDir:           vi.fn(async (): Promise<DirDetail | null> => null),
     memoryTree:       vi.fn(async (): Promise<MemoryTree> => ({ cap: 50, limit: 50, dirs: [] })),
+    memoryGraph:      vi.fn(async (): Promise<MemoryGraph> => ({ nodes: [], edges: [], dropped: { memory: 0, skill: 0, resource: 0, topic: 0 } })),
   };
   const deps: MemoryApiDeps = {
     pool: {} as Pool,
     embedderClient: { embedTexts: vi.fn(async () => []) },
     mergeSimilarity: 0.9,
     dirCap:          50,
+    workspacesRoot:  "/ws",
     repo,
   };
   return { deps, repo };
@@ -842,6 +846,25 @@ describe("memory-api", () => {
     it("400 when limit exceeds 200", async () => {
       const res = await app.inject({ method: "GET", url: "/memory/tree?username=alice&limit=201" });
       expect(res.statusCode).toBe(400);
+    });
+  });
+
+  describe("GET /memory/graph", () => {
+    it("forwards username, include_deleted and the workspaces root", async () => {
+      const res = await app.inject({ method: "GET", url: "/memory/graph?username=alice&include_deleted=true" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ nodes: [], edges: [], dropped: { memory: 0, skill: 0, resource: 0, topic: 0 } });
+      expect(depsBag.repo.memoryGraph.mock.calls[0]![0]).toMatchObject({
+        username: "alice", include_deleted: true, workspacesRoot: "/ws",
+      });
+    });
+
+    it("400 for a username that is not a plain path segment", async () => {
+      for (const u of ["", "..", "a%2Fb", ".hidden"]) {
+        const res = await app.inject({ method: "GET", url: `/memory/graph?username=${u}` });
+        expect(res.statusCode).toBe(400);
+      }
+      expect(depsBag.repo.memoryGraph).not.toHaveBeenCalled();
     });
   });
 });

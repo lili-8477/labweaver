@@ -569,6 +569,12 @@ export class RpcRouter {
         return { success: true, ...(res as object) };
       }
 
+      case "memory_graph": {
+        if (!this.deps.memory) throw new Error("memory api not configured");
+        const res = await this.deps.memory.graph(params as Parameters<MemoryRpcClient["graph"]>[0]);
+        return { success: true, ...(res as object) };
+      }
+
       case "memory_write": {
         if (!this.deps.memory) throw new Error("memory api not configured");
         const res = await this.deps.memory.write(params as Parameters<MemoryRpcClient["write"]>[0]);

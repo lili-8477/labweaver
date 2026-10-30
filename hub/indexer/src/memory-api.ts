@@ -17,6 +17,7 @@ import type {
   getDir,
   memoryTree,
 } from "./memory-repo.js";
+import type { memoryGraph } from "./memory-graph.js";
 import type { writeDistillation } from "./distiller-repo.js";
 import { PROMPT_VERSION } from "./distiller-prompts.js";
 import { InvalidDirError } from "./memory-dirs.js";
@@ -33,6 +34,9 @@ export interface MemoryApiDeps {
   // same directory, and the live-entry cap per directory instance.
   mergeSimilarity: number;
   dirCap:          number;
+  // Host root of every user's workspace (<root>/<username>/...): the graph
+  // reads skills and project folders from it.
+  workspacesRoot:  string;
   repo: {
     searchMemories:   typeof searchMemories;
     getMemory:        typeof getMemory;
@@ -49,6 +53,7 @@ export interface MemoryApiDeps {
     listDirs:         typeof listDirs;
     getDir:           typeof getDir;
     memoryTree:       typeof memoryTree;
+    memoryGraph:      typeof memoryGraph;
   };
 }
 
@@ -126,6 +131,7 @@ const ListQuery = z.object({
     typeof v === 'string' ? [v] : v
   ).optional(),
   source:          z.enum(['user', 'distilled']).optional(),
+  dir_key:         z.string().min(1).optional(),
   // Querystring booleans need explicit literal parsing — `z.coerce.boolean`
   // calls JS `Boolean(x)` which returns `true` for any non-empty string,
   // so `?include_deleted=false` would incorrectly include deleted rows.
@@ -154,6 +160,13 @@ const TreeQuery = DirsQuery.extend({
   include_deleted: z.union([z.literal('true'), z.literal('false')]).optional()
                     .transform(v => v === 'true'),
   limit:           z.coerce.number().int().positive().max(200).optional(),
+});
+
+// username becomes a path segment here, so it must be a plain name.
+const GraphQuery = z.object({
+  username:        z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/),
+  include_deleted: z.union([z.literal('true'), z.literal('false')]).optional()
+                    .transform(v => v === 'true'),
 });
 
 const AuditQuery = z.object({
@@ -261,6 +274,22 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
     });
   });
 
+  // GET /memory/graph — memories, skills, resources and topic hubs with typed
+  // edges (MemoryGraph in memory-graph.ts).
+  app.get("/memory/graph", async (req, reply) => {
+    const parsed = GraphQuery.safeParse(req.query);
+    if (!parsed.success) {
+      reply.code(400);
+      return { error: "validation failed", issues: parsed.error.issues };
+    }
+    return await deps.repo.memoryGraph({
+      pool:            deps.pool,
+      workspacesRoot:  deps.workspacesRoot,
+      username:        parsed.data.username,
+      include_deleted: parsed.data.include_deleted,
+    });
+  });
+
   // GET /memory/metrics — debug surface returning metrics across memory,
   // embedder_queue, and audit_log. No params, no auth (private docker network).
   app.get("/memory/metrics", async () => deps.repo.getMetrics(deps.pool));
@@ -344,6 +373,7 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
       scope:           q.scope,
       type:            q.type,
       source:          q.source,
+      dir_key:         q.dir_key,
       include_deleted: q.include_deleted,
       sort:            q.sort,
       limit:           q.limit,

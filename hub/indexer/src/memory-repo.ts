@@ -751,6 +751,7 @@ export interface ListFilter {
   scope?:           'org' | 'user' | 'project';  // optional narrow
   type?:            string[];                     // any-of
   source?:          'user' | 'distilled';
+  dir_key?:         string;                       // one directory, e.g. "user/preferences"
   include_deleted?: boolean;                      // default false
   sort?:            'created' | 'hit';            // default 'created'
   limit?:           number;                       // default 50, cap 200
@@ -792,6 +793,7 @@ export interface ListItem {
 //   $6  include_deleted (boolean)
 //   $7  cursor (timestamptz or NULL = no cursor)
 //   $8  limit+1
+//   $9  dir_key (text or NULL = any directory)
 export async function listMemories(f: ListFilter): Promise<{
   items: ListItem[];
   next_cursor: string | null;
@@ -895,6 +897,8 @@ SELECT m.memory_id, m.type, m.source,
    AND ($4::text[] IS NULL OR m.type = ANY($4))
    -- source filter
    AND ($5::text IS NULL OR m.source = $5::text)
+   -- directory filter
+   AND ($9::text IS NULL OR m.dir_key = $9::text)
    -- cursor filter
    AND ${cursorCond}
 ${orderBy}
@@ -924,6 +928,7 @@ LIMIT $8
     inclDeleted,     // $6
     cursor,          // $7
     limit + 1,       // $8 — fetch one extra to determine next_cursor
+    f.dir_key ?? null, // $9
   ]);
 
   const rows = res.rows;
@@ -1255,6 +1260,12 @@ export interface MemoryTree {
 
 const TREE_SCOPE_ORDER = { user: 0, project: 1, org: 2 } as const;
 
+// Rows visible to $1 (username): org rows, the caller's own rows, and with a
+// project $2 only that project's (null: every project the caller has).
+const TREE_ROW_VISIBLE_SQL = `
+  (m.scope = 'org' OR (m.username = $1 AND
+   (m.scope = 'user' OR $2::text IS NULL OR m.project_dir = $2::text)))`;
+
 // project_dir null: project directories for every project the caller has
 // memories in; otherwise only that project's (present even when empty).
 export async function memoryTree(args: {
@@ -1288,8 +1299,7 @@ export async function memoryTree(args: {
                 MAX(m.updated_at) FILTER (WHERE m.deleted_at IS NULL) OVER w   AS dir_updated_at
            FROM memories m
           WHERE m.name <> '${DISTILL_FAILED_NAME}'
-            AND (m.scope = 'org' OR (m.username = $1 AND
-                 (m.scope = 'user' OR $2::text IS NULL OR m.project_dir = $2::text)))
+            AND ${TREE_ROW_VISIBLE_SQL}
          WINDOW w AS (PARTITION BY m.dir_key, m.project_dir)
        ) t
        WHERE rn <= $3`,
@@ -1342,4 +1352,52 @@ export async function memoryTree(args: {
     TREE_SCOPE_ORDER[a.scope] - TREE_SCOPE_ORDER[b.scope] ||
     (a.project_dir ?? "").localeCompare(b.project_dir ?? ""));
   return { cap, limit, dirs: out };
+}
+
+// ---------------------------------------------------------------------------
+// Memories for the context graph (memory-graph.ts): the tree's rows across
+// every project, best `limit` by the prior, each with its facets.
+
+export interface GraphMemoryRow {
+  memory_id:   string;
+  name:        string;
+  description: string;
+  scope:       Scope;
+  dir_key:     string;
+  project_dir: string | null;
+  deleted:     boolean;
+  facets:      Record<string, string[]>;
+}
+
+export async function graphMemories(args: {
+  pool:             Pool;
+  username:         string;
+  include_deleted?: boolean;
+  limit:            number;
+}): Promise<{ rows: GraphMemoryRow[]; total: number }> {
+  const r = await args.pool.query<GraphMemoryRow & { total: number }>(
+    `SELECT m.memory_id, m.name, m.description, m.scope, m.dir_key, m.project_dir,
+            m.deleted_at IS NOT NULL AS deleted,
+            COALESCE(
+              (SELECT jsonb_object_agg(key, vals) FROM (
+                 SELECT key, jsonb_agg(value ORDER BY value COLLATE "C") AS vals
+                   FROM memory_facets
+                  WHERE memory_id = m.memory_id
+                  GROUP BY key
+               ) g),
+              '{}'::jsonb
+            ) AS facets,
+            (COUNT(*) OVER ())::int AS total
+       FROM memories m
+      WHERE m.name <> '${DISTILL_FAILED_NAME}'
+        AND ($3 OR m.deleted_at IS NULL)
+        AND ${TREE_ROW_VISIBLE_SQL}
+      ORDER BY m.deleted_at IS NOT NULL, ${PRIOR_SCORE_SQL} DESC, m.memory_id
+      LIMIT $4`,
+    [args.username, null, args.include_deleted ?? false, args.limit],
+  );
+  return {
+    rows:  r.rows.map(({ total: _total, ...row }) => row),
+    total: r.rows[0]?.total ?? 0,
+  };
 }

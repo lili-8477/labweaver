@@ -239,6 +239,14 @@ describe("MemoryRpcClient", () => {
       expect(state.lastReq!.url).toBe("/memory/tree?username=alice&include_deleted=true");
       expect(result).toEqual({ cap: 50, limit: 50, dirs: [] });
     });
+
+    it("graph: GET /memory/graph with the username filled in", async () => {
+      state = { nextResponse: { status: 200, body: { nodes: [], edges: [] } } };
+      const client = new MemoryRpcClient(baseUrl, "alice");
+      const result = await client.graph({});
+      expect(state.lastReq!.url).toBe("/memory/graph?username=alice");
+      expect(result).toEqual({ nodes: [], edges: [] });
+    });
   });
 
   describe("write", () => {

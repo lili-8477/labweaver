@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { runMigrations } from "../src/migrate.js";
 import { contentHash } from "../src/content-hash.js";
 import { defaultDir, scopeOf } from "../src/memory-dirs.js";
-import { getContext, getDir, listDirs, memoryTree, writeUserMemory } from "../src/memory-repo.js";
+import { getContext, getDir, listDirs, listMemories, memoryTree, writeUserMemory } from "../src/memory-repo.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 const LOCK = 0x62696f666c77n;
@@ -127,6 +127,15 @@ describe("directories and tree", () => {
     expect(byKey["user/preferences"]).toMatchObject({ entry_count: 1, over_cap: false, scope: "user" });
     expect(byKey["user/notes"]).toMatchObject({ entry_count: 0, updated_at: null });
     expect(byKey["project/decisions"]!.l0).toBe("Decisions and findings, with dates and evidence");
+  });
+
+  it("listMemories: dir_key narrows the list to one directory", async () => {
+    await write("alice", "user", null, "pref", { dir_key: "user/preferences" });
+    await write("alice", "user", null, "note", { dir_key: "user/notes" });
+    const all = await listMemories({ pool, username: "alice", project_dir: null, scope: "user" });
+    expect(all.items.map((i) => i.name).sort()).toEqual(["note", "pref"]);
+    const notes = await listMemories({ pool, username: "alice", project_dir: null, dir_key: "user/notes" });
+    expect(notes.items.map((i) => i.name)).toEqual(["note"]);
   });
 
   it("getDir: L1 entries ranked by the prior (hits), only the caller's", async () => {

@@ -76,3 +76,26 @@ export interface MemoryTree {
   limit: number
   dirs: TreeDir[]
 }
+
+// GET /memory/graph (hub/indexer/src/memory-graph.ts): memories, skills,
+// resources and topic hubs with typed edges. Skill/resource/topic ids are
+// stable ("skill:user:<name>", "resource:project:<dir>", "topic:gene:<value>").
+export type MemoryGraphNode =
+  | { id: string; kind: 'memory'; label: string; description: string; scope: ScopeTier; dir_key: string; deleted?: true }
+  | { id: string; kind: 'skill'; label: string; description: string; scope: 'user' | 'org'; path: string }
+  | { id: string; kind: 'resource'; label: string; type: 'project' | 'file' | 'dataset'; path: string }
+  | { id: string; kind: 'topic'; label: string; facet: 'gene' | 'tool' }
+
+export type MemoryGraphNodeKind = MemoryGraphNode['kind']
+
+export interface MemoryGraphEdge {
+  source: string
+  target: string
+  kind: 'facet' | 'project' | 'mention'
+}
+
+export interface MemoryGraph {
+  nodes: MemoryGraphNode[]
+  edges: MemoryGraphEdge[]
+  dropped: Record<MemoryGraphNodeKind, number>   // left out by the server's caps
+}

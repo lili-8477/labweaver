@@ -8,6 +8,7 @@ interface ListParams {
   scope?: "org" | "user" | "project";
   type?: string[];
   source?: "user" | "distilled";
+  dir_key?: string;
   include_deleted?: boolean;
   sort?: "created" | "hit";
   limit?: number;
@@ -79,6 +80,10 @@ export class MemoryRpcClient {
 
   async tree(qs: DirsParams & { include_deleted?: boolean; limit?: number }): Promise<unknown> {
     return this.fetchJson("/memory/tree", { username: this.username, ...qs });
+  }
+
+  async graph(qs: { include_deleted?: boolean }): Promise<unknown> {
+    return this.fetchJson("/memory/graph", { username: this.username, ...qs });
   }
 
   async write(p: WriteParams): Promise<unknown> {

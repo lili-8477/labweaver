@@ -41,6 +41,7 @@ function makeMemoryClient(overrides: Partial<{
   dirs: ReturnType<typeof vi.fn>;
   dir: ReturnType<typeof vi.fn>;
   tree: ReturnType<typeof vi.fn>;
+  graph: ReturnType<typeof vi.fn>;
 }> = {}): MemoryRpcClient {
   return {
     search: overrides.search ?? vi.fn().mockResolvedValue([]),
@@ -55,6 +56,7 @@ function makeMemoryClient(overrides: Partial<{
     dirs: overrides.dirs ?? vi.fn().mockResolvedValue([]),
     dir: overrides.dir ?? vi.fn().mockResolvedValue({}),
     tree: overrides.tree ?? vi.fn().mockResolvedValue({ cap: 50, limit: 50, dirs: [] }),
+    graph: overrides.graph ?? vi.fn().mockResolvedValue({ nodes: [], edges: [], dropped: {} }),
   } as unknown as MemoryRpcClient;
 }
 
@@ -172,6 +174,15 @@ describe("RpcRouter memory_* dispatch", () => {
       const res = await router.dispatch("memory_tree", { limit: 10 }) as Record<string, unknown>;
       expect(treeFn).toHaveBeenCalledWith({ limit: 10 });
       expect(res).toEqual({ success: true, cap: 50, limit: 10, dirs: [{ dir_key: "user/notes" }] });
+    });
+
+    it("memory_graph spreads the graph alongside success", async () => {
+      const g = { nodes: [{ id: "m1", kind: "memory" }], edges: [], dropped: { memory: 0 } };
+      const graphFn = vi.fn().mockResolvedValue(g);
+      const router = makeRouter(makeMemoryClient({ graph: graphFn }));
+      const res = await router.dispatch("memory_graph", { include_deleted: true }) as Record<string, unknown>;
+      expect(graphFn).toHaveBeenCalledWith({ include_deleted: true });
+      expect(res).toEqual({ success: true, ...g });
     });
   });
 
@@ -292,6 +303,7 @@ describe("RpcRouter memory_* dispatch", () => {
         ["memory_dirs", {}],
         ["memory_dir", { dir_key: "user/notes" }],
         ["memory_tree", {}],
+        ["memory_graph", {}],
       ] as const;
 
       for (const [method, params] of methods) {

@@ -25,6 +25,7 @@ import {
   getDir,
   memoryTree,
 } from "./memory-repo.js";
+import { memoryGraph } from "./memory-graph.js";
 import { runRetentionOnce } from "./memory-retention.js";
 import { writeDistillation } from "./distiller-repo.js";
 import { shareRoutesPlugin } from "./share-api.js";
@@ -196,6 +197,7 @@ async function main(): Promise<void> {
     },
     mergeSimilarity: cfg.memoryMergeSimilarity,
     dirCap:          cfg.memoryDirCap,
+    workspacesRoot:  cfg.workspacesRoot,
     repo: {
       searchMemories,
       getMemory,
@@ -212,6 +214,7 @@ async function main(): Promise<void> {
       listDirs,
       getDir,
       memoryTree,
+      memoryGraph,
     },
   });
   await app.register(shareRoutesPlugin({
