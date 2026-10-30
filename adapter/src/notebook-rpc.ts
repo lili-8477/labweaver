@@ -77,6 +77,19 @@ async function readRssMB(pid: number | null): Promise<number | null> {
   }
 }
 
+// Write-then-rename, so a reader (the agent's tools, a refresh) never sees a
+// half-written notebook — multi-MB notebooks with plots take a while to write.
+async function writeAtomic(abs: string, text: string): Promise<void> {
+  const tmp = `${abs}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, text, "utf8");
+    await fs.rename(tmp, abs);
+  } catch (err) {
+    await fs.rm(tmp, { force: true });
+    throw err;
+  }
+}
+
 function blankNotebook(language: string): NotebookFile {
   const kernelspec =
     language === "r"
@@ -159,7 +172,7 @@ export class NotebookManager {
     const hadMissingIds = rawCells.some((c) => !c.id);
     if (hadMissingIds) {
       normalized.nbformat_minor = Math.max(normalized.nbformat_minor, 5);
-      await fs.writeFile(abs, JSON.stringify(normalized, null, 1), "utf8");
+      await writeAtomic(abs, JSON.stringify(normalized, null, 1));
     }
     return normalized;
   }
@@ -167,7 +180,7 @@ export class NotebookManager {
   private async writeFile(relPath: string, nb: NotebookFile): Promise<void> {
     const abs = this.resolve(relPath);
     await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, JSON.stringify(nb, null, 1), "utf8");
+    await writeAtomic(abs, JSON.stringify(nb, null, 1));
   }
 
   private info(relPath: string, nb: NotebookFile): Record<string, unknown> {
