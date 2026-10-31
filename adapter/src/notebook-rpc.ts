@@ -77,6 +77,26 @@ async function readRssMB(pid: number | null): Promise<number | null> {
   }
 }
 
+/** A run's IOPub messages as nbformat outputs; consecutive stream chunks
+ *  with the same name are merged, as Jupyter saves them. */
+export function toOutputs(events: IOPubEvent[]): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  for (const { msg_type: type, content: c } of events) {
+    if (type === "stream") {
+      const last = out[out.length - 1];
+      if (last?.output_type === "stream" && last.name === c.name) last.text = `${last.text}${c.text ?? ""}`;
+      else out.push({ output_type: "stream", name: c.name, text: String(c.text ?? "") });
+    } else if (type === "execute_result") {
+      out.push({ output_type: type, data: c.data, metadata: c.metadata ?? {}, execution_count: c.execution_count ?? null });
+    } else if (type === "display_data") {
+      out.push({ output_type: type, data: c.data, metadata: c.metadata ?? {} });
+    } else if (type === "error") {
+      out.push({ output_type: type, ename: c.ename, evalue: c.evalue, traceback: c.traceback ?? [] });
+    }
+  }
+  return out;
+}
+
 // Write-then-rename, so a reader (the agent's tools, a refresh) never sees a
 // half-written notebook — multi-MB notebooks with plots take a while to write.
 async function writeAtomic(abs: string, text: string): Promise<void> {
@@ -375,8 +395,9 @@ export class NotebookManager {
       return { success: true, execution_count: null, kernel_session_id: kernel.sessionId };
     }
     const kernelspec = this.kernelspecOf(nb);
-    const reply = await kernel.execute(cellId, cell.source, kernelspec);
-    // Persist execution_count back into the cell so reloads keep it. Re-read
+    const { reply, events } = await kernel.executeAndCollect(cellId, cell.source, kernelspec);
+    const outputs = toOutputs(events);
+    // Save outputs and execution_count into the cell, as Jupyter does. Re-read
     // first: the run may have taken minutes, and edits made meanwhile must
     // not be overwritten by the copy read before it started.
     await this.serialize(relPath, async () => {
@@ -384,16 +405,32 @@ export class NotebookManager {
       const ran = fresh.cells.find((c) => c.id === cellId);
       if (!ran) return;
       ran.execution_count = reply.execution_count;
+      ran.outputs = outputs;
       await this.writeFile(relPath, fresh);
     });
     return {
       success: reply.status !== "error",
       status: reply.status,
       execution_count: reply.execution_count,
+      outputs,
       error: reply.error,
       mtime: this.mtimes.get(this.resolve(relPath)),
       kernel_session_id: kernel.sessionId,
     };
+  }
+
+  /** Run a scratch snippet in the notebook's kernel, outside any cell and
+   *  without saving, e.g. to inspect a variable. */
+  async runCode(relPath: string, code: string): Promise<{
+    success: boolean;
+    outputs: Array<Record<string, unknown>>;
+    error: string | null;
+  }> {
+    const kernel = this.getOrCreateKernel(relPath);
+    if (!kernel) return { success: false, outputs: [], error: "kernel bridge not configured" };
+    const kernelspec = this.kernelspecOf(await this.readFile(relPath));
+    const { reply, events } = await kernel.executeAndCollect(`scratch-${randomUUID()}`, code, kernelspec);
+    return { success: reply.status !== "error", outputs: toOutputs(events), error: reply.error };
   }
 
   async manageKernel(relPath: string, action: string): Promise<unknown> {

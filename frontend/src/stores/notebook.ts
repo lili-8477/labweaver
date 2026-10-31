@@ -661,6 +661,12 @@ export const useNotebookStore = defineStore('notebook', () => {
 
     if (!cellId) return
 
+    // A run is starting, maybe one the agent started: drop the last run's outputs.
+    if (msgType === 'execute_input') {
+      cellStreamOutputs.value.set(cellId, [])
+      return
+    }
+
     let output: CellOutput | null = null
     switch (msgType) {
       case 'stream':

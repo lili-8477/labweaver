@@ -69,6 +69,12 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     && ln -sf /opt/qupath/bin/QuPath /usr/local/bin/QuPath \
     && rm -rf /var/lib/apt/lists/*
 
+# R links the reference BLAS, single-threaded. OpenBLAS registers a
+# higher-priority libblas.so.3 alternative, so R picks it up as is and PCA,
+# scaling and other matrix-heavy Seurat steps use all cores.
+RUN apt-get update -qq && apt-get install -y --no-install-recommends libopenblas0-pthread \
+    && rm -rf /var/lib/apt/lists/*
+
 # 3. Adapter bundle + Python kernel bridge.
 #    jupyter_client is already in the base image (pantheon-agents-sc's Python env).
 WORKDIR /opt/adapter

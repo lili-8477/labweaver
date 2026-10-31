@@ -15,6 +15,7 @@ import { H5adService } from "./h5ad-rpc.js";
 import { KernelBridge, type IOPubEvent } from "./kernel.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
 import { NotebookManager } from "./notebook-rpc.js";
+import { notebookToolsServer } from "./notebook-tools.js";
 import { createProject, listProjectNotebooks, listProjects, renameProject, trashProject } from "./projects.js";
 import { ShareRpcClient } from "./share-rpc.js";
 import { listOrgSkills } from "./org-skills-rpc.js";
@@ -747,6 +748,7 @@ export class RpcRouter {
           // Resume only if we've already captured a real SDK session UUID.
           resumeSessionId: chat.session_id ?? undefined,
           signal: ac.signal,
+          mcpServers: { notebook: notebookToolsServer(this.notebooks, this.deps.workspaceRoot, cwd) },
           onEvent: (ev) => this.deps.publishStream(`chat_${chatId}`, ev),
           onSessionId: (sessionId) => {
             // Fire-and-forget — stash the real session UUID so next resume works.

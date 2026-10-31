@@ -28,10 +28,12 @@ export interface RunTurnArgs {
   onEvent: (ev: StreamEvent) => void;
   /** Called once the first session_id is observed in SDK output. */
   onSessionId: (sessionId: string) => void;
+  /** In-process MCP servers added to the ones .mcp.json declares. */
+  mcpServers?: Options["mcpServers"];
 }
 
 export async function runTurn(args: RunTurnArgs): Promise<void> {
-  const { chatId, prompt, images = [], cwd, projectConfigRoot, model, resumeSessionId, signal, onEvent, onSessionId } = args;
+  const { chatId, prompt, images = [], cwd, projectConfigRoot, model, resumeSessionId, signal, onEvent, onSessionId, mcpServers } = args;
   const translator = new EventTranslator();
 
   // Point the SDK at the global CLI binary we installed in the image.
@@ -54,6 +56,7 @@ export async function runTurn(args: RunTurnArgs): Promise<void> {
     // skills never reach the model.
     settingSources: ["project"],
     systemPrompt: { type: "preset", preset: "claude_code" },
+    ...(mcpServers ? { mcpServers } : {}),
     // SDK generates its own session UUID for new sessions; we capture it via
     // onSessionId and stash it against the chat_id so get_chat_messages works.
     ...(resumeSessionId ? { resume: resumeSessionId } : {}),

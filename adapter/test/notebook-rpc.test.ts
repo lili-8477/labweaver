@@ -126,28 +126,32 @@ describe("NotebookManager", () => {
     expect(res).not.toHaveProperty("notebook");
   });
 
-  it("a finished run keeps edits made while it was running", async () => {
+  it("a finished run saves its outputs and keeps edits made while it was running", async () => {
     let finish!: () => void;
+    const stream = (text: string) => ({ msg_type: "stream", content: { name: "stdout", text }, cell_id: "c", parent_msg_id: null });
     const kernel = {
       sessionId: "k1",
-      execute: vi.fn(() => new Promise((resolve) => {
-        finish = () => resolve({ status: "ok", execution_count: 7 });
+      executeAndCollect: vi.fn(() => new Promise((resolve) => {
+        finish = () => resolve({ reply: { status: "ok", execution_count: 7 }, events: [stream("a"), stream("b\n")], stdout: "ab\n" });
       })),
     } as unknown as KernelBridge;
     const knm = new NotebookManager(root, () => kernel);
     await knm.createNotebook("r.ipynb", "python");
     const a = (await knm.addCell("r.ipynb", "code", "slow()", undefined)) as { cell_id: string };
     const run = knm.executeCell("r.ipynb", a.cell_id);
-    await vi.waitFor(() => expect(kernel.execute).toHaveBeenCalled());
+    await vi.waitFor(() => expect(kernel.executeAndCollect).toHaveBeenCalled());
     await knm.addCell("r.ipynb", "code", "added during run", a.cell_id);
     await knm.updateCell("r.ipynb", a.cell_id, "slow(edited)");
     finish();
-    await run;
+    const reply = (await run) as { outputs: unknown[] };
+    const merged = [{ output_type: "stream", name: "stdout", text: "ab\n" }];
+    expect(reply.outputs).toEqual(merged);
     const res = (await knm.readNotebook("r.ipynb")) as {
-      notebook: { cells: Array<{ source: string; execution_count: number | null }> };
+      notebook: { cells: Array<{ source: string; execution_count: number | null; outputs: unknown[] }> };
     };
     expect(res.notebook.cells.map((c) => c.source)).toEqual(["slow(edited)", "added during run"]);
     expect(res.notebook.cells[0]!.execution_count).toBe(7);
+    expect(res.notebook.cells[0]!.outputs).toEqual(merged);
   });
 
   describe("variables", () => {
