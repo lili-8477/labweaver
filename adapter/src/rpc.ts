@@ -702,6 +702,7 @@ export class RpcRouter {
       }
 
       case "chpc_bridge_open": {
+        const user = typeof params.user === "string" ? params.user.trim().toLowerCase() || undefined : undefined;
         const password = params.password as string | undefined;
         const duo = params.duo as OpenRequest["duo"] | undefined;
         const requestId = params.requestId as string | undefined;
@@ -714,7 +715,7 @@ export class RpcRouter {
           throw new Error("duo.code required when duo.kind === 'passcode'");
         }
         // Fire-and-forget — open() returns immediately, status arrives via stream.
-        const res = await this.chpc.open({ password, duo, requestId });
+        const res = await this.chpc.open({ user, password, duo, requestId });
         return { success: true, ...res };
       }
 
