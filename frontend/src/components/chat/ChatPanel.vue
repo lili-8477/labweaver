@@ -131,7 +131,9 @@ function send() {
   let text = pendingProject.value
     ? composeKickoffMessage(pendingProject.value, input.value.trim())
     : input.value.trim()
-  if (selection.current) {
+  // A slash command only runs from the start of the prompt, so it goes
+  // without the selection; the chip stays for the next message.
+  if (selection.current && !text.startsWith('/')) {
     text = `${selectionBlock(selection.current)}\n\n${text}`
     selection.clear()
   }
