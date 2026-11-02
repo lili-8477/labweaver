@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 import { extractTextContent } from '@/utils/content'
+import { splitSelection } from '@/utils/selection'
 import type { ChatMessage } from '@/types'
 
 const props = defineProps<{
@@ -13,6 +14,8 @@ const isUser = computed(() => props.message.role === 'user')
 const isTool = computed(() => props.message.role === 'tool')
 
 const textContent = computed(() => extractTextContent(props.message.content))
+// A user message can carry text selected in an artifact (utils/selection.ts).
+const userParts = computed(() => splitSelection(textContent.value))
 
 const renderedContent = computed(() => {
   const text = textContent.value
@@ -46,7 +49,13 @@ const toolName = computed(() => {
       </template>
       <!-- User message -->
       <template v-else-if="isUser">
-        <div class="content user-text">{{ textContent }}</div>
+        <div class="content user-text">
+          <div v-if="userParts.selection" class="selection-quote" :title="userParts.selection.text">
+            <div class="selection-quote-where">
+              {{ userParts.selection.source }}<template v-if="userParts.selection.where"> · {{ userParts.selection.where }}</template>
+            </div>
+            <div class="selection-quote-text">{{ userParts.selection.text }}</div>
+          </div>{{ userParts.rest }}</div>
       </template>
       <!-- Assistant message -->
       <template v-else>
@@ -91,6 +100,16 @@ const toolName = computed(() => {
 }
 
 .user-text { white-space: pre-wrap; word-break: break-word; }
+.selection-quote {
+  margin-bottom: 6px; padding: 4px 8px;
+  border-left: 2px solid currentColor; border-radius: 4px;
+  background: rgba(0, 0, 0, 0.18); font-size: 0.85em;
+}
+.selection-quote-where { opacity: 0.8; margin-bottom: 2px; }
+.selection-quote-text {
+  font-family: var(--font-mono); white-space: pre-wrap;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
 
 .tool-label {
   font-size: 0.75em; color: var(--text-muted); font-family: var(--font-mono);

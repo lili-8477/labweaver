@@ -4,6 +4,8 @@ import type { NotebookCell } from '@/types'
 import { getMonaco, defaultCellEditorOptions } from '@/utils/monaco'
 import { useNotebookStore } from '@/stores/notebook'
 import { renderMarkdown } from '@/utils/markdown'
+import { useSelectionStore } from '@/stores/selection'
+import { watchEditorSelection } from '@/utils/selection'
 
 const props = defineProps<{
   cell: NotebookCell
@@ -35,6 +37,7 @@ const emit = defineEmits<{
 }>()
 
 const nb = useNotebookStore()
+const selection = useSelectionStore()
 const editorEl = ref<HTMLElement | null>(null)
 const rootEl = ref<HTMLElement | null>(null)
 let editor: import('monaco-editor').editor.IStandaloneCodeEditor | null = null
@@ -94,6 +97,10 @@ async function initEditor() {
       emit('update', editor.getValue())
     }
   }
+
+  watchEditorSelection(editor, (text, lines) => {
+    if (nb.filePath) selection.set({ source: nb.filePath, where: `cell ${props.index + 1}, ${lines}`, text })
+  })
 
   editor.onDidFocusEditorText(() => {
     emit('select')

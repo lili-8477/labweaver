@@ -95,7 +95,7 @@ async function submitShare() {
     <span class="empty-text">Select a memory to inspect</span>
   </div>
 
-  <div v-else class="memory-detail">
+  <div v-else class="memory-detail" :data-selection-source="`memory: ${store.selected.name}`">
 
     <div class="detail-scroll">
 

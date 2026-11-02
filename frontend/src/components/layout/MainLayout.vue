@@ -22,6 +22,8 @@ import { useNotebookStore } from '@/stores/notebook'
 import { useShareStore } from '@/stores/share'
 import { useSkillsStore } from '@/stores/skills'
 import { applyTheme, loadTheme, type Theme } from '@/utils/theme'
+import { useSelectionStore } from '@/stores/selection'
+import { watchDomSelections } from '@/utils/selection'
 
 const conn = useConnectionStore()
 
@@ -138,13 +140,18 @@ function onMouseUp() {
   }
 }
 
+const selection = useSelectionStore()
+let stopSelectionWatch: (() => void) | null = null
+
 onMounted(() => {
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
+  stopSelectionWatch = watchDomSelections(selection.set)
 })
 onUnmounted(() => {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
+  stopSelectionWatch?.()
 })
 
 const connStatus = computed(() => {

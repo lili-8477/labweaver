@@ -207,7 +207,12 @@ watch(
           <CellInsertBar @insert="(t) => nb.addCell(t, '', nb.cells[0] ? { relativeTo: nb.cells[0].id, side: 'before' } : undefined)" />
 
           <template v-for="(cell, idx) in nb.cells" :key="cell.id">
-            <div class="cell-wrapper" :data-cell-id="cell.id">
+            <div
+              class="cell-wrapper"
+              :data-cell-id="cell.id"
+              :data-selection-source="nb.filePath"
+              :data-selection-where="`cell ${idx + 1}`"
+            >
               <CellEditor
                 :cell="cell"
                 :index="idx"
@@ -233,6 +238,8 @@ watch(
               />
               <CellOutputView
                 v-if="cell.cell_type === 'code'"
+                :data-selection-source="nb.filePath"
+                :data-selection-where="`cell ${idx + 1} output`"
                 :outputs="nb.cellStreamOutputs.get(cell.id) || cell.outputs"
                 :executing="nb.executingCells.has(cell.id)"
                 :collapsed="nb.collapsedOutputs.has(cell.id)"

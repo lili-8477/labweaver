@@ -269,7 +269,7 @@ const imgSrc = computed(() => pngB64.value ? `data:image/png;base64,${pngB64.val
 
 <template>
   <div class="h5ad-overlay" v-if="files.openH5ad">
-    <div class="h5ad-panel">
+    <div class="h5ad-panel" :data-selection-source="files.openH5ad.path">
       <div class="panel-header">
         <span class="file-path">{{ files.openH5ad.path }}</span>
         <span v-if="intro" class="shape">{{ intro.shape[0].toLocaleString() }} × {{ intro.shape[1].toLocaleString() }}</span>

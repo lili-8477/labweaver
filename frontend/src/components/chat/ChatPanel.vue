@@ -16,8 +16,11 @@ import { formatFileSize } from '@/utils/format'
 import { isSupported as voiceSupported, startVoice, type VoiceSession } from '@/services/voice'
 import SlashMenu from '@/components/chat/SlashMenu.vue'
 import { useChatHints } from '@/composables/useChatHints'
+import { useSelectionStore } from '@/stores/selection'
+import { selectionBlock, splitSelection } from '@/utils/selection'
 
 const chat = useChatStore()
+const selection = useSelectionStore()
 const uploads = useUploadsStore()
 const input = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
@@ -115,7 +118,7 @@ function hasBubbleBody(msg: ChatMessage): boolean {
 /** Label for the request index: the request's first line, minus attached-image lines. */
 function requestLabel(msg: ChatMessage): string | undefined {
   if (msg.role !== 'user') return undefined
-  const text = extractTextContent(msg.content).replace(/^\[image: [^\]]*\]\n?/gm, '').trim()
+  const text = splitSelection(extractTextContent(msg.content)).rest.replace(/^\[image: [^\]]*\]\n?/gm, '').trim()
   return text.split('\n')[0].slice(0, 120) || 'Image'
 }
 
@@ -125,9 +128,13 @@ function send() {
   const paths = attachments.value
     .filter(a => a.state === 'done' && a.workspacePath)
     .map(a => a.workspacePath)
-  const text = pendingProject.value
+  let text = pendingProject.value
     ? composeKickoffMessage(pendingProject.value, input.value.trim())
     : input.value.trim()
+  if (selection.current) {
+    text = `${selectionBlock(selection.current)}\n\n${text}`
+    selection.clear()
+  }
   pendingProject.value = null
   chat.sendMessage(text, paths)
   input.value = ''
@@ -624,6 +631,15 @@ watch(
         class="input-area"
         :class="{ 'drag-active': isDragging }"
       >
+        <div v-if="selection.current" class="selection-chip" :title="selection.current.text">
+          <span class="selection-label">Selection</span>
+          <span class="selection-where">
+            {{ selection.current.source.split('/').pop() }}<template v-if="selection.current.where"> · {{ selection.current.where }}</template>
+          </span>
+          <span class="selection-text">{{ selection.current.text }}</span>
+          <button class="selection-remove" @click="selection.clear()" title="Don't send the selection">&times;</button>
+        </div>
+
         <div v-if="attachments.length > 0" class="attachment-strip">
           <div
             v-for="a in attachments"
@@ -788,6 +804,24 @@ watch(
   40% { transform: translateY(-6px); }
 }
 .thinking-text { font-size: 0.85em; font-style: italic; }
+
+.selection-chip {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  margin-bottom: 8px; padding: 4px 6px 4px 10px;
+  border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: 6px;
+  background: var(--bg-primary); font-size: 0.8em;
+}
+.selection-label { color: var(--accent); font-weight: 600; flex-shrink: 0; }
+.selection-where { color: var(--text-secondary); flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selection-text {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-muted); font-family: var(--font-mono);
+}
+.selection-remove {
+  flex-shrink: 0; width: 20px; height: 20px; border-radius: 4px;
+  color: var(--text-muted); font-size: 1.1em; line-height: 1;
+}
+.selection-remove:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 
 .suggestions { display: flex; gap: 8px; padding: 8px 16px; flex-wrap: wrap; }
 .suggestion-btn {

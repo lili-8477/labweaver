@@ -2,8 +2,11 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useFileStore } from '@/stores/files'
 import { renderMarkdown } from '@/utils/markdown'
+import { useSelectionStore } from '@/stores/selection'
+import { watchEditorSelection } from '@/utils/selection'
 
 const files = useFileStore()
+const selection = useSelectionStore()
 const editorEl = ref<HTMLElement | null>(null)
 let editor: unknown = null
 let monacoModule: typeof import('monaco-editor') | null = null
@@ -137,6 +140,9 @@ async function initEditor() {
   ed.onDidChangeModelContent(() => {
     modified.value = true
   })
+  watchEditorSelection(ed, (text, lines) => {
+    if (files.openFile) selection.set({ source: files.openFile.path, where: lines, text })
+  })
 }
 
 async function save() {
@@ -238,6 +244,7 @@ onUnmounted(() => {
         <div
           v-else-if="isMarkdown && mdMode === 'rendered'"
           class="markdown-rendered markdown-body"
+          :data-selection-source="files.openFile.path"
           v-html="renderedHtml"
         />
 
