@@ -463,3 +463,15 @@ VLM notes.
 4. **No automatic distillation.** Auto-distill was the main bloat source and is already off (`hub/indexer/src/index.ts:68`); memories come from explicit writes or `/memory` only. Transcripts stay the raw episode log and are never copied into memory.
 5. **Cheap summaries.** L0/L1 exist per folder, not per memory; only the latest version is kept, regenerated only when ≥10% of a folder's children changed (OpenViking's freshness ratio).
 6. **Hard limits.** A per-memory body size cap (one chunk, one 384-dim embedding), re-embed only on content change.
+
+## 2026-11-02 — How the agent manages context size
+
+**Q:** How does the agent manage context size now?
+
+**A:** Mostly through Claude Code itself; the adapter adds nothing except a few caps on what it puts in.
+- Each chat resumes its SDK session (`resume` in `adapter/src/claude.ts`), so history grows turn by turn. Prompt caching makes the repeated history cheap, not small.
+- When the window fills, Claude Code auto-compacts: it summarizes earlier turns and continues. Only one li86 session has compacted so far; the PBMC notebook chat peaked at ~93k tokens.
+- Inputs are capped where we add them: SessionStart memory context has a 2,000-token budget (`memory_session_start.sh`); `run_cells`/`run_code` output is cut to 20k characters in the middle (`adapter/src/notebook-tools.ts`); a selection is cut at 20k characters (`frontend/src/utils/selection.ts`). Claude Code truncates long Bash output and pages large file reads on its own.
+- `capToolOutput` (900 KB) only limits what goes to the UI over NATS; it doesn't affect the model.
+- Subagents (Task/Agent tool) run in their own context and return a summary, which keeps big explorations out of the main thread.
+- Not done: no context-usage meter in the UI, and no automatic new session per task; a long-lived chat relies on compaction.
