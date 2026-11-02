@@ -4,7 +4,7 @@ import { natsService } from '@/services/nats'
 import { extractTextContent } from '@/utils/content'
 import type {
   ChatInfo, ProjectInfo, ChatMessage, StreamMessage, StreamChunk,
-  StepMessage, ChatFinished, AgentInfo,
+  StepMessage, ChatFinished, ChatMode,
   StepMessageData, TimelineStep, HarnessProgress,
 } from '@/types'
 
@@ -36,14 +36,16 @@ export const useChatStore = defineStore('chat', () => {
   const streamingText = ref('')
   const isStreaming = ref(false)
   const sending = ref(false)
-  const agents = ref<AgentInfo[]>([])
-  const activeAgent = ref<string | null>(null)
 
-  // Self-driving (tick harness) state. Active = marker file present in the
-  // workspace; installed = the orchestrator command is on disk. Progress is
-  // parsed from local_projects/<chat-name>/progress.md by the adapter.
-  const harnessActive = ref(false)
-  const harnessInstalled = ref(false)
+  // Modes whose command is installed in this workspace (plain chat always is).
+  const availableModes = ref<ChatMode[]>(['chat'])
+  // The composer mode per chat id; frontend only, a chat without one is 'chat'.
+  const chatModes = ref<Record<string, ChatMode>>({})
+  // The chat whose auto-mode message this tab is sending, until the turn ends.
+  // Covers the gap before list_chats reports auto_running for it.
+  const autoChatId = ref<string | null>(null)
+  // Self-driving (tick harness) progress, parsed from the chat's project
+  // progress.md by the adapter.
   const harnessProgress = ref<HarnessProgress | null>(null)
   // The project dir the adapter actually matched (chat-name path or fallback).
   // Surfaced in the banner so the user can tell which progress.md is being read.
@@ -66,6 +68,12 @@ export const useChatStore = defineStore('chat', () => {
   let stepCounter = 0
 
   const activeChat = computed(() => chats.value.find(c => c.id === activeChatId.value))
+  const activeMode = computed<ChatMode>(() =>
+    (activeChatId.value && chatModes.value[activeChatId.value]) || 'chat')
+  // An auto-mode turn is running in the active chat.
+  const harnessActive = computed(() =>
+    !!activeChat.value?.auto_running
+    || (autoChatId.value != null && autoChatId.value === activeChatId.value))
 
   // ---- Chat CRUD ----
 
@@ -252,8 +260,6 @@ export const useChatStore = defineStore('chat', () => {
     await loadMessages(chatId)
 
     chatSubId = natsService.subscribe(`chat_${chatId}`, handleStreamMessage)
-
-    loadAgents(chatId)
   }
 
   // ---- Stream message handling ----
@@ -423,14 +429,23 @@ export const useChatStore = defineStore('chat', () => {
     messages.value.push({ role: 'user', content: fullContent })
 
     const chatId = activeChatId.value
+    // Auto covers one message: the chat goes back to plain chat once it's sent.
+    // Team stays selected until the user changes it.
+    const mode = activeMode.value
+    if (mode === 'auto') {
+      autoChatId.value = chatId
+      setChatMode(chatId, 'chat')
+    }
     try {
       await natsService.invoke('chat', {
         chat_id: chatId,
         message: [{ role: 'user', content: fullContent }],
+        mode,
       }, 600_000)
     } catch (e) {
       console.error('Chat error:', e)
     }
+    if (autoChatId.value === chatId) autoChatId.value = null
 
     if (activeChatId.value === chatId) {
       await loadMessages(chatId)
@@ -457,26 +472,6 @@ export const useChatStore = defineStore('chat', () => {
     pendingToolCalls.clear()
   }
 
-  // ---- Agents ----
-
-  async function loadAgents(chatId: string) {
-    try {
-      const result = await natsService.invoke('get_agents', { chat_id: chatId }) as {
-        success: boolean; agents: AgentInfo[]; can_switch_agents: boolean
-      }
-      if (result?.success) agents.value = result.agents || []
-    } catch { /* ignore */ }
-  }
-
-  async function setActiveAgent(agentName: string) {
-    if (!activeChatId.value) return
-    await natsService.invoke('set_active_agent', {
-      chat_name: activeChatId.value,
-      agent_name: agentName,
-    })
-    activeAgent.value = agentName
-  }
-
   async function updateChatName(chatId: string, name: string) {
     await natsService.invoke('update_chat_name', { chat_id: chatId, chat_name: name })
     await loadChats()
@@ -484,14 +479,18 @@ export const useChatStore = defineStore('chat', () => {
 
   // ---- Self-driving (tick harness) ----
 
-  async function refreshHarnessMode() {
+  async function refreshAvailableModes() {
     try {
-      const res = await natsService.invoke('get_harness_mode', {}) as {
-        success?: boolean; active?: boolean; installed?: boolean
+      const res = await natsService.invoke('get_available_modes') as {
+        success?: boolean; modes?: ChatMode[]
       }
-      harnessActive.value = !!res?.active
-      harnessInstalled.value = !!res?.installed
-    } catch { /* ignore — keep last known values */ }
+      if (res?.modes) availableModes.value = res.modes
+    } catch { /* ignore — keep last known value */ }
+  }
+
+  /** Switch one chat between modes; other chats keep theirs. */
+  function setChatMode(chatId: string, mode: ChatMode) {
+    chatModes.value[chatId] = mode
   }
 
   async function refreshHarnessProgress() {
@@ -531,12 +530,11 @@ export const useChatStore = defineStore('chat', () => {
 
   return {
     chats, projects, activeChatId, activeChat, messages, streamingText, isStreaming,
-    sending, agents, activeAgent,
-    liveTimeline, completedTimelines, nextSteps,
-    harnessActive, harnessInstalled, harnessProgress, harnessProject,
+    sending, liveTimeline, completedTimelines, nextSteps,
+    availableModes, activeMode, harnessActive, harnessProgress, harnessProject,
     loadChats, loadProjects, createProject, renameProject, deleteProject,
     createChat, deleteChat, selectChat, sendMessage,
-    stopChat, loadAgents, setActiveAgent, updateChatName,
-    refreshHarnessMode, refreshHarnessProgress,
+    stopChat, updateChatName,
+    refreshAvailableModes, setChatMode, refreshHarnessProgress,
   }
 })

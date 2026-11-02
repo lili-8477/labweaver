@@ -19,7 +19,7 @@ export interface LegacyMessage {
   _metadata?: Record<string, unknown>;
 }
 
-function sessionPathCandidates(home: string, cwd: string, chatId: string): string[] {
+export function sessionPathCandidates(home: string, cwd: string, chatId: string): string[] {
   // Claude Code names the projects dir after cwd with every character other
   // than [a-zA-Z0-9] replaced by "-": /workspace/local_projects/foo →
   // -workspace-local-projects-foo.

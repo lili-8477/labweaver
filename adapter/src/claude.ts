@@ -34,10 +34,12 @@ export interface RunTurnArgs {
   hooks?: Options["hooks"];
   /** Appended to the claude_code system prompt. */
   appendSystemPrompt?: string;
+  /** Extra environment for the CLI, e.g. a feature flag for this turn. */
+  env?: Record<string, string>;
 }
 
 export async function runTurn(args: RunTurnArgs): Promise<void> {
-  const { chatId, prompt, images = [], cwd, projectConfigRoot, model, resumeSessionId, signal, onEvent, onSessionId, mcpServers, hooks, appendSystemPrompt } = args;
+  const { chatId, prompt, images = [], cwd, projectConfigRoot, model, resumeSessionId, signal, onEvent, onSessionId, mcpServers, hooks, appendSystemPrompt, env } = args;
   const translator = new EventTranslator();
 
   // Point the SDK at the global CLI binary we installed in the image.
@@ -62,6 +64,7 @@ export async function runTurn(args: RunTurnArgs): Promise<void> {
     systemPrompt: { type: "preset", preset: "claude_code", ...(appendSystemPrompt ? { append: appendSystemPrompt } : {}) },
     ...(mcpServers ? { mcpServers } : {}),
     ...(hooks ? { hooks } : {}),
+    ...(env ? { env: { ...process.env, ...env } } : {}),
     // SDK generates its own session UUID for new sessions; we capture it via
     // onSessionId and stash it against the chat_id so get_chat_messages works.
     ...(resumeSessionId ? { resume: resumeSessionId } : {}),

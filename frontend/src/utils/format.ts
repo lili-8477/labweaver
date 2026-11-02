@@ -32,3 +32,19 @@ export function getFileIcon(name: string, type: 'file' | 'directory'): string {
   }
   return map[ext || ''] || '📄'
 }
+
+/** Compact token count: 950, 84.3k, 1.21M. */
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`
+  return `${(n / 1_000_000).toFixed(2)}M`
+}
+
+/** Elapsed time between two instants: 42s, 3m 05s, 1h 12m. */
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
+}

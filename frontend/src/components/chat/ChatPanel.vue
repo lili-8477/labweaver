@@ -3,11 +3,12 @@ import { ref, nextTick, watch, computed, onMounted, onBeforeUnmount } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatStore } from '@/stores/chat'
 import { isDisplayableMessage, extractTextContent } from '@/utils/content'
-import type { ChatMessage } from '@/types'
+import type { ChatMessage, ChatMode } from '@/types'
 import ChatMessageComp from '@/components/chat/ChatMessage.vue'
 import RequestIndex from '@/components/chat/RequestIndex.vue'
 import ExecutionTimeline from '@/components/chat/ExecutionTimeline.vue'
 import HarnessChecklist from '@/components/chat/HarnessChecklist.vue'
+import ModeMenu from '@/components/chat/ModeMenu.vue'
 import { isImage, makeAttachment, uploadAttachment, discardAttachmentFile, type ChatAttachment } from '@/services/chat-attachments'
 import { createProjectWithFiles, composeKickoffMessage, type CreatedProject } from '@/services/project-from-drop'
 import { queueUpload, cancelUpload } from '@/services/upload'
@@ -15,7 +16,7 @@ import { useUploadsStore } from '@/stores/uploads'
 import { formatFileSize } from '@/utils/format'
 import { isSupported as voiceSupported, startVoice, type VoiceSession } from '@/services/voice'
 import SlashMenu from '@/components/chat/SlashMenu.vue'
-import { useChatHints } from '@/composables/useChatHints'
+import { useChatHints, inputPlaceholder } from '@/composables/useChatHints'
 import { useSelectionStore } from '@/stores/selection'
 import { selectionBlock, splitSelection } from '@/utils/selection'
 
@@ -73,6 +74,12 @@ const hints = useChatHints({
   pendingProject,
   nextSteps,
 })
+
+const placeholder = computed(() => inputPlaceholder(chat.activeMode === 'auto', chat.harnessProgress))
+
+function setMode(mode: ChatMode) {
+  if (chat.activeChatId) chat.setChatMode(chat.activeChatId, mode)
+}
 
 const anyUploading = computed(() => attachments.value.some(a => a.state === 'uploading'))
 const hasContent = computed(
@@ -446,15 +453,9 @@ function swallow(e: DragEvent) {
   if (e.dataTransfer?.types?.includes('Files')) e.preventDefault()
 }
 
-// Harness polling. Two timers run independently because the cadences and
-// life-cycles differ:
-//
-//   - mode (active/installed) — every 5s for the whole life of ChatPanel.
-//     Cheap, and it's how we detect a restart that wipes the marker file or
-//     an external toggle (AgentPanel) flipping the mode on while we sit on
-//     a chat with no progress yet.
-//
-//   - progress.md — variable cadence depending on activity:
+// Harness progress polling. Auto mode applies to one message (picked in the
+// composer's ModeMenu), so "running" means this chat's auto turn is in flight.
+// progress.md is polled at a variable cadence depending on activity:
 //       running + sending → 3s   (a tick is in flight, items change fast)
 //       running + idle    → 8s   (between ticks)
 //       stopped + has progress → 30s (sticky final state; mostly to catch
@@ -464,7 +465,6 @@ function swallow(e: DragEvent) {
 //     NATS when the run has stopped. The stopped-state poll exists so that
 //     if the user manually edits progress.md, or kicks /tick off again,
 //     the view eventually catches up without a chat re-select.
-let harnessModeTimer: number | null = null
 let harnessProgressTimer: number | null = null
 
 function progressCadence(): number | null {
@@ -486,7 +486,6 @@ function scheduleProgressTick() {
 }
 
 function stopHarnessPolling() {
-  if (harnessModeTimer != null) { clearInterval(harnessModeTimer); harnessModeTimer = null }
   if (harnessProgressTimer != null) { clearTimeout(harnessProgressTimer); harnessProgressTimer = null }
 }
 
@@ -510,8 +509,7 @@ watch(() => chat.sending, () => {
 onMounted(() => {
   window.addEventListener('dragover', swallow)
   window.addEventListener('drop', swallow)
-  harnessModeTimer = window.setInterval(() => { void chat.refreshHarnessMode() }, 5000)
-  void chat.refreshHarnessMode()
+  void chat.refreshAvailableModes()
   void chat.refreshHarnessProgress()
   scheduleProgressTick()
 })
@@ -565,10 +563,9 @@ watch(
     <!-- Chat content -->
     <template v-else>
       <!-- Self-driving banner + live checklist. Pinned above messages so it
-           stays visible as the scroll grows. Visible whenever the mode is on
+           stays visible as the scroll grows. Visible while an auto turn runs
            OR this session has a progress.md — once a run produces a plan,
-           the checklist sticks around as a record even after the harness
-           toggles off. The component itself collapses to just the banner
+           the checklist sticks around as a record after the turn ends. The component itself collapses to just the banner
            if the user folds it. -->
       <HarnessChecklist
         v-if="chat.harnessActive || chat.harnessProgress"
@@ -716,6 +713,12 @@ watch(
         />
 
         <div class="input-row">
+          <ModeMenu
+            :model-value="chat.activeMode"
+            :available="chat.availableModes"
+            :disabled="!chat.activeChatId || chat.sending"
+            @update:model-value="setMode"
+          />
           <div class="input-editor">
             <!-- Mirror layer: re-prints the text with the leading /command
                  token colored. Sits behind the transparent textarea. The
@@ -727,7 +730,7 @@ watch(
               ref="inputRef"
               v-model="input"
               class="message-input"
-              placeholder="Type a message. Drop an image to attach, or any other file to start a new project."
+              :placeholder="placeholder"
               @keydown="handleKeydown"
               @paste="handlePaste"
               @scroll="syncHighlightScroll"

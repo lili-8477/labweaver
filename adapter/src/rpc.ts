@@ -22,6 +22,11 @@ import { ShareRpcClient } from "./share-rpc.js";
 import { listOrgSkills } from "./org-skills-rpc.js";
 import { listUserSkills, readUserSkillManifest } from "./skills-rpc.js";
 import { listUserCommands } from "./commands-rpc.js";
+import { parseProgress } from "./progress.js";
+import { autoModeHooks, autoProjectDir, startAutoRun } from "./auto-mode.js";
+import { CHAT_MODES, MODE_COMMANDS, modePrompt, type ChatMode } from "./modes.js";
+import { teamBoardServer } from "./team-board.js";
+import { readChatStats } from "./chat-stats.js";
 import type { StreamEvent } from "./types.js";
 
 export interface RpcDeps {
@@ -57,6 +62,8 @@ export class RpcRouter {
   private chpc: ChpcBridge;
   private mutexes = new ChatMutexRegistry();
   private aborts = new AbortRegistry();
+  /** Chats with a turn running, and that turn's mode. */
+  private turnModes = new Map<string, ChatMode>();
 
   constructor(private deps: RpcDeps) {
     this.chats = deps.chats;
@@ -132,6 +139,15 @@ export class RpcRouter {
    *  under ~/.claude/projects/<encoded cwd>/, so once a session exists it
    *  stays in the cwd it started with (chats.cwd; legacy chats have none and
    *  ran in the default). A new session starts in the chat's project dir. */
+  /** Bind a chat to the project its auto run created. The session keeps the
+   *  cwd it started in (chats.cwd), so only progress lookups follow. */
+  private async bindAutoProject(chatId: string): Promise<void> {
+    const dir = await autoProjectDir(this.deps.home, chatId);
+    const rel = dir ? path.relative(this.deps.workspaceRoot, dir) : "";
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return;
+    await this.chats.setProjectDir(chatId, rel).catch((e) => console.warn(`[rpc] bind auto project for ${chatId}:`, e));
+  }
+
   private chatCwd(chat: ChatRow): string {
     if (chat.cwd) return chat.cwd;
     if (chat.session_id || !chat.project_dir) return this.deps.defaultProjectCwd;
@@ -230,7 +246,11 @@ export class RpcRouter {
       }
 
       case "list_chats": {
-        const chats = await this.chats.list();
+        const chats = (await this.chats.list()).map((c) => ({
+          ...c,
+          running: this.turnModes.has(c.id),
+          auto_running: this.turnModes.get(c.id) === "auto",
+        }));
         return { success: true, chats };
       }
 
@@ -294,49 +314,24 @@ export class RpcRouter {
         return { success: true, messages };
       }
 
-      case "get_agents": {
-        // Hide harness-internal subagents (planner/executor/reviewer of the
-        // tick harness) from the user-facing agents listing. They're dispatched
-        // by the orchestrator via the Task tool, not picked by the user.
-        // Convention: names starting with `tick-` or `_` are internal.
-        const agentsDir = path.join(this.deps.home, ".claude", "agents");
-        const names = await fs.readdir(agentsDir).catch(() => [] as string[]);
-        const agents = names
-          .filter((n) => n.endsWith(".md"))
-          .map((n) => n.replace(/\.md$/, ""))
-          .filter((n) => !n.startsWith("tick-") && !n.startsWith("_"))
-          .map((name) => ({
-            name,
-            instructions: "",
-            tools: [],
-            toolsets: [],
-            icon: "",
-            not_loaded_toolsets: [],
-            model: null,
-            models: [],
-          }));
-        return { success: true, agents, can_switch_agents: false };
-      }
-
-      case "get_harness_mode": {
-        const flag = path.join(this.deps.home, ".claude", ".harness_active");
-        const active = await fs.stat(flag).then(() => true).catch(() => false);
-        // installed = the orchestrator command + tick-* agents are present.
-        const cmdFile = path.join(this.deps.home, ".claude", "commands", "tick.md");
-        const installed = await fs.stat(cmdFile).then(() => true).catch(() => false);
-        return { success: true, active, installed };
-      }
-
-      case "set_harness_mode": {
-        const enabled = Boolean(params.enabled);
-        const flag = path.join(this.deps.home, ".claude", ".harness_active");
-        if (enabled) {
-          await fs.mkdir(path.dirname(flag), { recursive: true });
-          await fs.writeFile(flag, "");
-        } else {
-          await fs.unlink(flag).catch(() => { /* not present is fine */ });
+      case "get_available_modes": {
+        // A mode is available when its command is installed (plain chat always is).
+        const modes: ChatMode[] = [];
+        for (const mode of CHAT_MODES) {
+          const cmd = MODE_COMMANDS[mode];
+          const file = cmd && path.join(this.deps.home, ".claude", "commands", `${cmd}.md`);
+          if (!file || await fs.stat(file).then(() => true, () => false)) modes.push(mode);
         }
-        return { success: true, active: enabled };
+        return { success: true, modes };
+      }
+
+      case "get_chat_stats": {
+        const chatId = (params.chat_id as string)?.trim();
+        if (!chatId) throw new Error("chat_id required");
+        const chat = await this.chats.read(chatId);
+        if (!chat) throw new Error(`chat not found: ${chatId}`);
+        const stats = await readChatStats(this.deps.home, chatId, this.chatCwd(chat), chat.session_id, this.turnModes.has(chatId));
+        return { success: true, ...stats };
       }
 
       case "get_harness_progress": {
@@ -400,6 +395,20 @@ export class RpcRouter {
             if (raw != null) {
               matchedDir = chatRow.project_dir;
               matchedDisplay = path.basename(chatRow.project_dir);
+            }
+          }
+        }
+
+        // Path #1b: the project a running auto turn recorded (the chat is
+        // bound to it when the turn ends).
+        if (raw == null && chatIdParam) {
+          const dir = await autoProjectDir(this.deps.home, chatIdParam);
+          const rel = dir ? path.relative(this.deps.workspaceRoot, dir) : "";
+          if (rel && isSafeProjectDir(rel)) {
+            raw = await tryPath(path.join(dir!, "progress.md"));
+            if (raw != null) {
+              matchedDir = rel;
+              matchedDisplay = path.basename(rel);
             }
           }
         }
@@ -477,7 +486,7 @@ export class RpcRouter {
         return {
           success: true,
           exists: true,
-          progress: parseProgressMd(raw),
+          progress: parseProgress(raw),
           project_name: matchedDisplay,
           project_dir: matchedDir,
         };
@@ -498,13 +507,6 @@ export class RpcRouter {
         return { success: true, project_dir: projectDir };
       }
 
-      case "set_active_agent": {
-        const chatId = (params.chat_name as string) || (params.chat_id as string);
-        const agentName = params.agent_name as string;
-        await this.chats.setActiveAgent(chatId, agentName);
-        return { success: true };
-      }
-
       case "stop_chat": {
         const chatId = params.chat_id as string;
         const stopped = this.aborts.abort(chatId);
@@ -515,7 +517,8 @@ export class RpcRouter {
         const chatId = params.chat_id as string;
         const messageArr = params.message as Array<{ role: string; content: string }>;
         const { text, images } = extractPrompt(messageArr);
-        return await this.runChat(chatId, text, images);
+        const mode = CHAT_MODES.includes(params.mode as ChatMode) ? params.mode as ChatMode : "chat";
+        return await this.runChat(chatId, text, images, mode);
       }
 
       case "proxy_toolset": {
@@ -725,7 +728,7 @@ export class RpcRouter {
     }
   }
 
-  private async runChat(chatId: string, prompt: string, images: ImageRef[] = []): Promise<unknown> {
+  private async runChat(chatId: string, prompt: string, images: ImageRef[] = [], mode: ChatMode = "chat"): Promise<unknown> {
     const chat = await this.chats.read(chatId);
     if (!chat) throw new Error(`chat not found: ${chatId}`);
 
@@ -733,13 +736,20 @@ export class RpcRouter {
     // A project dir may not exist yet (bound before creation) or may have
     // been deleted since; the SDK can't spawn in a missing cwd.
     await fs.mkdir(cwd, { recursive: true });
+    const turnPrompt = modePrompt(mode, prompt);
+    // Auto and team turns are the ones routed through their command.
+    const auto = mode === "auto" && turnPrompt !== prompt;
+    const team = mode === "team" && turnPrompt !== prompt;
+    const projectAbs = chat.project_dir ? path.join(this.deps.workspaceRoot, chat.project_dir) : null;
     const mutex = this.mutexes.get(chatId);
     const run = mutex.tryRun(async () => {
       const ac = this.aborts.register(chatId);
+      this.turnModes.set(chatId, auto ? "auto" : team ? "team" : "chat");
       try {
+        if (auto) await startAutoRun(this.deps.home, chatId, projectAbs);
         await runTurn({
           chatId,
-          prompt,
+          prompt: turnPrompt,
           images,
           cwd,
           // Settings, hooks, skills and .mcp.json live at the workspace root,
@@ -752,9 +762,13 @@ export class RpcRouter {
           mcpServers: {
             notebook: notebookToolsServer(this.notebooks, this.deps.workspaceRoot, cwd),
             next_step: nextStepServer(),
+            ...(team ? { team: teamBoardServer(this.deps.home, chatId) } : {}),
           },
-          hooks: nextStepHooks(path.join(this.deps.home, ".claude", ".harness_active")),
+          // Auto mode owns how its turn ends; a team lead stops while its
+          // teammates work, so the next-step nudge would come too early.
+          hooks: auto ? autoModeHooks(this.deps.home, chatId) : team ? undefined : nextStepHooks(),
           appendSystemPrompt: NEXT_STEP_GUIDANCE,
+          ...(team ? { env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1" } } : {}),
           onEvent: (ev) => this.deps.publishStream(`chat_${chatId}`, ev),
           onSessionId: (sessionId) => {
             // Fire-and-forget — stash the real session UUID so next resume works.
@@ -764,8 +778,10 @@ export class RpcRouter {
           },
         });
         await this.chats.touch(chatId);
+        if (auto && !chat.project_dir) await this.bindAutoProject(chatId);
       } finally {
         this.aborts.clear(chatId);
+        this.turnModes.delete(chatId);
       }
       return { success: true };
     });
@@ -795,35 +811,6 @@ const MEDIA_TYPE_BY_EXT: Record<string, ImageRef["mediaType"]> = {
   ".gif": "image/gif",
   ".webp": "image/webp",
 };
-
-// ─── progress.md parsing ───────────────────────────────────────────────
-// The tick harness keeps all per-project state in a single markdown file. The
-// frontend wants a parsed view for its self-driving checklist, but we don't
-// want a full markdown library here — the structure is rigid enough that line
-// scanning is sufficient. Tolerant on input: if a section is missing or the
-// format drifts, we degrade to "no steps" rather than throwing.
-
-export interface ProgressStep {
-  /** First word after the box (and the optional `(reviewed)` marker). */
-  name: string;
-  /** Rest of the line up to ` | ` (which separates description from metrics). */
-  description: string;
-  done: boolean;
-  reviewed: boolean;
-}
-
-export interface ParsedProgress {
-  pipeline: string | null;
-  steps: ProgressStep[];
-  complete: boolean;
-  /** Count of unchecked `☐` lines under `## Review feedback`. */
-  pendingFeedback: number;
-  /** Index of the next ☐ step (or null when nothing is pending). The
-   *  orchestrator dispatches this one next, so the UI can highlight it. */
-  nextStepIndex: number | null;
-}
-
-const STEP_LINE_RE = /^-\s*([☑☐])\s*(?:\(reviewed\)\s*)?(\S+)(?:\s+(.*))?$/u;
 
 // Match a local_projects/<slug> reference in message content. Slug rules
 // mirror tick-bootstrap's slugifier (lowercase kebab + dataset accessions)
@@ -883,66 +870,6 @@ async function inferProjectDirFromHistory(
     if (ok) return slug;
   }
   return null;
-}
-
-export function parseProgressMd(raw: string): ParsedProgress {
-  // Walk the file once, tracking which top-level section we're in. Plan and
-  // Review feedback are the only sections with parseable structure.
-  let section: string | null = null;
-  let pipeline: string | null = null;
-  const steps: ProgressStep[] = [];
-  let pendingFeedback = 0;
-  let complete = false;
-
-  for (const line of raw.split(/\r?\n/)) {
-    const headerMatch = /^##\s+(.+?)\s*$/.exec(line);
-    if (headerMatch) {
-      const heading = (headerMatch[1] ?? "").toLowerCase();
-      if (heading.startsWith("status:")) {
-        if (/complete/i.test(line)) complete = true;
-        section = null;
-        continue;
-      }
-      // First word: plan / sample(s) / pipeline / review / ...
-      section = heading.split(/\s+/)[0] ?? null;
-      continue;
-    }
-
-    if (section === "pipeline" && line.trim() && !pipeline) {
-      pipeline = line.trim();
-      continue;
-    }
-
-    if (section === "plan") {
-      const m = STEP_LINE_RE.exec(line);
-      if (!m) continue;
-      const box = m[1] ?? "";
-      const name = m[2] ?? "";
-      const restRaw = (m[3] ?? "").trim();
-      // Strip metrics suffix (` | metric=value ...`) from the human-readable
-      // description so the checklist stays one line.
-      const description = (restRaw.split(/\s*\|\s*/, 1)[0] ?? "").trim();
-      steps.push({
-        name,
-        description,
-        done: box === "☑",
-        reviewed: /\(reviewed\)/.test(line),
-      });
-    }
-
-    if (section === "review" && /^-\s*☐/.test(line)) {
-      pendingFeedback++;
-    }
-  }
-
-  const nextStepIndex = steps.findIndex(s => !s.done);
-  return {
-    pipeline,
-    steps,
-    complete,
-    pendingFeedback,
-    nextStepIndex: nextStepIndex === -1 ? null : nextStepIndex,
-  };
 }
 
 const IMAGE_LINE_RE = /^\[image:\s*([^\]]+)\]\s*$/;

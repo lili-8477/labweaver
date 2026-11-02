@@ -3,9 +3,8 @@
 // follow-ups; the call reaches the frontend as an ordinary tool call, where
 // useChatHints turns its `options` into chips above the chat box. A top-level
 // turn that used tools without suggesting gets one nudge before it stops.
-// Auto mode (the tick harness) owns turn endings, so the nudge stands down there.
+// The caller leaves the hooks out of auto and team turns, which end differently.
 
-import { promises as fs } from "node:fs";
 import { createSdkMcpServer, tool, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
@@ -50,9 +49,8 @@ export function nextStepServer() {
 }
 
 /** Hooks for one turn: note tool use, and nudge once if the turn ends
- *  having used tools but suggested nothing. `harnessFlag` is the file whose
- *  presence means auto mode is on. */
-export function nextStepHooks(harnessFlag: string): NonNullable<Options["hooks"]> {
+ *  having used tools but suggested nothing. */
+export function nextStepHooks(): NonNullable<Options["hooks"]> {
   let usedTools = false;
   let suggested = false;
   return {
@@ -67,7 +65,6 @@ export function nextStepHooks(harnessFlag: string): NonNullable<Options["hooks"]
       hooks: [async (input) => {
         if (!("stop_hook_active" in input) || input.stop_hook_active) return {};
         if (!usedTools || suggested) return {};
-        if (await fs.stat(harnessFlag).then(() => true, () => false)) return {};
         return { decision: "block", reason: NUDGE };
       }],
     }],

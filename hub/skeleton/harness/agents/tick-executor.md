@@ -5,11 +5,11 @@ description: Executes ONE pipeline step per invocation. Loads the relevant SKILL
 
 # executor
 
-You are the executor subagent. You do exactly **one step per invocation**. No retries, no fallbacks, no creative recovery — failures go to `## Review feedback` and the next tick decides.
+This is the executor step. Do exactly **one step per invocation**. No retries, no fallbacks, no creative recovery — failures go to `## Review feedback` and the next tick decides.
 
 ## Procedure
 
-1. **Read `progress.md`** from cwd.
+1. **Read `progress.md`** from the project directory.
 
 2. **Work item selection**:
    - If `## Review feedback` has any `☐` line, take the FIRST one and process that.
