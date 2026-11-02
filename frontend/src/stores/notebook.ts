@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { natsService } from '@/services/nats'
 import type {
   Notebook, NotebookCell, NotebookInfo,
@@ -70,6 +70,7 @@ export const useNotebookStore = defineStore('notebook', () => {
   function captureKernelSessionId(result: unknown): string | null {
     if (!result || typeof result !== 'object') return null
     const r = result as Record<string, unknown>
+    if (typeof r.mtime === 'number') fileMtime = r.mtime
     const id = (r.kernel_session_id as string) ?? null
     if (id && id !== kernelSessionId.value) {
       kernelSessionId.value = id
@@ -96,6 +97,7 @@ export const useNotebookStore = defineStore('notebook', () => {
   // ─────────────────────────────────────────────────────────────────────
 
   async function openNotebook(path: string) {
+    if (filePath.value === path && notebook.value) return refreshNotebook()
     loading.value = true
     // Each notebook has its own kernel and its own variable namespace —
     // drop the previous notebook's per-kernel state immediately so the
@@ -119,6 +121,7 @@ export const useNotebookStore = defineStore('notebook', () => {
         notebook.value = nb as Notebook
         filePath.value = path
         version.value = (result as NotebookInfo)?.version || 0
+        fileMtime = (result as NotebookInfo)?.mtime ?? null
         selectedCellId.value = notebook.value.cells[0]?.id ?? null
 
         // Ask the backend for an active kernel session (if any) so we can
@@ -147,9 +150,60 @@ export const useNotebookStore = defineStore('notebook', () => {
     return result
   }
 
-  async function refreshNotebook() {
-    if (filePath.value) await openNotebook(filePath.value)
+  /**
+   * Take a fresh copy of the open notebook — from a mutation's reply when it
+   * carries one, else re-read — without the loading screen, so every open
+   * cell keeps its editor, the scroll position and the selection.
+   */
+  async function refreshNotebook(reply?: Partial<NotebookInfo>) {
+    const path = filePath.value
+    if (!path) return
+    let info = reply?.notebook ? reply : null
+    if (!info) {
+      info = (await natsService.proxyToolset(
+        'read_notebook',
+        { notebook_path: path, validate: false },
+        'notebook',
+      )) as NotebookInfo
+    }
+    if (filePath.value !== path || !info?.notebook?.cells) return
+    notebook.value = info.notebook
+    if (info.version) version.value = info.version
+    if (info.mtime) fileMtime = info.mtime
+    if (!notebook.value.cells.some((c) => c.id === selectedCellId.value)) {
+      selectedCellId.value = notebook.value.cells[0]?.id ?? null
+    }
   }
+
+  // The agent edits notebooks on disk too. While one is open, check its
+  // mtime every 1.5s and take a fresh copy when it moved past the last one
+  // this tab read or wrote. A failed check (file mid-write) retries next tick.
+  let fileMtime: number | null = null
+  let checking = false
+  async function checkForOutsideChanges() {
+    const path = filePath.value
+    if (!path || checking || loading.value || saving.value || document.hidden) return
+    checking = true
+    try {
+      const r = (await natsService.proxyToolset(
+        'stat_notebook', { notebook_path: path }, 'notebook',
+      )) as { mtime?: number }
+      if (filePath.value === path && r?.mtime && r.mtime !== fileMtime) await refreshNotebook()
+    } catch {
+      // retry on the next tick
+    } finally {
+      checking = false
+    }
+  }
+  let changeTimer: ReturnType<typeof setInterval> | null = null
+  watch(filePath, (path) => {
+    if (changeTimer) clearInterval(changeTimer)
+    changeTimer = path ? setInterval(checkForOutsideChanges, 1500) : null
+  })
+
+  // Source edits go out one at a time, and a run waits for them, so a cell
+  // runs what was last typed (the adapter reads the source from the file).
+  let pendingWrites: Promise<unknown> = Promise.resolve()
 
   function closeNotebook() {
     if (notebookSubId) {
@@ -211,12 +265,12 @@ export const useNotebookStore = defineStore('notebook', () => {
         execute: false,
       },
       'notebook',
-    )) as { success: boolean; cell_id: string; kernel_session_id?: string }
+    )) as Partial<NotebookInfo> & { success: boolean; cell_id: string; kernel_session_id?: string }
 
     captureKernelSessionId(result)
 
     if (result?.success !== false) {
-      await refreshNotebook()
+      await refreshNotebook(result)
       if (result?.cell_id) selectedCellId.value = result.cell_id
     }
     return result
@@ -237,19 +291,16 @@ export const useNotebookStore = defineStore('notebook', () => {
     if (!filePath.value) return
     const cell = notebook.value?.cells.find((c) => c.id === cellId)
     if (cell) cell.source = source
+    const path = filePath.value
     saving.value = true
+    const write = pendingWrites.then(() => natsService.proxyToolset(
+      'update_cell',
+      { notebook_path: path, cell_id: cellId, content: source, execute: false },
+      'notebook',
+    ))
+    pendingWrites = write.catch(() => undefined)
     try {
-      const result = (await natsService.proxyToolset(
-        'update_cell',
-        {
-          notebook_path: filePath.value,
-          cell_id: cellId,
-          content: source,
-          execute: false,
-        },
-        'notebook',
-      )) as Record<string, unknown>
-      captureKernelSessionId(result)
+      captureKernelSessionId((await write) as Record<string, unknown>)
     } finally {
       saving.value = false
     }
@@ -262,9 +313,9 @@ export const useNotebookStore = defineStore('notebook', () => {
       'delete_cell',
       { notebook_path: filePath.value, cell_id: cellId },
       'notebook',
-    )) as Record<string, unknown>
+    )) as Partial<NotebookInfo> & Record<string, unknown>
     captureKernelSessionId(result)
-    await refreshNotebook()
+    await refreshNotebook(result)
     if (cells.value.length) {
       selectedCellId.value = cells.value[Math.min(idx, cells.value.length - 1)].id
     } else {
@@ -297,9 +348,9 @@ export const useNotebookStore = defineStore('notebook', () => {
         'move_cell',
         { notebook_path: filePath.value, cell_id: cellId, below_cell_id: belowCellId },
         'notebook',
-      )) as Record<string, unknown>
+      )) as Partial<NotebookInfo> & Record<string, unknown>
       captureKernelSessionId(result)
-      await refreshNotebook()
+      await refreshNotebook(result)
     } catch (e) {
       console.error('move_cell failed:', e)
     }
@@ -347,16 +398,10 @@ export const useNotebookStore = defineStore('notebook', () => {
     cellStreamOutputs.value.set(cellId, [])
     lastExecutionError.value = null
 
-    // Flush any pending in-memory edits for this cell to disk BEFORE
-    // the adapter reads it back. Monaco's onDidChangeModelContent updates
-    // notebook.value.cells[i].source synchronously, but the actual
-    // update_cell RPC is debounced 500ms — so clicking Run within that
-    // window would execute the stale on-disk version.
-    const target = notebook.value?.cells.find((c) => c.id === cellId)
-    if (target && target.cell_type === 'code') {
-      const src = Array.isArray(target.source) ? target.source.join('') : (target.source ?? '')
-      await updateCell(cellId, src)
-    }
+    // The adapter reads the source from disk, so let queued saves land
+    // first. CellEditor flushes its debounced edit (on blur, or right before
+    // a Run shortcut), which queues it here synchronously.
+    await pendingWrites
 
     try {
       const result = (await natsService.proxyToolset(
@@ -395,30 +440,36 @@ export const useNotebookStore = defineStore('notebook', () => {
     }
   }
 
-  async function runAll() {
-    for (const cell of cells.value) {
+  // Run code cells from `start` down, stopping at the first error. An error
+  // left over from an earlier run must not stop this one before it starts.
+  async function runFrom(start: number) {
+    lastExecutionError.value = null
+    for (const cell of cells.value.slice(start)) {
       if (cell.cell_type !== 'code') continue
-      if (lastExecutionError.value) break
       await executeCell(cell.id)
+      if (lastExecutionError.value) break
     }
   }
 
+  async function runAll() {
+    await runFrom(0)
+  }
+
   async function runBelow() {
-    if (!selectedCellId.value) return runAll()
     const startIdx = cells.value.findIndex((c) => c.id === selectedCellId.value)
-    if (startIdx < 0) return
-    for (let i = startIdx; i < cells.value.length; i++) {
-      const c = cells.value[i]
-      if (c.cell_type !== 'code') continue
-      if (lastExecutionError.value) break
-      await executeCell(c.id)
-    }
+    await runFrom(Math.max(startIdx, 0))
+  }
+
+  async function restartAndRunAll() {
+    await restartKernel()
+    await runAll()
   }
 
   async function runAndAdvance(cellId?: string) {
     const id = cellId ?? selectedCellId.value
     if (!id) return
-    await executeCell(id)
+    // Move on right away, as Jupyter does; the run continues in the background.
+    void executeCell(id)
     const idx = cells.value.findIndex((c) => c.id === id)
     if (idx === cells.value.length - 1) {
       await addCell('code', '', { relativeTo: id, side: 'after' })
@@ -610,6 +661,12 @@ export const useNotebookStore = defineStore('notebook', () => {
 
     if (!cellId) return
 
+    // A run is starting, maybe one the agent started: drop the last run's outputs.
+    if (msgType === 'execute_input') {
+      cellStreamOutputs.value.set(cellId, [])
+      return
+    }
+
     let output: CellOutput | null = null
     switch (msgType) {
       case 'stream':
@@ -680,7 +737,7 @@ export const useNotebookStore = defineStore('notebook', () => {
     // actions
     openNotebook, createNotebook, refreshNotebook, closeNotebook,
     addCell, insertCell, updateCell, deleteCell, moveCell, changeCellType,
-    executeCell, runAll, runBelow, runAndAdvance,
+    executeCell, runAll, runBelow, restartAndRunAll, runAndAdvance,
     interruptKernel, restartKernel, refreshKernelStatus,
     clearCellOutputs, clearAllOutputs, toggleOutputCollapsed,
     copyCell, cutCell, pasteCell,

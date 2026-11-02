@@ -4,16 +4,20 @@
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
-import { ChatsRepo } from "./chats-repo.js";
+import { ChatsRepo, type ChatRow } from "./chats-repo.js";
 import { ChpcBridge, type OpenRequest } from "./chpc-bridge-rpc.js";
 import { runTurn } from "./claude.js";
 import { AbortRegistry, ChatMutexRegistry } from "./concurrency.js";
+import type { FleetMonitor } from "./fleet-status.js";
 import { FileManager } from "./fs-rpc.js";
 import { readSessionMessages, type LegacyMessage } from "./history.js";
 import { H5adService } from "./h5ad-rpc.js";
 import { KernelBridge, type IOPubEvent } from "./kernel.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
 import { NotebookManager } from "./notebook-rpc.js";
+import { notebookToolsServer } from "./notebook-tools.js";
+import { NEXT_STEP_GUIDANCE, nextStepHooks, nextStepServer } from "./next-step.js";
+import { createProject, listProjectNotebooks, listProjects, renameProject, trashProject } from "./projects.js";
 import { ShareRpcClient } from "./share-rpc.js";
 import { listOrgSkills } from "./org-skills-rpc.js";
 import { listUserSkills, readUserSkillManifest } from "./skills-rpc.js";
@@ -41,6 +45,8 @@ export interface RpcDeps {
   memory: MemoryRpcClient | null;
   /** Share API client. null when MEMORY_API_URL is not configured. */
   share: ShareRpcClient | null;
+  /** Fleet monitor; set only in the manager container (LABWEAVER_ROLE=manager). */
+  fleet?: FleetMonitor | null;
 }
 
 export class RpcRouter {
@@ -106,6 +112,32 @@ export class RpcRouter {
     }
   }
 
+  /** Validate a workspace-relative project dir from the frontend. Empty or
+   *  missing = unbound (null), so a malformed value never reaches the DB or
+   *  the agent's cwd. The dir need not exist yet — runChat creates it. */
+  private parseProjectDir(value: unknown): string | null {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (raw === "") return null;
+    if (raw.startsWith("/") || raw.includes("..") || raw.startsWith(".")) {
+      throw new Error("project_dir must be a safe workspace-relative path");
+    }
+    const abs = path.resolve(this.deps.workspaceRoot, raw);
+    if (!abs.startsWith(this.deps.workspaceRoot + path.sep)) {
+      throw new Error("project_dir escapes workspace");
+    }
+    return raw.replace(/\/+$/, "");
+  }
+
+  /** The cwd a chat's turns run in. Claude Code files a session's transcript
+   *  under ~/.claude/projects/<encoded cwd>/, so once a session exists it
+   *  stays in the cwd it started with (chats.cwd; legacy chats have none and
+   *  ran in the default). A new session starts in the chat's project dir. */
+  private chatCwd(chat: ChatRow): string {
+    if (chat.cwd) return chat.cwd;
+    if (chat.session_id || !chat.project_dir) return this.deps.defaultProjectCwd;
+    return path.join(this.deps.workspaceRoot, chat.project_dir);
+  }
+
   private async writeSettings(obj: Record<string, unknown>): Promise<void> {
     await fs.writeFile(this.settingsPath(), JSON.stringify(obj, null, 2) + "\n", "utf8");
   }
@@ -144,6 +176,11 @@ export class RpcRouter {
     });
   }
 
+  /** Counts for this container's fleet status report. */
+  activity(): { activeTurns: number; kernels: number } {
+    return { activeTurns: this.aborts.count, kernels: this.notebooks.kernelCount };
+  }
+
   abortAll(): void {
     this.aborts.abortAll();
     this.notebooks.shutdownAll();
@@ -170,9 +207,17 @@ export class RpcRouter {
       case "get_endpoint":
         return { success: true, service_id: this.deps.serviceId };
 
+      // get_role only drives the Manager button; fleet_status is the gate.
+      case "get_role":
+        return { success: true, manager: !!this.deps.fleet };
+
+      case "fleet_status":
+        if (!this.deps.fleet) throw new Error("not authorized: fleet_status requires the manager role");
+        return { success: true, containers: await this.deps.fleet.list() };
+
       case "get_model": {
         const cur = await this.readSettings();
-        return { success: true, model: (cur.model as string) ?? "claude-sonnet-4-6" };
+        return { success: true, model: (cur.model as string) ?? "claude-sonnet-5-5" };
       }
 
       case "set_model": {
@@ -191,9 +236,35 @@ export class RpcRouter {
 
       case "create_chat": {
         const name = (params.chat_name as string | undefined) ?? "New chat";
+        const projectDir = this.parseProjectDir(params.project_dir);
         const chatId = crypto.randomUUID();
-        await this.chats.create(chatId, name);
+        await this.chats.create(chatId, name, projectDir);
         return { success: true, chat_id: chatId };
+      }
+
+      case "list_projects":
+        return { success: true, projects: await listProjects(this.deps.workspaceRoot) };
+
+      case "list_project_notebooks":
+        return { success: true, projects: await listProjectNotebooks(this.deps.workspaceRoot) };
+
+      case "create_project": {
+        const name = (params.name as string | undefined)?.trim();
+        if (!name) throw new Error("name required");
+        return { success: true, project: await createProject(this.deps.workspaceRoot, name) };
+      }
+
+      case "rename_project": {
+        await renameProject(this.deps.workspaceRoot, params.project_dir, String(params.name ?? ""));
+        return { success: true };
+      }
+
+      case "delete_project": {
+        // Trash the folder first: if that fails, the chats are untouched.
+        const trashedTo = await trashProject(this.deps.workspaceRoot, params.project_dir);
+        const deleted = await this.chats.deleteByProject(params.project_dir as string);
+        for (const id of deleted) this.mutexes.delete(id);
+        return { success: true, trashed_to: trashedTo, deleted_chats: deleted.length };
       }
 
       case "delete_chat": {
@@ -217,7 +288,7 @@ export class RpcRouter {
         const sessionUuid = chat?.session_id ?? chatId;
         const messages = await readSessionMessages(
           this.deps.home,
-          this.deps.defaultProjectCwd,
+          chat ? this.chatCwd(chat) : this.deps.defaultProjectCwd,
           sessionUuid,
         );
         return { success: true, messages };
@@ -369,7 +440,7 @@ export class RpcRouter {
         if (raw == null && chatRow && !chatRow.project_dir) {
           const inferred = await inferProjectDirFromHistory(
             this.deps.home,
-            this.deps.defaultProjectCwd,
+            this.chatCwd(chatRow),
             this.deps.workspaceRoot,
             chatRow.session_id ?? chatRow.chat_id,
           );
@@ -413,26 +484,15 @@ export class RpcRouter {
       }
 
       case "set_chat_project_dir": {
-        // Workspace-relative path or empty string to unbind. Validated here
-        // so a malformed value never reaches the DB or the agent's cwd.
+        // Workspace-relative path or empty string to unbind. Only before the
+        // chat's first turn: the session is pinned to the cwd it started in.
         const chatId = (params.chat_id as string)?.trim();
         if (!chatId) throw new Error("chat_id required");
-        const raw = (params.project_dir as string | undefined)?.trim() ?? "";
-        let projectDir: string | null = null;
-        if (raw !== "") {
-          if (raw.startsWith("/") || raw.includes("..") || raw.startsWith(".")) {
-            throw new Error("project_dir must be a safe workspace-relative path");
-          }
-          const abs = path.resolve(this.deps.workspaceRoot, raw);
-          if (!abs.startsWith(this.deps.workspaceRoot + path.sep)) {
-            throw new Error("project_dir escapes workspace");
-          }
-          // Don't require the dir to exist yet — drop-to-project calls this
-          // immediately after createDirectory, and the order of the two
-          // calls is racy across NATS round-trips. The binding is just a
-          // pointer; runChat handles a missing dir by falling back to the
-          // default cwd.
-          projectDir = raw.replace(/\/+$/, "");
+        const projectDir = this.parseProjectDir(params.project_dir);
+        const chat = await this.chats.read(chatId);
+        if (!chat) throw new Error(`chat not found: ${chatId}`);
+        if (chat.session_id) {
+          throw new Error("chat already has a session; its project can no longer be changed");
         }
         await this.chats.setProjectDir(chatId, projectDir);
         return { success: true, project_dir: projectDir };
@@ -492,6 +552,31 @@ export class RpcRouter {
       case "memory_list": {
         if (!this.deps.memory) throw new Error("memory api not configured");
         const res = await this.deps.memory.list(params as Parameters<MemoryRpcClient["list"]>[0]);
+        return { success: true, ...(res as object) };
+      }
+
+      case "memory_dirs": {
+        if (!this.deps.memory) throw new Error("memory api not configured");
+        const dirs = await this.deps.memory.dirs(params as Parameters<MemoryRpcClient["dirs"]>[0]);
+        return { success: true, dirs };
+      }
+
+      case "memory_dir": {
+        if (!this.deps.memory) throw new Error("memory api not configured");
+        const { dir_key, ...qs } = params;
+        const dir = await this.deps.memory.dir(dir_key as string, qs as Parameters<MemoryRpcClient["dir"]>[1]);
+        return { success: true, dir };
+      }
+
+      case "memory_tree": {
+        if (!this.deps.memory) throw new Error("memory api not configured");
+        const res = await this.deps.memory.tree(params as Parameters<MemoryRpcClient["tree"]>[0]);
+        return { success: true, ...(res as object) };
+      }
+
+      case "memory_graph": {
+        if (!this.deps.memory) throw new Error("memory api not configured");
+        const res = await this.deps.memory.graph(params as Parameters<MemoryRpcClient["graph"]>[0]);
         return { success: true, ...(res as object) };
       }
 
@@ -644,12 +729,10 @@ export class RpcRouter {
     const chat = await this.chats.read(chatId);
     if (!chat) throw new Error(`chat not found: ${chatId}`);
 
-    // cwd stays at defaultProjectCwd even when the chat is bound to a
-    // project. Claude Code stores session JSONL under
-    // ~/.claude/projects/<encoded-cwd>/<session>.jsonl — switching cwd
-    // mid-chat would fragment history (old turns in one dir, new turns in
-    // another) and break message reads. The agent learns the project from
-    // the kickoff prompt and tick-bootstrap output, not cwd.
+    const cwd = this.chatCwd(chat);
+    // A project dir may not exist yet (bound before creation) or may have
+    // been deleted since; the SDK can't spawn in a missing cwd.
+    await fs.mkdir(cwd, { recursive: true });
     const mutex = this.mutexes.get(chatId);
     const run = mutex.tryRun(async () => {
       const ac = this.aborts.register(chatId);
@@ -658,15 +741,24 @@ export class RpcRouter {
           chatId,
           prompt,
           images,
-          cwd: this.deps.defaultProjectCwd,
+          cwd,
+          // Settings, hooks, skills and .mcp.json live at the workspace root,
+          // not in each project dir.
+          projectConfigRoot: this.deps.workspaceRoot,
           model: (await this.readSettings()).model as string | undefined,
           // Resume only if we've already captured a real SDK session UUID.
           resumeSessionId: chat.session_id ?? undefined,
           signal: ac.signal,
+          mcpServers: {
+            notebook: notebookToolsServer(this.notebooks, this.deps.workspaceRoot, cwd),
+            next_step: nextStepServer(),
+          },
+          hooks: nextStepHooks(path.join(this.deps.home, ".claude", ".harness_active")),
+          appendSystemPrompt: NEXT_STEP_GUIDANCE,
           onEvent: (ev) => this.deps.publishStream(`chat_${chatId}`, ev),
           onSessionId: (sessionId) => {
             // Fire-and-forget — stash the real session UUID so next resume works.
-            this.chats.setSessionUuid(chatId, sessionId).catch((e) => {
+            this.chats.setSessionUuid(chatId, sessionId, cwd).catch((e) => {
               console.warn(`[rpc] failed to stash session_uuid for ${chatId}:`, e);
             });
           },

@@ -244,13 +244,15 @@ watch(() => bridge.status.kind, () => disarm())
 
 /* Modal */
 .chpc-modal-backdrop {
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   position: fixed; inset: 0;
   background: rgba(0,0,0,0.45);
   display: flex; align-items: center; justify-content: center;
   z-index: 1000;
 }
 .chpc-modal {
-  background: var(--bg-secondary);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   width: min(440px, 92vw);
@@ -353,7 +355,7 @@ button.ghost { background: transparent; color: var(--text-secondary); }
 button.ghost:hover:not(:disabled) { background: var(--bg-tertiary); color: var(--text-primary); }
 button.primary {
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
   border-color: var(--accent);
 }
 button.primary:disabled { opacity: 0.55; cursor: not-allowed; }

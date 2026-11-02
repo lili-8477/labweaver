@@ -2,8 +2,11 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useFileStore } from '@/stores/files'
 import { renderMarkdown } from '@/utils/markdown'
+import { useSelectionStore } from '@/stores/selection'
+import { watchEditorSelection } from '@/utils/selection'
 
 const files = useFileStore()
+const selection = useSelectionStore()
 const editorEl = ref<HTMLElement | null>(null)
 let editor: unknown = null
 let monacoModule: typeof import('monaco-editor') | null = null
@@ -137,6 +140,9 @@ async function initEditor() {
   ed.onDidChangeModelContent(() => {
     modified.value = true
   })
+  watchEditorSelection(ed, (text, lines) => {
+    if (files.openFile) selection.set({ source: files.openFile.path, where: lines, text })
+  })
 }
 
 async function save() {
@@ -238,6 +244,7 @@ onUnmounted(() => {
         <div
           v-else-if="isMarkdown && mdMode === 'rendered'"
           class="markdown-rendered markdown-body"
+          :data-selection-source="files.openFile.path"
           v-html="renderedHtml"
         />
 
@@ -250,12 +257,14 @@ onUnmounted(() => {
 
 <style scoped>
 .file-viewer-overlay {
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   position: fixed; inset: 0; z-index: 100;
   background: rgba(0, 0, 0, 0.6); display: flex;
   align-items: center; justify-content: center;
 }
 .file-viewer {
-  width: 85vw; height: 80vh; background: var(--bg-primary);
+  width: 85vw; height: 80vh; background: var(--bg-elevated);
   border: 1px solid var(--border); border-radius: var(--radius-lg);
   display: flex; flex-direction: column; overflow: hidden;
 }
@@ -275,7 +284,7 @@ onUnmounted(() => {
 }
 .viewer-actions { display: flex; gap: 8px; }
 .btn-save {
-  padding: 4px 14px; background: var(--accent); color: #fff;
+  padding: 4px 14px; background: var(--accent); color: var(--on-accent);
   border: none; border-radius: var(--radius); font-size: 0.85em;
 }
 .btn-save:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -284,7 +293,7 @@ onUnmounted(() => {
   border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.85em;
 }
 .btn-download:hover { background: var(--bg-hover); }
-.btn-download.large { padding: 8px 20px; background: var(--accent); color: #fff; border: none; }
+.btn-download.large { padding: 8px 20px; background: var(--accent); color: var(--on-accent); border: none; }
 .btn-toggle {
   padding: 4px 12px; background: var(--bg-tertiary); color: var(--text-primary);
   border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.85em;

@@ -1,4 +1,5 @@
 import pino from "pino";
+import { DEFAULT_DIR_CAP } from "./memory-dirs.js";
 
 export const logger = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
@@ -15,6 +16,11 @@ export interface Config {
   embedderIntervalMs:   number;
   memoryApiPort:        number;
   memoryOrgManagers:    string[];
+  memoryMergeSimilarity:        number;
+  memoryDirCap:                 number;
+  memoryRetentionStaleDays:     number;
+  memoryRetentionPurgeDays:     number;
+  memoryRetentionIntervalHours: number;
   shareSnapshotsDir:          string;
   shareMaxFolderBytes:        number;
   shareSnapshotTtlDays:       number;
@@ -49,6 +55,16 @@ function parseBigintVar(env: Record<string, string | undefined>, name: string, f
   }
 }
 
+function parseUnitVar(env: Record<string, string | undefined>, name: string, fallback: number): number {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || n > 1) {
+    throw new Error(`${name} must be a number in (0, 1]; got ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   const pgUrl = env.PG_URL;
   if (!pgUrl) throw new Error("PG_URL is required");
@@ -78,6 +94,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     embedderIntervalMs:   parseIntVar(env, "EMBEDDER_INTERVAL_MS",   5000),
     memoryApiPort:        parseIntVar(env, "MEMORY_API_PORT",         8400),
     memoryOrgManagers,
+    memoryMergeSimilarity:        parseUnitVar(env, "MEMORY_MERGE_SIMILARITY",         0.9),
+    memoryDirCap:                 parseIntVar(env, "MEMORY_DIR_CAP",                   DEFAULT_DIR_CAP),
+    memoryRetentionStaleDays:     parseIntVar(env, "MEMORY_RETENTION_STALE_DAYS",      90),
+    memoryRetentionPurgeDays:     parseIntVar(env, "MEMORY_RETENTION_PURGE_DAYS",      30),
+    memoryRetentionIntervalHours: parseIntVar(env, "MEMORY_RETENTION_INTERVAL_HOURS",  24),
     shareSnapshotsDir,
     shareMaxFolderBytes,
     shareSnapshotTtlDays,

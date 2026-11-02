@@ -14,11 +14,14 @@
 //   KERNEL_IDLE_CULL_MS           default 0 (disabled); when >0, cull a kernel
 //                                 idle for this many ms (no in-flight executes)
 //   KERNEL_CULL_CHECK_INTERVAL_MS default 60000; how often to check
+//   LABWEAVER_ROLE    "manager" collects every container's status for the
+//                     Manager panel (fleet_status RPC); default unset
 
 import { createHash } from "node:crypto";
 import { Pool } from "pg";
 import { ChatsRepo } from "./chats-repo.js";
 import { loadDbConfig } from "./db-config.js";
+import { FleetMonitor, StatusReporter, type Publish, type Subscribe } from "./fleet-status.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
 import { NatsBus } from "./nats-bus.js";
 import { ShareRpcClient } from "./share-rpc.js";
@@ -81,6 +84,21 @@ async function main(): Promise<void> {
   await bus.connect();
   console.log(`[adapter] connected to NATS ${servers}, service_id=${serviceId.slice(0, 12)}...`);
 
+  const publish: Publish = (subject, body) => bus.publishRaw(bus.qualify(subject), body);
+  const subscribe: Subscribe = (subject, onMessage) => bus.subscribeJson(bus.qualify(subject), onMessage);
+  // Everyone with chats is expected to have a container, so a silent one
+  // still shows up (as offline) after the manager restarts.
+  const fleet = process.env.LABWEAVER_ROLE === "manager"
+    ? new FleetMonitor({
+        publish,
+        subscribe,
+        roster: async () =>
+          (await pool.query<{ username: string }>("SELECT DISTINCT username FROM chats")).rows.map((r) => r.username),
+      })
+    : null;
+  fleet?.start();
+  if (fleet) console.log("[adapter] manager container: collecting fleet status");
+
   const router = new RpcRouter({
     serviceId,
     workspaceRoot,
@@ -98,7 +116,15 @@ async function main(): Promise<void> {
     ),
     memory: memoryClient,
     share: shareClient,
+    fleet,
   });
+
+  new StatusReporter({
+    username: dbCfg.username,
+    publish,
+    subscribe,
+    activity: () => router.activity(),
+  }).start();
 
   await bus.serve((method, params) => router.dispatch(method, params));
   console.log("[adapter] serving RPCs");

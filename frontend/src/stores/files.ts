@@ -5,6 +5,11 @@ import type { FileEntry } from '@/types'
 
 export const useFileStore = defineStore('files', () => {
   const tree = ref<FileEntry[]>([])
+  // FileTree view state, kept here so it survives the panel unmounting
+  // (switching or closing the right panel).
+  const expandedDirs = ref<Set<string>>(new Set())
+  const dirChildren = ref<Map<string, FileEntry[]>>(new Map())
+  const treeScrollTop = ref(0)
   const loading = ref(false)
   const openFile = ref<{
     path: string
@@ -156,6 +161,7 @@ export const useFileStore = defineStore('files', () => {
 
   return {
     tree, loading, openFile, openH5ad, revealRequest,
+    expandedDirs, dirChildren, treeScrollTop,
     loadTree, requestReveal, readFile, writeFile, createFile,
     createDirectory, deletePath, movePath,
     closeFile, openH5adFile, closeH5ad,

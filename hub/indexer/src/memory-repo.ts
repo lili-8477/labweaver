@@ -1,33 +1,14 @@
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import { logger } from "./config.js";
 import { contentHash } from "./content-hash.js";
-import { insertMemoryRow } from "./distiller-repo.js";
+import { insertChunk, storeMemory } from "./distiller-repo.js";
+import { appendAudit } from "./memory-audit.js";
+import { DEFAULT_DIR_CAP, type Scope } from "./memory-dirs.js";
+import { embedForMerge, type WritePolicy } from "./memory-merge.js";
 import { encodeProjectDir } from "./path-decode.js";
 
-export interface AuditEntry {
-  memory_id: string;
-  actor:     string;
-  action:    'write' | 'update' | 'forget' | 'restore';
-  before:    Record<string, unknown> | null;
-  after:     Record<string, unknown> | null;
-}
-
-export async function appendAudit(
-  client: PoolClient,
-  e: AuditEntry,
-): Promise<void> {
-  await client.query(
-    `INSERT INTO memory_audit_log (memory_id, actor, action, before, after)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)`,
-    [
-      e.memory_id,
-      e.actor,
-      e.action,
-      e.before ? JSON.stringify(e.before) : null,
-      e.after  ? JSON.stringify(e.after)  : null,
-    ],
-  );
-}
+// Re-exported for existing importers (share-repo, tests).
+export { appendAudit, type AuditEntry } from "./memory-audit.js";
 
 export interface SearchMemoriesArgs {
   pool:           Pool;
@@ -245,6 +226,7 @@ export interface MemoryDetail {
   type:               string;
   source:             "distilled" | "user";
   scope_tier:         "org" | "user" | "project";
+  dir_key:            string;
   name:               string;
   description:        string;
   body:               string;
@@ -280,6 +262,7 @@ export async function getMemory(
     type:               string;
     source:             "distilled" | "user";
     scope_tier:         "org" | "user" | "project";
+    dir_key:            string;
     name:               string;
     description:        string;
     body:               string;
@@ -298,7 +281,7 @@ export async function getMemory(
               WHEN m.project_dir IS NULL     THEN 'user'
               ELSE 'project'
             END AS scope_tier,
-            m.name, m.description, m.body, m.source_session_id,
+            m.dir_key, m.name, m.description, m.body, m.source_session_id,
             m.hit_count, m.last_hit_at, m.created_at, m.updated_at, m.deleted_at,
             COALESCE(
               (SELECT jsonb_object_agg(key, vals) FROM (
@@ -322,6 +305,7 @@ export async function getMemory(
     type:              row.type,
     source:            row.source,
     scope_tier:        row.scope_tier,
+    dir_key:           row.dir_key,
     name:              row.name,
     description:       row.description,
     body:              row.body,
@@ -467,21 +451,25 @@ export interface WriteUserMemoryArgs {
   description: string;
   body:        string;
   facets?:     Record<string, string[]>;
+  dir_key?:    string;            // defaults by (scope, type), see memory-dirs.ts
+  policy?:     WritePolicy;       // merge check + directory cap
 }
 
-// Persist a /memorize-style user-authored memory. Shares the chunk + facet +
-// queue path with distillation by delegating to insertMemoryRow; the only
-// caller-side differences are source='user', source_session_id=NULL, and the
-// content_hash recipe.
+// Persist a /memorize-style user-authored memory through storeMemory (the
+// write path shared with distillation: merge-on-write, chunk + facets +
+// queue, directory cap); the caller-side differences are source='user',
+// source_session_id=NULL, and the content_hash recipe.
 //
 // Org-scope writes are operator-administered (sub-phase B spec §7.4): they
 // cannot be issued from inside a user container, so we reject them here.
 //
 // Returns { memory_id: null } when the row collides on
-// (username, project_dir, type, content_hash) — that is dedup, not failure.
+// (username, project_dir, type, content_hash) — that is dedup, not failure —
+// and { merged: true } with the existing row's id when it absorbed the write.
+// Throws InvalidDirError when dir_key is not a directory of the scope.
 export async function writeUserMemory(
   args: WriteUserMemoryArgs,
-): Promise<{ memory_id: string | null }> {
+): Promise<{ memory_id: string | null; dir_key: string; merged: boolean }> {
   if (args.scope === "org") {
     throw new Error("org-scope writes are admin-only; use the operator administration path");
   }
@@ -497,11 +485,12 @@ export async function writeUserMemory(
     body:          `${args.name}\n${args.body}`,
     promptVersion: 0,
   });
+  const embedding = (await embedForMerge(args.policy, [args.body]))?.[0] ?? null;
 
   const client = await args.pool.connect();
   try {
     await client.query("BEGIN");
-    const memory_id = await insertMemoryRow(client, {
+    const res = await storeMemory(client, {
       username:          args.username,
       project_dir,
       source:            "user",
@@ -512,18 +501,22 @@ export async function writeUserMemory(
       body:              args.body,
       facets:            args.facets ?? {},
       content_hash:      hash,
-    });
-    if (memory_id !== null) {
+      dir_key:           args.dir_key,
+    }, embedding, args.policy);
+    if (res.memory_id !== null && !res.merged) {
       await appendAudit(client, {
-        memory_id,
+        memory_id: res.memory_id,
         actor:  args.username,
         action: 'write',
         before: null,
-        after:  { type: args.type, name: args.name, description: args.description, body: args.body },
+        after:  {
+          type: args.type, name: args.name, description: args.description, body: args.body,
+          dir_key: res.dir_key,
+        },
       });
     }
     await client.query("COMMIT");
-    return { memory_id };
+    return res;
   } catch (e) {
     await client.query("ROLLBACK");
     throw e;
@@ -671,15 +664,7 @@ export async function updateMemory(args: {
       `DELETE FROM memory_chunks WHERE memory_id = $1`,
       [args.memoryId],
     );
-    const chunk = await client.query<{ chunk_id: string }>(
-      `INSERT INTO memory_chunks (memory_id, chunk_idx, content)
-       VALUES ($1, 0, $2) RETURNING chunk_id`,
-      [args.memoryId, args.body],
-    );
-    await client.query(
-      `INSERT INTO embedder_queue (chunk_id) VALUES ($1) ON CONFLICT DO NOTHING`,
-      [chunk.rows[0]!.chunk_id],
-    );
+    await insertChunk(client, args.memoryId, args.body, null);
 
     await appendAudit(client, {
       memory_id: args.memoryId,
@@ -766,6 +751,7 @@ export interface ListFilter {
   scope?:           'org' | 'user' | 'project';  // optional narrow
   type?:            string[];                     // any-of
   source?:          'user' | 'distilled';
+  dir_key?:         string;                       // one directory, e.g. "user/preferences"
   include_deleted?: boolean;                      // default false
   sort?:            'created' | 'hit';            // default 'created'
   limit?:           number;                       // default 50, cap 200
@@ -807,6 +793,7 @@ export interface ListItem {
 //   $6  include_deleted (boolean)
 //   $7  cursor (timestamptz or NULL = no cursor)
 //   $8  limit+1
+//   $9  dir_key (text or NULL = any directory)
 export async function listMemories(f: ListFilter): Promise<{
   items: ListItem[];
   next_cursor: string | null;
@@ -910,6 +897,8 @@ SELECT m.memory_id, m.type, m.source,
    AND ($4::text[] IS NULL OR m.type = ANY($4))
    -- source filter
    AND ($5::text IS NULL OR m.source = $5::text)
+   -- directory filter
+   AND ($9::text IS NULL OR m.dir_key = $9::text)
    -- cursor filter
    AND ${cursorCond}
 ${orderBy}
@@ -939,6 +928,7 @@ LIMIT $8
     inclDeleted,     // $6
     cursor,          // $7
     limit + 1,       // $8 — fetch one extra to determine next_cursor
+    f.dir_key ?? null, // $9
   ]);
 
   const rows = res.rows;
@@ -981,81 +971,64 @@ export interface MemoryContext {
   memory_ids:    string[];
 }
 
-// SessionStart bundle: rank up to ~50 candidate memories by
-// scope_tier × popularity × recency (no FTS or vector — context isn't
-// query-driven), then walk them in score-DESC order and accumulate header +
-// body lines into a single system_prompt string until adding the next memory
-// would push the running char count past `budget_tokens * 4` (the
-// 4-chars-per-token heuristic). Always include at least one memory if any
-// candidates exist; an empty bundle is worse than slightly oversized.
+// SessionStart directory index (OpenViking-style L0/L1). Instead of dumping
+// memory bodies, list each non-empty directory with its L0 line and its top
+// few entries (name, description, id) ranked by the prior, project first,
+// then user, then org, until the budget (`budget_tokens * 4` chars, the
+// 4-chars-per-token heuristic) is spent. The agent drills down with
+// memory_dir / memory_get (L2). Returns {system_prompt: "", memory_ids: []}
+// when the caller has no memories — the hook then emits nothing.
 //
 // project_path is the raw absolute path inside the user's container (e.g.
 // "/workspace/pbmc3k"). It's encoded to "-workspace-pbmc3k" via
 // encodeProjectDir before filtering on memories.project_dir.
-//
-// Returns {system_prompt: "", memory_ids: []} when no rows match — the
-// caller checks `memory_ids.length === 0` to decide whether to emit a
-// SessionStart hook at all, so the empty string (not the bare header) is
-// the documented "skip" signal.
-const CONTEXT_SQL = `
-SELECT m.memory_id, m.type, m.name, m.body,
-       CASE
-         WHEN m.username = '__org__'                              THEN 'org'
-         WHEN m.project_dir IS NULL                               THEN 'user'
-         ELSE 'project'
-       END AS scope_tier,
-       (CASE
-          WHEN m.username = '__org__'                              THEN 1.00
-          WHEN m.project_dir IS NULL                               THEN 1.10
-          ELSE 1.20
-        END
-        * (1.0 + LN(1 + m.hit_count) * 0.05)
-        * EXP(-EXTRACT(EPOCH FROM (now() - m.created_at)) / (86400 * 90))
-       ) AS score
-FROM memories m
-WHERE m.deleted_at IS NULL
-  AND (m.username = $1 OR m.username = '__org__')
-  AND (m.project_dir IS NULL OR m.project_dir = $2)
-  AND m.name <> 'raw distillation failed'
-ORDER BY score DESC
-LIMIT 50
-`;
+const CONTEXT_ENTRIES_PER_DIR = 3;
+const CONTEXT_SCOPE_ORDER = { project: 0, user: 1, org: 2 } as const;
+const CONTEXT_HEADER =
+  "# Memory index\n\n" +
+  "Your long-term memory, by directory: each line is a directory, its entry count and " +
+  "one-line summary, followed by its top entries as `name: description [id]`. " +
+  "Read a directory's overview with memory_dir, an entry's full text with memory_get(id), " +
+  "or search with memory_search.\n\n";
 
 export async function getContext(args: GetContextArgs): Promise<MemoryContext> {
-  const encodedProjectDir = encodeProjectDir(args.project_path);
+  const project_dir = encodeProjectDir(args.project_path);
+  const dirs = (await listDirs({ pool: args.pool, username: args.username, project_dir }))
+    .filter((d) => d.entry_count > 0)
+    .sort((a, b) => CONTEXT_SCOPE_ORDER[a.scope] - CONTEXT_SCOPE_ORDER[b.scope]);
+  if (dirs.length === 0) return { system_prompt: "", memory_ids: [] };
 
-  type Row = {
-    memory_id:  string;
-    type:       string;
-    name:       string;
-    body:       string;
-    scope_tier: "org" | "user" | "project";
-    score:      string;
-  };
-  const r = await args.pool.query<Row>(CONTEXT_SQL, [args.username, encodedProjectDir]);
-
-  if (r.rows.length === 0) {
-    return { system_prompt: "", memory_ids: [] };
-  }
-
-  const HEADER = "# Memory Context\n\n";
   const charBudget = args.budget_tokens * 4;
+  const parts = [CONTEXT_HEADER];
   const ids: string[] = [];
-  const parts: string[] = [HEADER];
-  let used = HEADER.length;
+  let used = CONTEXT_HEADER.length;
+  // The first directory line and entry always go in: an empty bundle is
+  // worse than a slightly oversized one.
+  const fits = (line: string) => ids.length === 0 || used + line.length <= charBudget;
 
-  for (const row of r.rows) {
-    const block = `[${row.scope_tier}:${row.type}] ${row.name}\n${row.body}\n\n`;
-    if (ids.length === 0 || used + block.length <= charBudget) {
-      parts.push(block);
-      used += block.length;
-      ids.push(row.memory_id);
-    } else {
-      break;
+  outer:
+  for (const d of dirs) {
+    const dirLine = `- ${d.dir_key} (${d.entry_count}): ${d.l0}\n`;
+    if (!fits(dirLine)) break;
+    parts.push(dirLine);
+    used += dirLine.length;
+    const entries = await dirEntries({
+      pool: args.pool, username: args.username, project_dir,
+      dir_key: d.dir_key, limit: CONTEXT_ENTRIES_PER_DIR,
+    });
+    for (const e of entries) {
+      const line = `  - ${e.name}: ${truncate(e.description, 120)} [${e.memory_id}]\n`;
+      if (!fits(line)) break outer;
+      parts.push(line);
+      used += line.length;
+      ids.push(e.memory_id);
     }
   }
-
   return { system_prompt: parts.join(""), memory_ids: ids };
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }
 
 export async function getMetrics(pool: Pool): Promise<{
@@ -1127,5 +1100,304 @@ export async function getMetrics(pool: Pool): Promise<{
       parseFloat(metricsRow.distill_cursor_lag_seconds_max) * 100,
     ) / 100,
     audit_log_size: parseInt(metricsRow.audit_log_size, 10),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Directories. L0 is the static memory_dirs.l0 line; L1 is computed here from
+// the owner's live entries so it is never stale; L2 is getMemory's body.
+// A directory instance is (owner, project_dir, dir_key): org directories hold
+// '__org__' rows, user directories the caller's project-less rows, project
+// directories the caller's rows for one project. A caller sees the org and
+// user directories always, project directories only with a project_dir.
+
+export interface DirSummary {
+  dir_key:     string;
+  scope:       Scope;
+  l0:          string;
+  entry_count: number;          // live entries
+  over_cap:    boolean;         // entry_count > cap: only user-authored rows are left to retire
+  updated_at:  string | null;   // newest live entry; null when empty
+}
+
+export interface DirEntry {
+  memory_id:   string;
+  name:        string;
+  description: string;
+  type:        string;
+  source:      "user" | "distilled";
+  hit_count:   number;
+  last_hit_at: string | null;
+  updated_at:  string;
+}
+
+export interface DirDetail extends DirSummary {
+  entries: DirEntry[];          // L1: top entries by the prior
+}
+
+// Name of the sentinel row distiller.ts writes on permanent failure; never
+// surfaced in directories.
+const DISTILL_FAILED_NAME = "raw distillation failed";
+
+// Query-independent prior shared by directory L1, the tree and session
+// context: scope tier × popularity × recency (90-day e-folding), as in search.
+const PRIOR_SCORE_SQL = `
+  (CASE m.scope WHEN 'org' THEN 1.00 WHEN 'user' THEN 1.10 ELSE 1.20 END
+   * (1.0 + LN(1 + m.hit_count) * 0.05)
+   * EXP(-EXTRACT(EPOCH FROM (now() - m.created_at)) / (86400 * 90)))`;
+
+// Rows of the directory instances visible to $1 (username) for project $2.
+const DIR_ROW_VISIBLE_SQL = `
+  (m.scope = 'org' OR (m.username = $1 AND (m.scope = 'user' OR m.project_dir = $2::text)))`;
+
+export async function listDirs(args: {
+  pool:        Pool;
+  username:    string;
+  project_dir: string | null;
+  cap?:        number;
+}): Promise<DirSummary[]> {
+  type Row = { dir_key: string; scope: Scope; l0: string; entry_count: number; updated_at: Date | null };
+  const r = await args.pool.query<Row>(
+    `SELECT d.dir_key, d.scope, d.l0,
+            COUNT(m.memory_id)::int AS entry_count,
+            MAX(m.updated_at)       AS updated_at
+       FROM memory_dirs d
+       LEFT JOIN memories m
+         ON m.dir_key = d.dir_key
+        AND m.deleted_at IS NULL
+        AND m.name <> '${DISTILL_FAILED_NAME}'
+        AND ${DIR_ROW_VISIBLE_SQL}
+      WHERE d.scope <> 'project' OR $2::text IS NOT NULL
+      GROUP BY d.dir_key, d.scope, d.l0, d.sort
+      ORDER BY d.sort`,
+    [args.username, args.project_dir],
+  );
+  const cap = args.cap ?? DEFAULT_DIR_CAP;
+  return r.rows.map((row) => ({
+    ...row,
+    over_cap:   row.entry_count > cap,
+    updated_at: row.updated_at ? row.updated_at.toISOString() : null,
+  }));
+}
+
+// Directory L1: the directory's L0 plus its top `limit` entries. Returns null
+// when the directory does not exist or is not visible to the caller.
+export async function getDir(args: {
+  pool:        Pool;
+  username:    string;
+  project_dir: string | null;
+  dir_key:     string;
+  limit?:      number;
+  cap?:        number;
+}): Promise<DirDetail | null> {
+  const summary = (await listDirs(args)).find((d) => d.dir_key === args.dir_key);
+  if (!summary) return null;
+  return { ...summary, entries: await dirEntries({ ...args, limit: args.limit ?? 20 }) };
+}
+
+async function dirEntries(args: {
+  pool:        Pool;
+  username:    string;
+  project_dir: string | null;
+  dir_key:     string;
+  limit:       number;
+}): Promise<DirEntry[]> {
+  type Row = Omit<DirEntry, "last_hit_at" | "updated_at"> & { last_hit_at: Date | null; updated_at: Date };
+  const r = await args.pool.query<Row>(
+    `SELECT m.memory_id, m.name, m.description, m.type, m.source,
+            m.hit_count, m.last_hit_at, m.updated_at
+       FROM memories m
+      WHERE m.dir_key = $3
+        AND m.deleted_at IS NULL
+        AND m.name <> '${DISTILL_FAILED_NAME}'
+        AND ${DIR_ROW_VISIBLE_SQL}
+      ORDER BY ${PRIOR_SCORE_SQL} DESC, m.memory_id
+      LIMIT $4`,
+    [args.username, args.project_dir, args.dir_key, args.limit],
+  );
+  return r.rows.map((row) => ({
+    ...row,
+    last_hit_at: row.last_hit_at ? row.last_hit_at.toISOString() : null,
+    updated_at:  row.updated_at.toISOString(),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Memory tree for the UI: every directory instance with its L0, counts and
+// cap state, and its memories (live first, then by the prior) for a tree
+// plus an inspector; bodies are fetched per memory with getMemory.
+
+export interface TreeMemory {
+  memory_id:   string;
+  name:        string;
+  description: string;
+  dir_key:     string;
+  scope:       Scope;
+  project_dir: string | null;
+  type:        string;
+  source:      "user" | "distilled";
+  hit_count:   number;
+  last_hit_at: string | null;
+  created_at:  string;
+  updated_at:  string;
+  deleted_at:  string | null;   // non-null: soft-deleted (only with include_deleted)
+}
+
+export interface TreeDir extends DirSummary {
+  project_dir:   string | null; // the project of a project directory; null otherwise
+  deleted_count: number;        // soft-deleted rows still restorable
+  memories:      TreeMemory[];  // at most `limit`
+  truncated:     boolean;       // more rows exist than `memories` holds
+}
+
+export interface MemoryTree {
+  cap:   number;                // per-directory live cap
+  limit: number;                // per-directory memory list cap
+  // Grouped as user directories, then each project's directories (by
+  // project_dir), then org directories; catalogue order within a group.
+  dirs:  TreeDir[];
+}
+
+const TREE_SCOPE_ORDER = { user: 0, project: 1, org: 2 } as const;
+
+// Rows visible to $1 (username): org rows, the caller's own rows, and with a
+// project $2 only that project's (null: every project the caller has).
+const TREE_ROW_VISIBLE_SQL = `
+  (m.scope = 'org' OR (m.username = $1 AND
+   (m.scope = 'user' OR $2::text IS NULL OR m.project_dir = $2::text)))`;
+
+// project_dir null: project directories for every project the caller has
+// memories in; otherwise only that project's (present even when empty).
+export async function memoryTree(args: {
+  pool:             Pool;
+  username:         string;
+  project_dir:      string | null;
+  include_deleted?: boolean;
+  limit?:           number;
+  cap?:             number;
+}): Promise<MemoryTree> {
+  const limit = args.limit ?? 50;
+  const cap = args.cap ?? DEFAULT_DIR_CAP;
+  const includeDeleted = args.include_deleted ?? false;
+  type Row = Omit<TreeMemory, "last_hit_at" | "created_at" | "updated_at" | "deleted_at"> & {
+    last_hit_at: Date | null; created_at: Date; updated_at: Date; deleted_at: Date | null;
+    entry_count: number; deleted_count: number; dir_updated_at: Date | null;
+  };
+  const [catalogue, r] = await Promise.all([
+    args.pool.query<{ dir_key: string; scope: Scope; l0: string }>(
+      `SELECT dir_key, scope, l0 FROM memory_dirs ORDER BY sort`,
+    ),
+    args.pool.query<Row>(
+      `SELECT * FROM (
+         SELECT m.memory_id, m.name, m.description, m.dir_key, m.scope, m.project_dir,
+                m.type, m.source, m.hit_count, m.last_hit_at,
+                m.created_at, m.updated_at, m.deleted_at,
+                ROW_NUMBER() OVER (PARTITION BY m.dir_key, m.project_dir
+                                   ORDER BY m.deleted_at IS NOT NULL, ${PRIOR_SCORE_SQL} DESC, m.memory_id) AS rn,
+                (COUNT(*) FILTER (WHERE m.deleted_at IS NULL) OVER w)::int     AS entry_count,
+                (COUNT(*) FILTER (WHERE m.deleted_at IS NOT NULL) OVER w)::int AS deleted_count,
+                MAX(m.updated_at) FILTER (WHERE m.deleted_at IS NULL) OVER w   AS dir_updated_at
+           FROM memories m
+          WHERE m.name <> '${DISTILL_FAILED_NAME}'
+            AND ${TREE_ROW_VISIBLE_SQL}
+         WINDOW w AS (PARTITION BY m.dir_key, m.project_dir)
+       ) t
+       WHERE rn <= $3`,
+      [args.username, args.project_dir, limit],
+    ),
+  ]);
+
+  const projects = args.project_dir !== null
+    ? [args.project_dir]
+    : [...new Set(r.rows.filter((m) => m.scope === "project").map((m) => m.project_dir!))].sort();
+  const key = (dir_key: string, project_dir: string | null) => `${dir_key}\0${project_dir ?? ""}`;
+  const dirs = new Map<string, TreeDir>();
+  for (const d of catalogue.rows) {
+    for (const project_dir of d.scope === "project" ? projects : [null]) {
+      dirs.set(key(d.dir_key, project_dir), {
+        ...d, project_dir, entry_count: 0, deleted_count: 0, over_cap: false, updated_at: null,
+        memories: [], truncated: false,
+      });
+    }
+  }
+  for (const row of r.rows) {
+    const d = dirs.get(key(row.dir_key, row.project_dir));
+    if (!d) continue;
+    d.entry_count   = row.entry_count;
+    d.deleted_count = row.deleted_count;
+    d.over_cap      = row.entry_count > cap;
+    d.updated_at    = row.dir_updated_at ? row.dir_updated_at.toISOString() : null;
+    if (row.deleted_at && !includeDeleted) continue;
+    d.memories.push({
+      memory_id:   row.memory_id,
+      name:        row.name,
+      description: row.description,
+      dir_key:     row.dir_key,
+      scope:       row.scope,
+      project_dir: row.project_dir,
+      type:        row.type,
+      source:      row.source,
+      hit_count:   row.hit_count,
+      last_hit_at: row.last_hit_at ? row.last_hit_at.toISOString() : null,
+      created_at:  row.created_at.toISOString(),
+      updated_at:  row.updated_at.toISOString(),
+      deleted_at:  row.deleted_at ? row.deleted_at.toISOString() : null,
+    });
+  }
+  for (const d of dirs.values()) {
+    d.truncated = d.entry_count + (includeDeleted ? d.deleted_count : 0) > d.memories.length;
+  }
+  // Stable sort: catalogue order is kept within each (scope, project) group.
+  const out = [...dirs.values()].sort((a, b) =>
+    TREE_SCOPE_ORDER[a.scope] - TREE_SCOPE_ORDER[b.scope] ||
+    (a.project_dir ?? "").localeCompare(b.project_dir ?? ""));
+  return { cap, limit, dirs: out };
+}
+
+// ---------------------------------------------------------------------------
+// Memories for the context graph (memory-graph.ts): the tree's rows across
+// every project, best `limit` by the prior, each with its facets.
+
+export interface GraphMemoryRow {
+  memory_id:   string;
+  name:        string;
+  description: string;
+  scope:       Scope;
+  dir_key:     string;
+  project_dir: string | null;
+  deleted:     boolean;
+  facets:      Record<string, string[]>;
+}
+
+export async function graphMemories(args: {
+  pool:             Pool;
+  username:         string;
+  include_deleted?: boolean;
+  limit:            number;
+}): Promise<{ rows: GraphMemoryRow[]; total: number }> {
+  const r = await args.pool.query<GraphMemoryRow & { total: number }>(
+    `SELECT m.memory_id, m.name, m.description, m.scope, m.dir_key, m.project_dir,
+            m.deleted_at IS NOT NULL AS deleted,
+            COALESCE(
+              (SELECT jsonb_object_agg(key, vals) FROM (
+                 SELECT key, jsonb_agg(value ORDER BY value COLLATE "C") AS vals
+                   FROM memory_facets
+                  WHERE memory_id = m.memory_id
+                  GROUP BY key
+               ) g),
+              '{}'::jsonb
+            ) AS facets,
+            (COUNT(*) OVER ())::int AS total
+       FROM memories m
+      WHERE m.name <> '${DISTILL_FAILED_NAME}'
+        AND ($3 OR m.deleted_at IS NULL)
+        AND ${TREE_ROW_VISIBLE_SQL}
+      ORDER BY m.deleted_at IS NOT NULL, ${PRIOR_SCORE_SQL} DESC, m.memory_id
+      LIMIT $4`,
+    [args.username, null, args.include_deleted ?? false, args.limit],
+  );
+  return {
+    rows:  r.rows.map(({ total: _total, ...row }) => row),
+    total: r.rows[0]?.total ?? 0,
   };
 }

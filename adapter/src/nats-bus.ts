@@ -23,14 +23,17 @@ export class NatsBus {
 
   constructor(private opts: BusOptions) {}
 
-  private svcSubject(): string {
-    const base = `pantheon.service.${this.opts.serviceId}`;
+  /** Apply NATS_SUBJECT_PREFIX to a `pantheon.*` subject. */
+  qualify(base: string): string {
     return this.opts.subjectPrefix ? `${this.opts.subjectPrefix}.${base}` : base;
   }
 
+  private svcSubject(): string {
+    return this.qualify(`pantheon.service.${this.opts.serviceId}`);
+  }
+
   private streamSubject(streamId: string): string {
-    const base = `pantheon.stream.${streamId}`;
-    return this.opts.subjectPrefix ? `${this.opts.subjectPrefix}.${base}` : base;
+    return this.qualify(`pantheon.stream.${streamId}`);
   }
 
   async connect(): Promise<void> {
@@ -92,6 +95,20 @@ export class NatsBus {
   /** Compute a full stream subject (used by callers who publish their own envelope). */
   subjectFor(streamId: string): string {
     return this.streamSubject(streamId);
+  }
+
+  /** Subscribe to JSON messages on an absolute subject (fleet status). */
+  subscribeJson(subject: string, onMessage: (body: unknown) => void): void {
+    const sub = this.nc.subscribe(subject);
+    (async () => {
+      for await (const m of sub) {
+        try {
+          onMessage(jc.decode(m.data));
+        } catch (err) {
+          console.warn(`[nats] bad message on ${subject}:`, err);
+        }
+      }
+    })().catch((err) => console.error(`[nats] ${subject} loop failed:`, err));
   }
 
   /** Publish a pre-built envelope as JSON. For non-chat streams (notebook IOPub). */

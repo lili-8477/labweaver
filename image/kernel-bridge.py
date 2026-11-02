@@ -31,6 +31,10 @@ from typing import Any, Dict, Optional
 from jupyter_client.manager import KernelManager
 
 
+# How long a cell's execute_reply waits for its iopub idle (see Bridge._finish).
+IDLE_GRACE_S = 10.0
+
+
 def emit(obj: Dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(obj, default=str) + "\n")
     sys.stdout.flush()
@@ -43,6 +47,10 @@ class Bridge:
         self.kernelspec = "python3"
         # Map: parent msg_id -> cell_id (for tagging iopub messages).
         self.pending: Dict[str, str] = {}
+        # Map: parent msg_id -> what has arrived of its end (the execute_reply
+        # and/or the iopub idle). See _finish.
+        self._ends: Dict[str, Dict[str, Any]] = {}
+        self._ends_lock = threading.Lock()
         self._iopub_thread: Optional[threading.Thread] = None
 
     def ensure(self, kernelspec: str) -> None:
@@ -55,6 +63,7 @@ class Bridge:
                 pass
         self.kernelspec = kernelspec or "python3"
         self.pending.clear()  # stale msg_ids from old kernel will never reply
+        self._ends.clear()
         emit({"op": "status", "state": "starting"})
         self.km = KernelManager(kernel_name=self.kernelspec)
         self.km.start_kernel()
@@ -96,14 +105,21 @@ class Bridge:
                 return
             content = reply.get("content") or {}
             reply_parent = (reply.get("parent_header") or {}).get("msg_id")
-            cell_id = self.pending.pop(reply_parent, "")
-            emit({
+            event = {
                 "op": "execute_reply",
-                "cell_id": cell_id,
                 "status": content.get("status", "ok"),
                 "execution_count": content.get("execution_count"),
                 "error": content.get("ename"),
-            })
+            }
+            if reply_parent in self.pending:
+                self._finish(reply_parent, reply=event)
+                # iopub drops messages past its high-water mark; if the idle
+                # was one of them, don't hold the reply (and the cell) forever.
+                timer = threading.Timer(IDLE_GRACE_S, self._finish, (reply_parent,), {"idle": True})
+                timer.daemon = True
+                timer.start()
+            else:
+                emit({**event, "cell_id": ""})
 
     def _iopub_loop(self) -> None:
         kc = self.kc
@@ -129,9 +145,23 @@ class Bridge:
             if msg_type == "status":
                 state = content.get("execution_state")
                 if state == "idle" and parent in self.pending:
-                    # Execution for this cell has reached the idle boundary.
-                    # Leave the mapping; we rely on execute_reply on shell to clear it.
-                    pass
+                    self._finish(parent, idle=True)
+
+    def _finish(self, msg_id: str, **end: Any) -> None:
+        """Emit a cell's execute_reply once its iopub idle has also arrived.
+        The reply (shell channel) can beat the last outputs (iopub channel),
+        e.g. a large IRkernel plot. Emitting it early made the adapter stop
+        collecting, and untagged the late outputs so the panel dropped them."""
+        with self._ends_lock:
+            if msg_id not in self.pending:
+                return
+            ends = self._ends.setdefault(msg_id, {})
+            ends.update(end)
+            if "reply" not in ends or not ends.get("idle"):
+                return
+            cell_id = self.pending.pop(msg_id)
+            del self._ends[msg_id]
+        emit({**ends["reply"], "cell_id": cell_id})
 
     def execute(self, cell_id: str, code: str, kernelspec: str) -> None:
         self.ensure(kernelspec or "python3")
@@ -157,6 +187,7 @@ class Bridge:
         # release CUDA memory. Force a fresh shutdown → fresh start via
         # ensure(), which has proper pending/cleanup handling.
         self.pending.clear()
+        self._ends.clear()
         try:
             self.km.shutdown_kernel(now=True)
         except Exception:

@@ -157,7 +157,9 @@ function clickItem(idx: number) {
   bottom: calc(100% + 6px);
   max-height: 280px;
   overflow-y: auto;
-  background: var(--bg-secondary, #1a1a1a);
+  background: var(--bg-elevated);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
   border: 1px solid var(--border, #333);
   border-radius: 8px;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);

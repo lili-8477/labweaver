@@ -55,9 +55,22 @@ export interface ChatInfo {
   running?: boolean
   project_name?: string
   /** Workspace-relative project directory bound to this chat (e.g.
-   *  "local_projects/foo-1a2b"). When set, the agent cd's here and harness
-   *  progress is read from <project_dir>/progress.md. Null = unbound. */
+   *  "local_projects/foo-1a2b"). When set, the chat runs with this dir as cwd
+   *  and harness progress is read from <project_dir>/progress.md. Null = unbound. */
   project_dir?: string | null
+}
+
+/** A folder under local_projects/ (adapter list_projects). */
+export interface ProjectInfo {
+  /** Workspace-relative, e.g. "local_projects/pbmc-qc". */
+  dir: string
+  name: string
+  modified_at: string
+}
+
+/** A project and the notebooks in it (adapter list_project_notebooks). */
+export interface ProjectNotebooks extends ProjectInfo {
+  notebooks: { path: string; modified_at: string }[]
 }
 
 export interface ChatMessage {
@@ -245,6 +258,8 @@ export interface Notebook {
 export interface NotebookInfo {
   file_path: string
   version: number
+  /** File mtime (ms) as the adapter last read or wrote it. */
+  mtime?: number
   cell_count: number
   notebook: Notebook
 }

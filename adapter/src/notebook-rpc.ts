@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { KernelBridge, IOPubEvent } from "./kernel.js";
+import { variablesCode } from "./kernel-introspect.js";
 
 /**
  * Factory for per-notebook kernels. Receives the stable sessionId the
@@ -76,6 +77,39 @@ async function readRssMB(pid: number | null): Promise<number | null> {
   }
 }
 
+/** A run's IOPub messages as nbformat outputs; consecutive stream chunks
+ *  with the same name are merged, as Jupyter saves them. */
+export function toOutputs(events: IOPubEvent[]): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  for (const { msg_type: type, content: c } of events) {
+    if (type === "stream") {
+      const last = out[out.length - 1];
+      if (last?.output_type === "stream" && last.name === c.name) last.text = `${last.text}${c.text ?? ""}`;
+      else out.push({ output_type: "stream", name: c.name, text: String(c.text ?? "") });
+    } else if (type === "execute_result") {
+      out.push({ output_type: type, data: c.data, metadata: c.metadata ?? {}, execution_count: c.execution_count ?? null });
+    } else if (type === "display_data") {
+      out.push({ output_type: type, data: c.data, metadata: c.metadata ?? {} });
+    } else if (type === "error") {
+      out.push({ output_type: type, ename: c.ename, evalue: c.evalue, traceback: c.traceback ?? [] });
+    }
+  }
+  return out;
+}
+
+// Write-then-rename, so a reader (the agent's tools, a refresh) never sees a
+// half-written notebook — multi-MB notebooks with plots take a while to write.
+async function writeAtomic(abs: string, text: string): Promise<void> {
+  const tmp = `${abs}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, text, "utf8");
+    await fs.rename(tmp, abs);
+  } catch (err) {
+    await fs.rm(tmp, { force: true });
+    throw err;
+  }
+}
+
 function blankNotebook(language: string): NotebookFile {
   const kernelspec =
     language === "r"
@@ -108,6 +142,27 @@ export class NotebookManager {
   /** One kernel per notebook, keyed by the resolved absolute path. */
   private kernels = new Map<string, KernelBridge>();
 
+  /** Tail of each notebook's write queue, keyed like `kernels`. */
+  private writeQueues = new Map<string, Promise<unknown>>();
+
+  /** mtime of each notebook as this manager last read or wrote it, keyed
+   *  like `kernels`; replies carry it so the UI skips its own saves. */
+  private mtimes = new Map<string, number>();
+
+  /**
+   * Run a read-modify-write of one .ipynb after the previous one finishes.
+   * Every edit rewrites the whole file, so two overlapping edits (an
+   * autosave racing an add_cell) would otherwise drop one of them.
+   */
+  private serialize<T>(relPath: string, fn: () => Promise<T>): Promise<T> {
+    const key = this.resolve(relPath);
+    const run = (this.writeQueues.get(key) ?? Promise.resolve()).then(fn, fn);
+    const tail = run.catch(() => undefined);
+    this.writeQueues.set(key, tail);
+    void tail.then(() => { if (this.writeQueues.get(key) === tail) this.writeQueues.delete(key); });
+    return run;
+  }
+
   private resolve(relPath: string): string {
     const normalized = path.normalize(relPath).replace(/^(\.\.[/\\])+/, "");
     const abs = path.resolve(this.root, normalized);
@@ -123,6 +178,7 @@ export class NotebookManager {
 
   private async readFile(relPath: string): Promise<NotebookFile> {
     const abs = this.resolve(relPath);
+    this.mtimes.set(abs, (await fs.stat(abs)).mtimeMs);
     const raw = await fs.readFile(abs, "utf8");
     let parsed: unknown;
     try {
@@ -141,7 +197,8 @@ export class NotebookManager {
     const hadMissingIds = rawCells.some((c) => !c.id);
     if (hadMissingIds) {
       normalized.nbformat_minor = Math.max(normalized.nbformat_minor, 5);
-      await fs.writeFile(abs, JSON.stringify(normalized, null, 1), "utf8");
+      await writeAtomic(abs, JSON.stringify(normalized, null, 1));
+      this.mtimes.set(abs, (await fs.stat(abs)).mtimeMs);
     }
     return normalized;
   }
@@ -149,7 +206,14 @@ export class NotebookManager {
   private async writeFile(relPath: string, nb: NotebookFile): Promise<void> {
     const abs = this.resolve(relPath);
     await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, JSON.stringify(nb, null, 1), "utf8");
+    await writeAtomic(abs, JSON.stringify(nb, null, 1));
+    this.mtimes.set(abs, (await fs.stat(abs)).mtimeMs);
+  }
+
+  /** The file's modification time, so the UI can tell when something else
+   *  (the agent, a script) rewrote the notebook it has open. */
+  async statNotebook(relPath: string): Promise<unknown> {
+    return { success: true, mtime: (await fs.stat(this.resolve(relPath))).mtimeMs };
   }
 
   private info(relPath: string, nb: NotebookFile): Record<string, unknown> {
@@ -157,6 +221,7 @@ export class NotebookManager {
       success: true,
       file_path: relPath,
       version: this.bumpVersion(relPath),
+      mtime: this.mtimes.get(this.resolve(relPath)),
       cell_count: nb.cells.length,
       notebook: nb,
     };
@@ -190,6 +255,11 @@ export class NotebookManager {
       this.kernels.set(key, k);
     }
     return k;
+  }
+
+  /** Kernels whose process is still alive (culled ones stay in the map). */
+  get kernelCount(): number {
+    return [...this.kernels.values()].filter((k) => k.getSnapshot().running).length;
   }
 
   /** Shut every per-notebook kernel down. Used on adapter teardown. */
@@ -240,40 +310,52 @@ export class NotebookManager {
     source: string,
     position: string | undefined,
   ): Promise<unknown> {
-    const nb = await this.readFile(relPath);
-    const newCell = normalizeCell({ cell_type: cellType, source, outputs: [] });
+    return this.serialize(relPath, async () => {
+      const nb = await this.readFile(relPath);
+      const newCell = normalizeCell({ cell_type: cellType, source, outputs: [] });
 
-    if (!position) {
-      nb.cells.push(newCell);
-    } else if (/^\d+$/.test(position)) {
-      // Numeric index: insert AT this position (new cell becomes cells[N]).
-      const idx = Math.min(parseInt(position, 10), nb.cells.length);
-      nb.cells.splice(idx, 0, newCell);
-    } else {
-      // Cell id: insert AFTER that cell.
-      const idx = nb.cells.findIndex((c) => c.id === position);
-      if (idx < 0) nb.cells.push(newCell);
-      else nb.cells.splice(idx + 1, 0, newCell);
-    }
+      if (!position) {
+        nb.cells.push(newCell);
+      } else if (/^\d+$/.test(position)) {
+        // Numeric index: insert AT this position (new cell becomes cells[N]).
+        const idx = Math.min(parseInt(position, 10), nb.cells.length);
+        nb.cells.splice(idx, 0, newCell);
+      } else {
+        // Cell id: insert AFTER that cell.
+        const idx = nb.cells.findIndex((c) => c.id === position);
+        if (idx < 0) nb.cells.push(newCell);
+        else nb.cells.splice(idx + 1, 0, newCell);
+      }
 
-    await this.writeFile(relPath, nb);
-    return { ...this.info(relPath, nb), cell_id: newCell.id };
+      await this.writeFile(relPath, nb);
+      return { ...this.info(relPath, nb), cell_id: newCell.id };
+    });
   }
 
+  /**
+   * The editor autosaves through this while the user types, so the reply
+   * leaves the notebook out: echoing every output (plots included) back on
+   * each save made typing lag on notebooks with figures.
+   */
   async updateCell(relPath: string, cellId: string, source: string): Promise<unknown> {
-    const nb = await this.readFile(relPath);
-    const cell = nb.cells.find((c) => c.id === cellId);
-    if (!cell) throw new Error(`cell not found: ${cellId}`);
-    cell.source = source;
-    await this.writeFile(relPath, nb);
-    return this.info(relPath, nb);
+    return this.serialize(relPath, async () => {
+      const nb = await this.readFile(relPath);
+      const cell = nb.cells.find((c) => c.id === cellId);
+      if (!cell) throw new Error(`cell not found: ${cellId}`);
+      cell.source = source;
+      await this.writeFile(relPath, nb);
+      const { notebook: _omit, ...rest } = this.info(relPath, nb);
+      return rest;
+    });
   }
 
   async deleteCell(relPath: string, cellId: string): Promise<unknown> {
-    const nb = await this.readFile(relPath);
-    nb.cells = nb.cells.filter((c) => c.id !== cellId);
-    await this.writeFile(relPath, nb);
-    return this.info(relPath, nb);
+    return this.serialize(relPath, async () => {
+      const nb = await this.readFile(relPath);
+      nb.cells = nb.cells.filter((c) => c.id !== cellId);
+      await this.writeFile(relPath, nb);
+      return this.info(relPath, nb);
+    });
   }
 
   async moveCell(
@@ -281,19 +363,21 @@ export class NotebookManager {
     cellId: string,
     belowCellId: string | undefined,
   ): Promise<unknown> {
-    const nb = await this.readFile(relPath);
-    const idx = nb.cells.findIndex((c) => c.id === cellId);
-    if (idx < 0) throw new Error(`cell not found: ${cellId}`);
-    const [cell] = nb.cells.splice(idx, 1);
-    if (!cell) throw new Error(`cell splice failed: ${cellId}`);
-    if (!belowCellId) {
-      nb.cells.unshift(cell);
-    } else {
-      const below = nb.cells.findIndex((c) => c.id === belowCellId);
-      nb.cells.splice(below + 1, 0, cell);
-    }
-    await this.writeFile(relPath, nb);
-    return this.info(relPath, nb);
+    return this.serialize(relPath, async () => {
+      const nb = await this.readFile(relPath);
+      const idx = nb.cells.findIndex((c) => c.id === cellId);
+      if (idx < 0) throw new Error(`cell not found: ${cellId}`);
+      const [cell] = nb.cells.splice(idx, 1);
+      if (!cell) throw new Error(`cell splice failed: ${cellId}`);
+      if (!belowCellId) {
+        nb.cells.unshift(cell);
+      } else {
+        const below = nb.cells.findIndex((c) => c.id === belowCellId);
+        nb.cells.splice(below + 1, 0, cell);
+      }
+      await this.writeFile(relPath, nb);
+      return this.info(relPath, nb);
+    });
   }
 
   async executeCell(relPath: string, cellId: string): Promise<unknown> {
@@ -311,17 +395,42 @@ export class NotebookManager {
       return { success: true, execution_count: null, kernel_session_id: kernel.sessionId };
     }
     const kernelspec = this.kernelspecOf(nb);
-    const reply = await kernel.execute(cellId, cell.source, kernelspec);
-    // Persist execution_count back into the cell so reloads keep it.
-    cell.execution_count = reply.execution_count;
-    await this.writeFile(relPath, nb);
+    const { reply, events } = await kernel.executeAndCollect(cellId, cell.source, kernelspec);
+    const outputs = toOutputs(events);
+    // Save outputs and execution_count into the cell, as Jupyter does. Re-read
+    // first: the run may have taken minutes, and edits made meanwhile must
+    // not be overwritten by the copy read before it started.
+    await this.serialize(relPath, async () => {
+      const fresh = await this.readFile(relPath);
+      const ran = fresh.cells.find((c) => c.id === cellId);
+      if (!ran) return;
+      ran.execution_count = reply.execution_count;
+      ran.outputs = outputs;
+      await this.writeFile(relPath, fresh);
+    });
     return {
       success: reply.status !== "error",
       status: reply.status,
       execution_count: reply.execution_count,
+      outputs,
       error: reply.error,
+      mtime: this.mtimes.get(this.resolve(relPath)),
       kernel_session_id: kernel.sessionId,
     };
+  }
+
+  /** Run a scratch snippet in the notebook's kernel, outside any cell and
+   *  without saving, e.g. to inspect a variable. */
+  async runCode(relPath: string, code: string): Promise<{
+    success: boolean;
+    outputs: Array<Record<string, unknown>>;
+    error: string | null;
+  }> {
+    const kernel = this.getOrCreateKernel(relPath);
+    if (!kernel) return { success: false, outputs: [], error: "kernel bridge not configured" };
+    const kernelspec = this.kernelspecOf(await this.readFile(relPath));
+    const { reply, events } = await kernel.executeAndCollect(`scratch-${randomUUID()}`, code, kernelspec);
+    return { success: reply.status !== "error", outputs: toOutputs(events), error: reply.error };
   }
 
   async manageKernel(relPath: string, action: string): Promise<unknown> {
@@ -388,32 +497,15 @@ export class NotebookManager {
         return { success: true, variables: {}, kernel_session_id: sessionId };
       }
       // Run a small introspection snippet in the kernel and parse its
-      // stdout (JSON). We pay ~10-50ms per call for a running kernel.
-      const code =
-        "import json as _j, types as _t\n" +
-        "_SKIP = {'In','Out','get_ipython','exit','quit','open'}\n" +
-        "_o = {}\n" +
-        "for _k, _v in list(globals().items()):\n" +
-        "    if _k.startswith('_'): continue\n" +
-        "    if _k in _SKIP: continue\n" +
-        "    if isinstance(_v, _t.ModuleType): continue\n" +
-        "    _tn = type(_v).__name__\n" +
-        "    try:\n" +
-        "        _r = repr(_v)\n" +
-        "        if len(_r) > 200: _r = _r[:200] + '...'\n" +
-        "    except Exception:\n" +
-        "        _r = '<repr failed>'\n" +
-        "    _shape = None\n" +
-        "    try:\n" +
-        "        _shape = str(tuple(_v.shape)) if hasattr(_v, 'shape') else None\n" +
-        "    except Exception:\n" +
-        "        pass\n" +
-        "    _o[_k] = {'type': _tn, 'repr': _r, 'shape': _shape}\n" +
-        "print(_j.dumps(_o))\n";
+      // stdout (JSON). We pay ~10-50ms per call for a running kernel. The
+      // notebook's own kernelspec must be passed: the bridge replaces a
+      // running kernel whose spec differs, which would wipe an R session.
       try {
+        const kernelspec = this.kernelspecOf(await this.readFile(relPath));
         const { stdout } = await existing.executeAndCollect(
           "__vars_introspect__",
-          code,
+          variablesCode(kernelspec),
+          kernelspec,
         );
         const variables = JSON.parse(stdout.trim() || "{}");
         return { success: true, variables, kernel_session_id: sessionId };
@@ -434,6 +526,8 @@ export class NotebookManager {
     switch (method) {
       case "read_notebook":
         return this.readNotebook(p);
+      case "stat_notebook":
+        return this.statNotebook(p);
       case "create_notebook":
         return this.createNotebook(p, (args.language as string) ?? "python");
       case "add_cell": {

@@ -3,7 +3,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { memoryService, type ListQuery, type WriteParams } from '@/services/memory'
-import type { MemoryListItem, MemoryDetail, MemoryAuditEntry, MemoryType, MemorySource, ScopeTier } from '@/types'
+import type { MemoryListItem, MemoryDetail, MemoryAuditEntry, MemoryType, MemorySource, ScopeTier, MemoryTree, MemoryGraph } from '@/types'
 
 export const useMemoryStore = defineStore('memory', () => {
   const items = ref<MemoryListItem[]>([])
@@ -13,6 +13,7 @@ export const useMemoryStore = defineStore('memory', () => {
     scope?: ScopeTier
     type?: MemoryType[]
     source?: MemorySource
+    dir_key?: string
     include_deleted: boolean
     sort: 'created' | 'hit'
   }>({
@@ -24,6 +25,42 @@ export const useMemoryStore = defineStore('memory', () => {
   const editDirty = ref(false)
   const editDraft = ref<{ name: string; description: string; body: string } | null>(null)
   const error = ref<string | null>(null)
+  // Tree view payload; null until the tree view first loads it. Once loaded,
+  // mutations below refresh it so the tree never shows stale rows.
+  const tree = ref<MemoryTree | null>(null)
+  const treeLoading = ref(false)
+  // Graph view payload; same lifecycle as the tree.
+  const graph = ref<MemoryGraph | null>(null)
+  const graphLoading = ref(false)
+
+  async function loadTree() {
+    treeLoading.value = true
+    error.value = null
+    try {
+      tree.value = await memoryService.tree({ include_deleted: filters.value.include_deleted })
+    } catch (e) {
+      error.value = (e as Error)?.message || 'Failed to load memory tree'
+    } finally {
+      treeLoading.value = false
+    }
+  }
+
+  async function loadGraph() {
+    graphLoading.value = true
+    error.value = null
+    try {
+      graph.value = await memoryService.graph({ include_deleted: filters.value.include_deleted })
+    } catch (e) {
+      error.value = (e as Error)?.message || 'Failed to load memory graph'
+    } finally {
+      graphLoading.value = false
+    }
+  }
+
+  function refreshViews() {
+    if (tree.value) loadTree()
+    if (graph.value) loadGraph()
+  }
 
   async function loadFirstPage() {
     loading.value = true
@@ -95,6 +132,7 @@ export const useMemoryStore = defineStore('memory', () => {
         await select(selected.value.memory_id)
         editDraft.value = null
         editDirty.value = false
+        refreshViews()
       }
     } catch (e) {
       error.value = (e as Error)?.message || 'Failed to save memory'
@@ -115,6 +153,7 @@ export const useMemoryStore = defineStore('memory', () => {
         if (selected.value?.memory_id === id) {
           await select(id)
         }
+        refreshViews()
       }
     } catch (e) {
       error.value = (e as Error)?.message || 'Failed to forget memory'
@@ -135,6 +174,7 @@ export const useMemoryStore = defineStore('memory', () => {
         if (selected.value?.memory_id === id) {
           await select(id)
         }
+        refreshViews()
       }
     } catch (e) {
       error.value = (e as Error)?.message || 'Failed to restore memory'
@@ -148,6 +188,7 @@ export const useMemoryStore = defineStore('memory', () => {
       if (response.memory_id) {
         // Reload the first page to include the newly created memory
         await loadFirstPage()
+        refreshViews()
       }
     } catch (e) {
       error.value = (e as Error)?.message || 'Failed to write memory'
@@ -184,7 +225,13 @@ export const useMemoryStore = defineStore('memory', () => {
     editDirty,
     editDraft,
     error,
+    tree,
+    treeLoading,
+    graph,
+    graphLoading,
     loadFirstPage,
+    loadTree,
+    loadGraph,
     loadMore,
     select,
     saveEdit,

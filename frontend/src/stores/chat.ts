@@ -3,13 +3,34 @@ import { ref, computed } from 'vue'
 import { natsService } from '@/services/nats'
 import { extractTextContent } from '@/utils/content'
 import type {
-  ChatInfo, ChatMessage, StreamMessage, StreamChunk,
+  ChatInfo, ProjectInfo, ChatMessage, StreamMessage, StreamChunk,
   StepMessage, ChatFinished, AgentInfo,
   StepMessageData, TimelineStep, HarnessProgress,
 } from '@/types'
 
+// Must match NEXT_STEP_TOOL in adapter/src/next-step.ts; the SDK prefixes
+// MCP tools with mcp__<server>__.
+const NEXT_STEP_TOOL = 'suggest_next_steps'
+const MAX_NEXT_STEPS = 4
+
+/** The options of a suggest_next_steps call, or null for any other tool. */
+function nextStepOptions(name: string, args: unknown): string[] | null {
+  if (!name.endsWith(NEXT_STEP_TOOL)) return null
+  try {
+    const options = (JSON.parse(String(args)) as { options?: unknown }).options
+    if (!Array.isArray(options)) return null
+    return options
+      .filter((o): o is string => typeof o === 'string' && o.trim() !== '')
+      .map(o => o.trim())
+      .slice(0, MAX_NEXT_STEPS)
+  } catch {
+    return null
+  }
+}
+
 export const useChatStore = defineStore('chat', () => {
   const chats = ref<ChatInfo[]>([])
+  const projects = ref<ProjectInfo[]>([])
   const activeChatId = ref<string | null>(null)
   const messages = ref<ChatMessage[]>([])
   const streamingText = ref('')
@@ -37,6 +58,10 @@ export const useChatStore = defineStore('chat', () => {
   // Track pending tool calls (tool_call_id -> TimelineStep index)
   const pendingToolCalls = new Map<string, number>()
 
+  // The agent's suggested follow-ups since the last user message, from its
+  // suggest_next_steps call (adapter/src/next-step.ts). Shown as chips.
+  const nextSteps = ref<string[]>([])
+
   let chatSubId: string | null = null
   let stepCounter = 0
 
@@ -59,9 +84,46 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function createChat(name?: string): Promise<string | null> {
+  async function loadProjects() {
+    try {
+      const result = await natsService.invoke('list_projects') as { success: boolean; projects: ProjectInfo[] }
+      if (result?.success) projects.value = result.projects
+    } catch (e) {
+      console.warn('Failed to load projects:', e)
+    }
+  }
+
+  /** Create a project folder under local_projects/; returns its dir. */
+  async function createProject(name: string): Promise<string | null> {
+    const result = await natsService.invoke('create_project', { name }) as {
+      success: boolean; project: ProjectInfo
+    }
+    if (!result?.success) return null
+    await loadProjects()
+    return result.project.dir
+  }
+
+  /** Set a project's display name; its folder keeps its name. */
+  async function renameProject(dir: string, name: string) {
+    await natsService.invoke('rename_project', { project_dir: dir, name })
+    await loadProjects()
+  }
+
+  /** Move the project folder to local_projects/.trash and delete its chats. */
+  async function deleteProject(dir: string) {
+    await natsService.invoke('delete_project', { project_dir: dir })
+    if (chats.value.some(c => c.id === activeChatId.value && c.project_dir === dir)) {
+      activeChatId.value = null
+      messages.value = []
+    }
+    await Promise.all([loadProjects(), loadChats()])
+  }
+
+  /** projectDir binds the new chat to a project: its turns run there. */
+  async function createChat(name?: string, projectDir?: string): Promise<string | null> {
     const result = await natsService.invoke('create_chat', {
       chat_name: name || undefined,
+      project_dir: projectDir,
     }) as { success: boolean; chat_id: string }
     if (result?.success) {
       await loadChats()
@@ -97,12 +159,15 @@ export const useChatStore = defineStore('chat', () => {
 
   function buildTimelinesFromHistory() {
     completedTimelines.value.clear()
+    nextSteps.value = []
     let currentSteps: TimelineStep[] = []
     let lastAssistantIdx = -1
 
     for (let i = 0; i < messages.value.length; i++) {
       const msg = messages.value[i] as Record<string, unknown>
       const role = msg.role as string
+
+      if (role === 'user') nextSteps.value = []
 
       if (role === 'assistant') {
         // If we had steps accumulated, attach to the previous assistant
@@ -118,6 +183,8 @@ export const useChatStore = defineStore('chat', () => {
           for (const tc of toolCalls) {
             const fn = tc.function as Record<string, unknown> | undefined
             const name = fn?.name as string || 'unknown'
+            const steps = nextStepOptions(name, fn?.arguments)
+            if (steps) nextSteps.value = steps
             let input = ''
             try {
               const args = fn?.arguments
@@ -227,6 +294,8 @@ export const useChatStore = defineStore('chat', () => {
       const toolCalls = step.tool_calls || []
       for (const tc of toolCalls) {
         const name = tc.function?.name || 'unknown'
+        const steps = nextStepOptions(name, tc.function?.arguments)
+        if (steps) nextSteps.value = steps
         let input = ''
         try {
           if (tc.function?.arguments) {
@@ -342,6 +411,7 @@ export const useChatStore = defineStore('chat', () => {
     liveTimeline.value = []
     pendingToolCalls.clear()
     stepCounter = 0
+    nextSteps.value = []
 
     // Prepend `[image: <path>]` lines so Claude Code reads them via the Read
     // tool. The agent sees these as part of the user turn alongside the text.
@@ -459,25 +529,14 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  /** Bind a chat to a project directory. Pass empty string to unbind. */
-  async function setChatProjectDir(chatId: string, projectDir: string): Promise<void> {
-    await natsService.invoke('set_chat_project_dir', {
-      chat_id: chatId,
-      project_dir: projectDir,
-    })
-    // Update the local list so the UI doesn't have to wait for a list_chats
-    // round-trip to reflect the binding.
-    const c = chats.value.find(x => x.id === chatId)
-    if (c) c.project_dir = projectDir || null
-  }
-
   return {
-    chats, activeChatId, activeChat, messages, streamingText, isStreaming,
+    chats, projects, activeChatId, activeChat, messages, streamingText, isStreaming,
     sending, agents, activeAgent,
-    liveTimeline, completedTimelines,
+    liveTimeline, completedTimelines, nextSteps,
     harnessActive, harnessInstalled, harnessProgress, harnessProject,
-    loadChats, createChat, deleteChat, selectChat, sendMessage,
+    loadChats, loadProjects, createProject, renameProject, deleteProject,
+    createChat, deleteChat, selectChat, sendMessage,
     stopChat, loadAgents, setActiveAgent, updateChatName,
-    refreshHarnessMode, refreshHarnessProgress, setChatProjectDir,
+    refreshHarnessMode, refreshHarnessProgress,
   }
 })

@@ -653,7 +653,7 @@ describe("forgetMemory", () => {
   });
 });
 
-describe("getContext", () => {
+describe("getContext (directory index)", () => {
   it("returns empty bundle when the user has no memories", async () => {
     const ctx = await getContext({
       pool, username: "alice",
@@ -674,9 +674,14 @@ describe("getContext", () => {
       budget_tokens: 2000,
     });
     expect(ctx.memory_ids).toEqual([id]);
-    expect(ctx.system_prompt.startsWith("# Memory Context\n\n[")).toBe(true);
-    expect(ctx.system_prompt).toContain("[user:observation] seed-600");
-    expect(ctx.system_prompt).toContain("alice prefers fastp for adapter trimming");
+    expect(ctx.system_prompt.startsWith("# Memory index\n\n")).toBe(true);
+    // L0 line for the directory, then the entry as name: description [id];
+    // bodies (L2) stay out of the bundle.
+    expect(ctx.system_prompt).toContain(
+      "- user/experience (1): Personal practices not yet reviewed for the lab\n" +
+      `  - seed-600: desc-600 [${id}]\n`,
+    );
+    expect(ctx.system_prompt).not.toContain("alice prefers fastp for adapter trimming");
   });
 
   it("orders multiple in-budget memories by score DESC (project > user > org)", async () => {
@@ -701,10 +706,11 @@ describe("getContext", () => {
     expect(usr).toBeGreaterThan(prj);
     expect(org).toBeGreaterThan(usr);
 
-    // Header lines exist for each scope tier
-    expect(ctx.system_prompt).toContain("[project:observation] seed-612");
-    expect(ctx.system_prompt).toContain("[user:observation] seed-611");
-    expect(ctx.system_prompt).toContain("[org:observation] seed-610");
+    // Directory lines exist for each scope, in the same order
+    const p = ctx.system_prompt;
+    expect(p.indexOf("- project/decisions (1)")).toBeGreaterThan(-1);
+    expect(p.indexOf("- user/experience (1)")).toBeGreaterThan(p.indexOf("- project/decisions (1)"));
+    expect(p.indexOf("- org/experience (1)")).toBeGreaterThan(p.indexOf("- user/experience (1)"));
   });
 
   it("includes at least one memory even when budget is too small to fit any", async () => {
@@ -893,9 +899,9 @@ describe("updateMemory", () => {
   it("distilled row: returns {ok:false, reason:'distilled'}", async () => {
     // Insert a distilled memory directly (seedMemory always uses source='user')
     const distId = await pool.query<{ memory_id: string }>(
-      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash)
+      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash, dir_key)
        VALUES (gen_random_uuid(), 'alice', NULL, 'observation', 'distilled', 'distilled-name', 'distilled-desc',
-               'distilled body', $1)
+               'distilled body', $1, 'user/experience')
        RETURNING memory_id`,
       [contentHash({ body: "distilled-namedistilled body", promptVersion: 1 })],
     );
@@ -1248,9 +1254,9 @@ describe("listMemories", () => {
     await seedAll();
     // Also insert a distilled row
     const distId = await pool.query<{ memory_id: string }>(
-      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash)
+      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash, dir_key)
        VALUES (gen_random_uuid(), 'alice', NULL, 'observation', 'distilled', 'distilled-list', 'distilled-desc',
-               'distilled body for list test', $1)
+               'distilled body for list test', $1, 'user/experience')
        RETURNING memory_id`,
       [contentHash({ body: "distilled-listdistilled body for list test", promptVersion: 99 })],
     );

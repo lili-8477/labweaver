@@ -86,9 +86,32 @@ describe("ChatsRepo", () => {
     const chatId = "11111111-1111-1111-1111-111111111111";
     const sessionId = "22222222-2222-2222-2222-222222222222";
     await repo.create(chatId, "x");
-    await repo.setSessionUuid(chatId, sessionId);
+    await repo.setSessionUuid(chatId, sessionId, "/workspace");
     const c = await repo.read(chatId);
     expect(c!.session_id).toBe(sessionId);
+  });
+
+  it("create binds an optional project_dir; cwd stays null until the first session", async () => {
+    const repo = new ChatsRepo(pool, "alice");
+    const bound = "11111111-1111-1111-1111-111111111111";
+    const unbound = "22222222-2222-2222-2222-222222222222";
+    await repo.create(bound, "x", "local_projects/foo-ab12");
+    await repo.create(unbound, "y");
+    expect(await repo.read(bound)).toMatchObject({ project_dir: "local_projects/foo-ab12", cwd: null });
+    expect(await repo.read(unbound)).toMatchObject({ project_dir: null, cwd: null });
+    expect((await repo.list()).find((c) => c.id === bound)!.project_dir).toBe("local_projects/foo-ab12");
+  });
+
+  it("setSessionUuid stores the session's cwd alongside it", async () => {
+    const repo = new ChatsRepo(pool, "alice");
+    const chatId = "11111111-1111-1111-1111-111111111111";
+    const sessionId = "22222222-2222-2222-2222-222222222222";
+    await repo.create(chatId, "x", "local_projects/foo-ab12");
+    await repo.setSessionUuid(chatId, sessionId, "/workspace/local_projects/foo-ab12");
+    expect(await repo.read(chatId)).toMatchObject({
+      session_id: sessionId,
+      cwd: "/workspace/local_projects/foo-ab12",
+    });
   });
 
   it("delete removes the chat and cannot affect other tenants", async () => {
@@ -119,7 +142,7 @@ describe("ChatsRepo", () => {
     const chatId = "11111111-1111-1111-1111-111111111111";
     const sessionId = "22222222-2222-2222-2222-222222222222";
     await repo.create(chatId, "x");
-    await repo.setSessionUuid(chatId, sessionId);
+    await repo.setSessionUuid(chatId, sessionId, "/workspace");
 
     await pool.query(
       `INSERT INTO sessions (session_id, username, encoded_project_dir, project_display, is_sidechain)
@@ -142,7 +165,7 @@ describe("ChatsRepo", () => {
     const renamedSession = "44444444-4444-4444-4444-444444444444";
 
     await repo.create(genericChat, "New chat");
-    await repo.setSessionUuid(genericChat, genericSession);
+    await repo.setSessionUuid(genericChat, genericSession, "/workspace");
     await pool.query(
       `INSERT INTO sessions (session_id, username, encoded_project_dir, title)
        VALUES ($1, 'alice', '-w', 'AI-derived title here')`,
@@ -151,7 +174,7 @@ describe("ChatsRepo", () => {
 
     await new Promise((r) => setTimeout(r, 5));
     await repo.create(renamedChat, "My pretty name");
-    await repo.setSessionUuid(renamedChat, renamedSession);
+    await repo.setSessionUuid(renamedChat, renamedSession, "/workspace");
     await pool.query(
       `INSERT INTO sessions (session_id, username, encoded_project_dir, title)
        VALUES ($1, 'alice', '-w', 'AI-derived unused title')`,
@@ -170,7 +193,7 @@ describe("ChatsRepo", () => {
     const chatId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
     const sessionId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
     await repo.create(chatId, "New chat");
-    await repo.setSessionUuid(chatId, sessionId);
+    await repo.setSessionUuid(chatId, sessionId, "/workspace");
     await pool.query(
       `INSERT INTO sessions (session_id, username, encoded_project_dir, first_user_text)
        VALUES ($1, 'alice', '-w', 'hello from the user')`,

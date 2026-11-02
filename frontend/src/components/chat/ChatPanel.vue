@@ -5,6 +5,7 @@ import { useChatStore } from '@/stores/chat'
 import { isDisplayableMessage, extractTextContent } from '@/utils/content'
 import type { ChatMessage } from '@/types'
 import ChatMessageComp from '@/components/chat/ChatMessage.vue'
+import RequestIndex from '@/components/chat/RequestIndex.vue'
 import ExecutionTimeline from '@/components/chat/ExecutionTimeline.vue'
 import HarnessChecklist from '@/components/chat/HarnessChecklist.vue'
 import { isImage, makeAttachment, uploadAttachment, discardAttachmentFile, type ChatAttachment } from '@/services/chat-attachments'
@@ -15,8 +16,11 @@ import { formatFileSize } from '@/utils/format'
 import { isSupported as voiceSupported, startVoice, type VoiceSession } from '@/services/voice'
 import SlashMenu from '@/components/chat/SlashMenu.vue'
 import { useChatHints } from '@/composables/useChatHints'
+import { useSelectionStore } from '@/stores/selection'
+import { selectionBlock, splitSelection } from '@/utils/selection'
 
 const chat = useChatStore()
+const selection = useSelectionStore()
 const uploads = useUploadsStore()
 const input = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
@@ -62,11 +66,12 @@ let voiceBaseText = ''
 const slashMenuRef = ref<InstanceType<typeof SlashMenu> | null>(null)
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 
-const { messages: chatMessages } = storeToRefs(chat)
+const { messages: chatMessages, nextSteps } = storeToRefs(chat)
 const hints = useChatHints({
   messages:       chatMessages,
   attachments,
   pendingProject,
+  nextSteps,
 })
 
 const anyUploading = computed(() => attachments.value.some(a => a.state === 'uploading'))
@@ -110,15 +115,28 @@ function hasBubbleBody(msg: ChatMessage): boolean {
   return extractTextContent(msg.content).trim().length > 0
 }
 
+/** Label for the request index: the request's first line, minus attached-image lines. */
+function requestLabel(msg: ChatMessage): string | undefined {
+  if (msg.role !== 'user') return undefined
+  const text = splitSelection(extractTextContent(msg.content)).rest.replace(/^\[image: [^\]]*\]\n?/gm, '').trim()
+  return text.split('\n')[0].slice(0, 120) || 'Image'
+}
+
 function send() {
   if (!hasContent.value || chat.sending) return
   if (voiceOn.value) stopVoice()
   const paths = attachments.value
     .filter(a => a.state === 'done' && a.workspacePath)
     .map(a => a.workspacePath)
-  const text = pendingProject.value
+  let text = pendingProject.value
     ? composeKickoffMessage(pendingProject.value, input.value.trim())
     : input.value.trim()
+  // A slash command only runs from the start of the prompt, so it goes
+  // without the selection; the chip stays for the next message.
+  if (selection.current && !text.startsWith('/')) {
+    text = `${selectionBlock(selection.current)}\n\n${text}`
+    selection.clear()
+  }
   pendingProject.value = null
   chat.sendMessage(text, paths)
   input.value = ''
@@ -159,7 +177,20 @@ function autosize() {
 }
 
 watch(input, () => { void nextTick(autosize) })
+
+// Wrapping changes when the chat pane is resized, so re-fit on width changes
+// (height changes are our own and are ignored).
+let editorWidth = 0
+const editorResize = new ResizeObserver(([entry]) => {
+  const w = entry.contentRect.width
+  if (w !== editorWidth) { editorWidth = w; autosize() }
+})
+watch(inputRef, (ta, old) => {
+  if (old?.parentElement) editorResize.unobserve(old.parentElement)
+  if (ta?.parentElement) editorResize.observe(ta.parentElement)
+})
 onMounted(autosize)
+onBeforeUnmount(() => editorResize.disconnect())
 
 function handleKeydown(e: KeyboardEvent) {
   if (slashMenuRef.value?.handleKey(e)) {
@@ -547,10 +578,11 @@ watch(
         :chat-id="chat.activeChatId"
       />
 
+      <div class="messages-row">
       <div ref="messagesEl" class="messages">
         <!-- Rendered messages with inline timelines -->
         <template v-for="(msg, i) in displayMessages" :key="i">
-          <ChatMessageComp v-if="hasBubbleBody(msg)" :message="msg" />
+          <ChatMessageComp v-if="hasBubbleBody(msg)" :message="msg" :data-request="requestLabel(msg)" />
           <!-- Show timeline below assistant messages that had tool activity -->
           <ExecutionTimeline
             v-if="msg.role === 'assistant' && getTimelineForDisplayMsg(i)"
@@ -581,6 +613,8 @@ watch(
           <span class="thinking-text">Agent is thinking...</span>
         </div>
       </div>
+      <RequestIndex :scroller="messagesEl" :version="displayMessages.length" />
+      </div>
 
       <!-- Hints -->
       <div v-if="hints.length > 0 && !chat.sending" class="suggestions">
@@ -599,6 +633,15 @@ watch(
         class="input-area"
         :class="{ 'drag-active': isDragging }"
       >
+        <div v-if="selection.current" class="selection-chip" :title="selection.current.text">
+          <span class="selection-label">Selection</span>
+          <span class="selection-where">
+            {{ selection.current.source.split('/').pop() }}<template v-if="selection.current.where"> · {{ selection.current.where }}</template>
+          </span>
+          <span class="selection-text">{{ selection.current.text }}</span>
+          <button class="selection-remove" @click="selection.clear()" title="Don't send the selection">&times;</button>
+        </div>
+
         <div v-if="attachments.length > 0" class="attachment-strip">
           <div
             v-for="a in attachments"
@@ -675,9 +718,10 @@ watch(
         <div class="input-row">
           <div class="input-editor">
             <!-- Mirror layer: re-prints the text with the leading /command
-                 token colored. Sits behind the transparent textarea. -->
+                 token colored. Sits behind the transparent textarea. The
+                 trailing space makes a final newline render as a line. -->
             <div ref="highlightRef" class="input-highlight" aria-hidden="true">
-              <span class="cmd-token">{{ inputSegments.cmd }}</span>{{ inputSegments.rest }}
+              <span class="cmd-token">{{ inputSegments.cmd }}</span>{{ inputSegments.rest }}{{ ' ' }}
             </div>
             <textarea
               ref="inputRef"
@@ -740,7 +784,9 @@ watch(
 .empty-state h3 { margin-bottom: 8px; color: var(--text-secondary); }
 .empty-state p { font-size: 0.9em; }
 
-.messages { flex: 1; overflow-y: auto; padding: 16px; }
+.messages-row { flex: 1; min-height: 0; display: flex; }
+/* position: relative makes this the offsetParent RequestIndex measures against. */
+.messages { flex: 1; min-width: 0; overflow-y: auto; padding: 16px; position: relative; }
 
 .streaming-msg { opacity: 0.95; }
 
@@ -760,6 +806,24 @@ watch(
   40% { transform: translateY(-6px); }
 }
 .thinking-text { font-size: 0.85em; font-style: italic; }
+
+.selection-chip {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  margin-bottom: 8px; padding: 4px 6px 4px 10px;
+  border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: 6px;
+  background: var(--bg-primary); font-size: 0.8em;
+}
+.selection-label { color: var(--accent); font-weight: 600; flex-shrink: 0; }
+.selection-where { color: var(--text-secondary); flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selection-text {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-muted); font-family: var(--font-mono);
+}
+.selection-remove {
+  flex-shrink: 0; width: 20px; height: 20px; border-radius: 4px;
+  color: var(--text-muted); font-size: 1.1em; line-height: 1;
+}
+.selection-remove:hover { color: var(--text-primary); background: var(--bg-tertiary); }
 
 .suggestions { display: flex; gap: 8px; padding: 8px 16px; flex-wrap: wrap; }
 .suggestion-btn {
@@ -913,10 +977,14 @@ watch(
 .input-highlight,
 .message-input {
   padding: 10px 14px;
-  min-height: 40px; max-height: 200px;
+  /* Grows with the text up to ~a third of the window, then scrolls. */
+  min-height: 40px; max-height: clamp(120px, 35vh, 360px);
   font: inherit; font-size: 0.95em; line-height: 1.4;
   white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word;
   box-sizing: border-box;
+  /* Reserve the scrollbar lane in both, so wrapping matches once the
+     textarea starts scrolling. */
+  scrollbar-gutter: stable;
 }
 
 .message-input {
@@ -934,14 +1002,14 @@ watch(
   color: var(--text-primary);
   overflow: hidden; pointer-events: none; z-index: 0;
 }
-.input-highlight .cmd-token { color: var(--accent); font-weight: 600; }
+.input-highlight .cmd-token { color: var(--accent); }
 
 .btn-send, .btn-stop {
   width: 40px; height: 40px; border-radius: var(--radius);
   border: none; display: flex; align-items: center; justify-content: center;
   font-size: 1.1em;
 }
-.btn-send { background: var(--accent); color: #fff; }
+.btn-send { background: var(--accent); color: var(--on-accent); }
 .btn-send:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-send:hover:not(:disabled) { background: var(--accent-hover); }
 .btn-stop { background: var(--danger); color: #fff; }

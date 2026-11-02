@@ -6,6 +6,8 @@ import {
   callMemoryWrite,
   callMemoryForget,
   callMemoryDistillSession,
+  callMemoryDir,
+  callMemoryTree,
   toolDefinitions,
 } from "../src/index.js";
 
@@ -38,14 +40,16 @@ const baseDeps = (stub: typeof fetch) => ({
 });
 
 describe("toolDefinitions", () => {
-  it("exposes exactly the six memory tools", () => {
+  it("exposes exactly the eight memory tools", () => {
     const names = toolDefinitions.map((t) => t.name).sort();
     expect(names).toEqual([
+      "memory_dir",
       "memory_distill_session",
       "memory_forget",
       "memory_get",
       "memory_search",
       "memory_timeline",
+      "memory_tree",
       "memory_write",
     ]);
   });
@@ -409,5 +413,57 @@ describe("callMemoryForget", () => {
     expect(calls).toHaveLength(0);
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("'memory_id' is required");
+  });
+});
+
+describe("callMemoryDir", () => {
+  it("without dir: GETs /memory/dirs with username and the project", async () => {
+    const { stub, calls } = makeFetchStub(new Response("[]", { status: 200 }));
+    const r = await callMemoryDir({ project_path: "/workspace/pbmc3k" }, baseDeps(stub));
+    expect(r.isError).toBeUndefined();
+    const u = new URL(calls[0]!.url);
+    expect(u.pathname).toBe("/memory/dirs");
+    expect(u.searchParams.get("username")).toBe("alice");
+    expect(u.searchParams.get("project_path")).toBe("/workspace/pbmc3k");
+  });
+
+  it("with dir: GETs /memory/dirs/<dir_key> keeping the slash", async () => {
+    const { stub, calls } = makeFetchStub(new Response(JSON.stringify({ dir_key: "project/decisions", entries: [] }), { status: 200 }));
+    const r = await callMemoryDir({ dir: "project/decisions", project_dir: "-w-p", limit: 5 }, baseDeps(stub));
+    expect(JSON.parse(r.content[0]!.text)).toEqual({ dir_key: "project/decisions", entries: [] });
+    const u = new URL(calls[0]!.url);
+    expect(u.pathname).toBe("/memory/dirs/project/decisions");
+    expect(u.searchParams.get("project_dir")).toBe("-w-p");
+    expect(u.searchParams.get("limit")).toBe("5");
+  });
+
+  it("surfaces 404 for an unknown directory as an MCP error", async () => {
+    const { stub } = makeFetchStub(new Response(JSON.stringify({ error: "directory not found" }), { status: 404 }));
+    const r = await callMemoryDir({ dir: "user/nope" }, baseDeps(stub));
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("directory not found");
+  });
+});
+
+describe("callMemoryTree", () => {
+  it("GETs /memory/tree forwarding only supplied params", async () => {
+    const { stub, calls } = makeFetchStub(new Response(JSON.stringify({ cap: 50, limit: 50, dirs: [] }), { status: 200 }));
+    const r = await callMemoryTree({ include_deleted: true }, baseDeps(stub));
+    expect(JSON.parse(r.content[0]!.text)).toEqual({ cap: 50, limit: 50, dirs: [] });
+    const u = new URL(calls[0]!.url);
+    expect(u.pathname).toBe("/memory/tree");
+    expect([...u.searchParams.keys()].sort()).toEqual(["include_deleted", "username"]);
+    expect(u.searchParams.get("include_deleted")).toBe("true");
+  });
+});
+
+describe("callMemoryWrite dir_key", () => {
+  it("forwards dir_key", async () => {
+    const { stub, calls } = makeFetchStub(new Response(JSON.stringify({ memory_id: "m", dir_key: "user/notes", merged: false }), { status: 200 }));
+    await callMemoryWrite(
+      { scope: "user", type: "user", name: "n", description: "d", body: "b", dir_key: "user/notes" },
+      baseDeps(stub),
+    );
+    expect(JSON.parse(String(calls[0]!.init.body)).dir_key).toBe("user/notes");
   });
 });

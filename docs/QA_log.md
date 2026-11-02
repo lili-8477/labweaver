@@ -329,3 +329,137 @@ What it deliberately doesn't do: it doesn't wake the chat. No notification, no a
 3. **Submit update / Share** — the button calls `share.submit({ kind: 'skill_update' | 'skill', ref: name })` ([`frontend/src/stores/skills.ts`](../frontend/src/stores/skills.ts)). The share-api snapshots the current SKILL.md + files and queues a request for the org reviewer. On approve, `/workspace/shared/skills/<name>/` is atomically replaced.
 
 The split keeps the UI surface tiny — no in-browser editor, no save-vs-submit confusion — and reuses the chat's already-trusted editing path (with hooks, audit, etc.) rather than building a second one in the panel.
+
+## 2026-09-06 — why an old service ID still reaches its container after salting
+
+**Q:** why the old service id can still access container?
+
+**A:** Because salting changed the *derivation*, not the *deployed identifiers*.
+`SERVICE_ID_SALT` is a provisioning-time input to `hub/scripts/service-id.sh`;
+nothing at runtime reads it. Two independent paths still carry the old value:
+
+- **HTTP.** nginx routes on `hub/service-map.conf`, a generated file. Editing
+  `gen-service-map.sh` changes the generator, not the artifact — the file still
+  maps `1095be4c…` to `control`.
+- **NATS.** `adapter/src/index.ts:34` reads `ID_HASH` from container env, fixed
+  at `docker run` time, and derives `sha256(ID_HASH)` at boot. The container
+  still holds `ID_HASH=9965fecf5d0b`, and `sha256(9965fecf5d0b)` is exactly the
+  ID in the nginx map.
+
+The key point: **nothing validates a service ID.** nginx does a map lookup and
+NATS does subject matching — both pure membership tests, with no notion of a
+"correctly derived" ID. So "old" and "invalid" are different categories: an ID
+is live iff it is in the map and matches a subscribed subject, and the old ones
+still are.
+
+Hence the cutover must move both paths together (`gen-service-map.sh` +
+recreate every container). Either alone breaks routing, because the two sides
+would key on different IDs.
+
+Corollary: the salt is purely prospective. It prevents *computing* IDs from the
+published algorithm, but cannot retract the specific IDs already in the public
+git history — those stay valid until the cutover rotates them out. See the
+"Service ID derivation" section of `hub/users.md`.
+
+## 2026-09-06 — moving the served domain to labweaver.ai, and why forwarding is not a migration step
+
+**Q:** i want to move current serving domain labweaver.selfai.cc (namecheap) to
+labweaver.ai (squarespace), or can i first just forward it?
+
+**A:** Forwarding parks a domain; it does not serve the app. Squarespace URL
+forwarding is an HTTP 301/302 that bounces the browser back to the old host, so
+users still land on `labweaver.selfai.cc`. The blocking detail is the WebSocket:
+`frontend/public/landing.html:252` builds `wss://<location.host>/ws/`, and the
+browser WebSocket API does **not** follow 3xx on the handshake — it fails. A
+forwarded domain therefore yields a page that loads and never connects.
+
+The real move is one line, because the stack is already domain-agnostic. The
+only functional binding is `hub/Caddyfile` (site block + TLS issuance);
+`hub/docker-compose.yml:63` is a comment, `hub/nginx.conf:41` is `server_name _`,
+and the frontend derives its host at runtime.
+
+Sequence:
+1. DNS first — A record for `labweaver.ai` -> `136.36.154.5`. Adding the name to
+   Caddy before DNS resolves means repeated ACME failures and Let's Encrypt
+   rate-limits failed validations.
+2. Serve both names: `labweaver.ai, labweaver.selfai.cc { reverse_proxy ... }`.
+   Port 80 is published, so HTTP-01 completes on its own.
+3. `docker restart claude-bioflow-caddy` — **not** `caddy reload`. The Caddyfile
+   is a single-file bind mount, so a host edit swaps the inode and the container
+   keeps serving the detached copy while reload reports "config is unchanged".
+   See [[project_caddyfile_bind_inode]]; `hub/nginx.conf` shares the trap.
+4. Update the one-click URLs in `hub/users.md` (they hardcode `?nats=wss://...`).
+5. Only later, redirect the old name — that redirect breaks bookmarked one-click
+   URLs' WebSockets for exactly the same reason forwarding does.
+
+## 2026-09-08 — labweaver.ai cutover, and the Host-field trap that hid it
+
+**Q:** how to point it in squarespace / check my squarespace for the records i added
+
+**A:** The record had been published the whole time — on the wrong name. A probe
+sweep found `labweaver.labweaver.ai -> 136.36.154.5` while the apex answered
+NOERROR with zero records. Squarespace's **Host** field takes only the label
+*before* the zone, and appends the domain itself; typing the full domain (or
+just `labweaver`) yields the doubled name. `@`, or blank, means the apex.
+
+Diagnostic that isolated it, all against the authoritative NS rather than a
+cached resolver (`dig +short @nsd1.squarespacedns.com ...`):
+- 4 A records unchanged after an "edit" -> the edit never published (a preset
+  owned by a connected Squarespace site was reverting it).
+- 0 records after the deletion, but the deletion *did* publish -> edits work now.
+- A per-label sweep then found the value sitting on the doubled name.
+
+Note: the SOA serial stayed `1` across changes that demonstrably published, so
+on Squarespace's Cloud DNS backend the serial is not a usable signal — count and
+compare the actual answers instead.
+
+Cutover, once the apex resolved on all four NS and on 1.1.1.1/8.8.8.8:
+`hub/Caddyfile` -> `labweaver.ai, labweaver.selfai.cc { reverse_proxy ... }`,
+`caddy validate` in a throwaway container, then **`docker restart
+claude-bioflow-caddy`** (single-file bind mount — see
+[[project_caddyfile_bind_inode]]). Cert via tls-alpn-01 in 9s. Result: both
+names 200, HTTP 308 -> HTTPS, `CN = labweaver.ai` valid to 2026-12-07.
+
+`www.labweaver.ai` was deliberately left out of the Caddyfile: it has no DNS
+record, and a non-resolving name in a site block makes ACME fail and consume
+Let's Encrypt's failed-validation rate limit.
+
+## 2026-09-29 — Glasses recordings: store media in Postgres or on disk?
+
+**Q:** I want to upload video/audio from the Meta glasses app (labweaver-glasses) to this
+server for a future VLM auto-notes feature, and store the media in the SQL database. Can the
+app get the server code, how are tokens issued, and where should recordings be stored?
+
+**A:** Server code is the public repo `lili-8477/labweaver`; the `/api/glasses/*` endpoints
+in the glasses spec §7 don't exist yet. There is no token issuer: the only per-user
+credential is the salted service ID (`hub/scripts/service-id.sh`), sent as the `lw_service`
+cookie and mapped to a user in `hub/nginx.conf`. It is long-lived, grants the whole
+workspace, and rotates only by changing the salt for everyone, so it is fine as the v1
+"pasted token" but a per-device revocable token (hashed in Postgres) should follow.
+
+Keep media out of Postgres; put rows in Postgres and bytes on disk. Reasons: bytea tops out
+at 1 GB per value and every write goes through WAL; the DR bundle is a `pg_dump`, so video
+would swell every backup; ffmpeg and the VLM need file paths, so blobs would be written back
+out to disk anyway; and `postgres-data` shares the disk with everything else (86% full on
+2026-09-29). Layout: `recordings/<user>/<recordingId>/` holds the fMP4 segments; Postgres
+holds `recordings` (owner, state, timestamps, device, config), `recording_chunks` (part,
+track, seq, sha256, bytes, path) for idempotent PUTs and resume, events as JSONB, and the
+VLM notes.
+
+## 2026-10-29 — @anthropic-ai/sdk 0.x → 1.x: what changes, worth it for the indexer?
+
+**Q:** What is the major version jump (indexer `@anthropic-ai/sdk` ^0.94 → 1.3.0)? Is it worth updating?
+
+**A:** 1.0.0 is the first TS SDK release that sends API version `2026-10-21` by default (instead of `2023-06-01`). Breaking: `temperature`/`top_p`/`top_k` rejected on Messages; no `document` blocks in assistant turns or `citations` on user text; `MessageParam` becomes a per-role union; Text Completions and tool-runner client-side compaction removed; API key sent as `Authorization: Bearer` (matters if a proxy reads `X-Api-Key`); one credential per client; license → Apache 2.0. Guide: https://platform.claude.com/docs/en/api/migration-2026-10-21. For the indexer it's low value: `src/llm-client.ts` only does `import type Anthropic`, nothing constructs a client, and `distill()` is called only from tests since the auto-distill loop was removed (`src/index.ts:68`). So the bump is near-zero risk and near-zero benefit; deleting the unused `distill()` + dependency is the cleaner option. The adapter's agent SDK already pulls `@anthropic-ai/sdk` 0.104.x transitively, separately.
+
+## 2026-10-29 — Avoiding memory bloat in the OpenViking-style redesign
+
+**Q:** For memory, how can we avoid storage bloat?
+
+**A:** Bloat hurts recall quality (more near-duplicates competing for a fixed context budget) long before it hurts disk, so the defence is mostly at write time:
+1. **Merge, don't append.** Each memory type gets identity fields (OpenViking's `merge_op: immutable`, e.g. user+topic for a preference); a write with the same identity patches the existing row. Plus a near-duplicate check on embedding similarity before insert (v2's `memory_merge`), on top of today's exact `content_hash` dedup.
+2. **Fixed folder taxonomy with per-folder caps.** Memories live in a small fixed set of dirs (`user/preferences`, `project/decisions`, …); when a folder passes its cap, consolidate similar entries into one instead of growing.
+3. **Value-based retirement.** Use `hit_count`/`last_hit_at` (and outcomes): never-recalled memories past an age go to soft-delete; soft-deleted rows and old audit entries are hard-purged after a retention window.
+4. **No automatic distillation.** Auto-distill was the main bloat source and is already off (`hub/indexer/src/index.ts:68`); memories come from explicit writes or `/memory` only. Transcripts stay the raw episode log and are never copied into memory.
+5. **Cheap summaries.** L0/L1 exist per folder, not per memory; only the latest version is kept, regenerated only when ≥10% of a folder's children changed (OpenViking's freshness ratio).
+6. **Hard limits.** A per-memory body size cap (one chunk, one 384-dim embedding), re-embed only on content change.

@@ -89,7 +89,9 @@ function pick(action: 'copy-path' | 'rename' | 'move-to' | 'new-file' | 'new-fol
   position: fixed;
   z-index: 1000;
   min-width: 200px;
-  background: var(--bg-secondary);
+  background: var(--bg-elevated);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
   border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);

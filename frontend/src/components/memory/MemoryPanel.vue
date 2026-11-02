@@ -18,6 +18,13 @@
  *   a window.matchMedia watcher. The back button on MemoryDetail is not exposed here
  *   because MemoryDetail doesn't accept props — instead the panel renders a back button
  *   in the narrow-detail header row.
+ *
+ * Tree and Graph views:
+ *   A List / Tree / Graph toggle swaps MemoryList for MemoryTree or MemoryGraph (choice
+ *   kept in localStorage). In tree and graph view the search input filters the loaded
+ *   payload client-side instead of running a server search, and the scope/source
+ *   filters are hidden (both group by scope or kind themselves). MemoryDetail is
+ *   shared by all views.
  */
 
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
@@ -26,8 +33,61 @@ import { memoryService } from '@/services/memory'
 import type { MemoryListItem, MemorySource, ScopeTier } from '@/types'
 import MemoryList from './MemoryList.vue'
 import MemoryDetail from './MemoryDetail.vue'
+import MemoryTree from './MemoryTree.vue'
+import MemoryGraph from './MemoryGraph.vue'
 
 const store = useMemoryStore()
+
+// ── List / Tree / Graph view ──────────────────────────────────────────────────
+
+type View = 'list' | 'tree' | 'graph'
+const VIEWS: { value: View; label: string }[] = [
+  { value: 'list', label: 'List' },
+  { value: 'tree', label: 'Tree' },
+  { value: 'graph', label: 'Graph' },
+]
+const VIEW_KEY = 'bioflow-memory-view'
+const view = ref<View>(
+  (() => {
+    try {
+      const v = localStorage.getItem(VIEW_KEY)
+      if (v === 'tree' || v === 'graph') return v
+    } catch { /* ignore */ }
+    return 'list'
+  })()
+)
+
+const filterPlaceholder = computed(() =>
+  view.value === 'tree' ? 'Filter tree…' : view.value === 'graph' ? 'Filter graph…' : 'Search memories…')
+
+// Each switch reloads the target view so it reflects edits made in the others.
+function setView(v: View) {
+  if (view.value === v) return
+  view.value = v
+  try { localStorage.setItem(VIEW_KEY, v) } catch { /* ignore */ }
+  if (v === 'tree') {
+    store.loadTree()
+  } else if (v === 'graph') {
+    store.loadGraph()
+  } else if (searchInput.value.trim()) {
+    scheduleSearch(searchInput.value)
+  } else {
+    searchActive.value = false
+    store.loadFirstPage()
+  }
+}
+
+function setIncludeDeleted(v: boolean) {
+  if (view.value === 'tree') {
+    store.filters.include_deleted = v
+    store.loadTree()
+  } else if (view.value === 'graph') {
+    store.filters.include_deleted = v
+    store.loadGraph()
+  } else {
+    store.setFilter({ include_deleted: v })
+  }
+}
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
@@ -57,7 +117,7 @@ function scheduleSearch(val: string) {
 }
 
 function onSearchInput() {
-  scheduleSearch(searchInput.value)
+  if (view.value === 'list') scheduleSearch(searchInput.value)
 }
 
 function onSearchKeydown(e: KeyboardEvent) {
@@ -66,7 +126,7 @@ function onSearchKeydown(e: KeyboardEvent) {
 
 function clearSearch() {
   searchInput.value = ''
-  if (searchActive.value) {
+  if (searchActive.value && view.value === 'list') {
     searchActive.value = false
     store.loadFirstPage()
   }
@@ -86,7 +146,28 @@ const scopeTabs: { label: string; value: ScopeTab }[] = [
 const activeScope = computed(() => store.filters.scope)
 
 function setScope(value: ScopeTab) {
-  store.setFilter({ scope: value })
+  store.setFilter({ scope: value, dir_key: undefined })
+  if (value && !store.tree) store.loadTree()
+}
+
+// ── Directories of the active scope (from the tree payload) ──────────────────
+
+const scopeDirs = computed(() => {
+  const scope = activeScope.value
+  if (!scope || !store.tree) return []
+  // Project dirs repeat per project; sum them per dir_key.
+  const byKey = new Map<string, { dir_key: string; l0: string; entry_count: number }>()
+  for (const d of store.tree.dirs) {
+    if (d.scope !== scope) continue
+    const cur = byKey.get(d.dir_key)
+    if (cur) cur.entry_count += d.entry_count
+    else byKey.set(d.dir_key, { dir_key: d.dir_key, l0: d.l0, entry_count: d.entry_count })
+  }
+  return [...byKey.values()]
+})
+
+function toggleDir(dirKey: string) {
+  store.setFilter({ dir_key: store.filters.dir_key === dirKey ? undefined : dirKey })
 }
 
 // ── Source chip ───────────────────────────────────────────────────────────────
@@ -127,9 +208,11 @@ const splitPercent = ref<number>(
 let splitDragging = false
 let splitStartY = 0
 let splitStartPct = 0
-let panelEl: HTMLElement | null = null
+// Template ref on .split-body. (It used to be a plain `let`, which Vue never
+// fills, so the drag handler bailed out and the bar could not move.)
+const splitEl = ref<HTMLElement | null>(null)
 
-function onSplitMousedown(e: MouseEvent) {
+function onSplitMousedown(e: PointerEvent) {
   splitDragging = true
   splitStartY = e.clientY
   splitStartPct = splitPercent.value
@@ -137,9 +220,9 @@ function onSplitMousedown(e: MouseEvent) {
   document.body.style.userSelect = 'none'
 }
 
-function onSplitMousemove(e: MouseEvent) {
-  if (!splitDragging || !panelEl) return
-  const totalH = panelEl.getBoundingClientRect().height
+function onSplitMousemove(e: PointerEvent) {
+  if (!splitDragging || !splitEl.value) return
+  const totalH = splitEl.value.getBoundingClientRect().height
   if (totalH === 0) return
   const dy = e.clientY - splitStartY
   const newPct = splitStartPct + (dy / totalH) * 100
@@ -152,6 +235,11 @@ function onSplitMouseup() {
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
   try { localStorage.setItem(SPLIT_KEY, String(Math.round(splitPercent.value))) } catch { /* ignore */ }
+}
+
+function resetSplit() {
+  splitPercent.value = 40
+  try { localStorage.removeItem(SPLIT_KEY) } catch { /* ignore */ }
 }
 
 // ── Narrow viewport ───────────────────────────────────────────────────────────
@@ -175,10 +263,12 @@ watch(() => store.selected, (val) => {
 onMounted(() => {
   // This is the single source of truth for the initial load — MemoryList.vue
   // no longer calls loadFirstPage() itself.
-  store.loadFirstPage()
+  if (view.value === 'tree') store.loadTree()
+  else if (view.value === 'graph') store.loadGraph()
+  else store.loadFirstPage()
 
-  window.addEventListener('mousemove', onSplitMousemove)
-  window.addEventListener('mouseup', onSplitMouseup)
+  window.addEventListener('pointermove', onSplitMousemove)
+  window.addEventListener('pointerup', onSplitMouseup)
 
   mq = window.matchMedia('(max-width: 600px)')
   handleMQ(mq)
@@ -188,15 +278,15 @@ onMounted(() => {
 onUnmounted(() => {
   // Intentionally do NOT reset store state so the user's filter+selection
   // survives navigating away to Files/Notebook and back.
-  window.removeEventListener('mousemove', onSplitMousemove)
-  window.removeEventListener('mouseup', onSplitMouseup)
+  window.removeEventListener('pointermove', onSplitMousemove)
+  window.removeEventListener('pointerup', onSplitMouseup)
   mq?.removeEventListener('change', handleMQ)
   if (searchTimer !== null) clearTimeout(searchTimer)
 })
 </script>
 
 <template>
-  <div class="memory-panel" ref="panelEl">
+  <div class="memory-panel">
     <!-- ── Header ─────────────────────────────────────────────────── -->
     <div class="panel-header">
       <!-- Search bar -->
@@ -207,36 +297,49 @@ onUnmounted(() => {
             v-model="searchInput"
             class="search-input"
             type="search"
-            placeholder="Search memories…"
-            aria-label="Search memories"
+            :placeholder="filterPlaceholder"
+            :aria-label="filterPlaceholder.replace('…', '')"
             @input="onSearchInput"
             @keydown="onSearchKeydown"
           />
           <button v-if="searchInput" class="search-clear" @click="clearSearch" aria-label="Clear search">×</button>
         </div>
+        <div class="view-toggle" role="group" aria-label="View">
+          <button
+            v-for="v in VIEWS"
+            :key="v.value"
+            class="scope-tab"
+            :class="{ active: view === v.value }"
+            :aria-pressed="view === v.value"
+            @click="setView(v.value)"
+          >{{ v.label }}</button>
+        </div>
       </div>
 
       <!-- Scope tabs -->
       <div class="filter-row" role="tablist" aria-label="Scope">
-        <button
-          v-for="tab in scopeTabs"
-          :key="String(tab.value)"
-          class="scope-tab"
-          :class="{ active: activeScope === tab.value }"
-          role="tab"
-          :aria-selected="activeScope === tab.value"
-          @click="setScope(tab.value)"
-        >{{ tab.label }}</button>
+        <template v-if="view === 'list'">
+          <button
+            v-for="tab in scopeTabs"
+            :key="String(tab.value)"
+            class="scope-tab"
+            :class="{ active: activeScope === tab.value }"
+            role="tab"
+            :aria-selected="activeScope === tab.value"
+            @click="setScope(tab.value)"
+          >{{ tab.label }}</button>
 
-        <span class="filter-spacer" />
+          <span class="filter-spacer" />
 
-        <!-- Source chip -->
-        <button
-          class="source-chip"
-          :class="{ 'chip-active': store.filters.source !== undefined }"
-          @click="cycleSource"
-          :title="sourceLabel"
-        >{{ sourceLabel }}</button>
+          <!-- Source chip -->
+          <button
+            class="source-chip"
+            :class="{ 'chip-active': store.filters.source !== undefined }"
+            @click="cycleSource"
+            :title="sourceLabel"
+          >{{ sourceLabel }}</button>
+        </template>
+        <span v-else class="filter-spacer" />
 
         <!-- Include deleted -->
         <label class="deleted-label">
@@ -244,10 +347,24 @@ onUnmounted(() => {
             type="checkbox"
             class="deleted-cb"
             :checked="store.filters.include_deleted"
-            @change="store.setFilter({ include_deleted: ($event.target as HTMLInputElement).checked })"
+            @change="setIncludeDeleted(($event.target as HTMLInputElement).checked)"
           />
           Deleted
         </label>
+      </div>
+
+      <!-- Directories of the selected scope -->
+      <div v-if="view === 'list' && scopeDirs.length" class="filter-row dir-row" role="tablist" aria-label="Directory">
+        <button
+          v-for="d in scopeDirs"
+          :key="d.dir_key"
+          class="scope-tab"
+          :class="{ active: store.filters.dir_key === d.dir_key }"
+          role="tab"
+          :aria-selected="store.filters.dir_key === d.dir_key"
+          :title="d.l0"
+          @click="toggleDir(d.dir_key)"
+        >{{ d.dir_key.split('/')[1] }} <span class="dir-count">{{ d.entry_count }}</span></button>
       </div>
     </div>
 
@@ -258,7 +375,11 @@ onUnmounted(() => {
         <div v-if="narrowView === 'detail'" class="narrow-back-row">
           <button class="btn-back" @click="narrowView = 'list'">‹ Back</button>
         </div>
-        <MemoryList v-if="narrowView === 'list'" class="pane-fill" />
+        <template v-if="narrowView === 'list'">
+          <MemoryTree v-if="view === 'tree'" :filter="searchInput" class="pane-fill" />
+          <MemoryGraph v-else-if="view === 'graph'" :filter="searchInput" class="pane-fill" />
+          <MemoryList v-else class="pane-fill" />
+        </template>
         <MemoryDetail v-else class="pane-fill" />
       </div>
     </template>
@@ -267,18 +388,27 @@ onUnmounted(() => {
     <template v-else>
       <div
         class="split-body"
-        ref="panelEl"
+        ref="splitEl"
       >
         <!-- List pane (top) -->
         <div
           class="split-pane pane-list"
           :style="{ height: splitPercent + '%' }"
         >
-          <MemoryList class="pane-fill" />
+          <MemoryTree v-if="view === 'tree'" :filter="searchInput" class="pane-fill" />
+          <MemoryGraph v-else-if="view === 'graph'" :filter="searchInput" class="pane-fill" />
+          <MemoryList v-else class="pane-fill" />
         </div>
 
         <!-- Drag handle -->
-        <div class="split-resizer" @mousedown.prevent="onSplitMousedown" />
+        <div
+          class="split-resizer"
+          role="separator"
+          aria-orientation="horizontal"
+          title="Drag to resize · double-click to reset"
+          @pointerdown.prevent="onSplitMousedown"
+          @dblclick="resetSplit"
+        />
 
         <!-- Detail pane (bottom) -->
         <div class="split-pane pane-detail">
@@ -306,6 +436,9 @@ onUnmounted(() => {
 }
 
 .search-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3) 0;
 }
 
@@ -313,7 +446,11 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   align-items: center;
+  flex: 1;
+  min-width: 0;
 }
+
+.view-toggle { display: flex; gap: 2px; flex-shrink: 0; }
 
 .search-icon {
   position: absolute;
@@ -466,15 +603,33 @@ onUnmounted(() => {
 
 .split-resizer {
   flex-shrink: 0;
-  height: 4px;
-  background: var(--border);
+  position: relative;
+  height: 9px;
   cursor: row-resize;
+  touch-action: none;
+}
+/* Thin visible line, wide grab area; a grip in the middle shows it moves. */
+.split-resizer::before {
+  content: '';
+  position: absolute; left: 0; right: 0; top: 4px; height: 1px;
+  background: var(--border);
   transition: background 0.1s;
 }
-.split-resizer:hover,
-.split-resizer:active {
+.split-resizer::after {
+  content: '';
+  position: absolute; left: 50%; top: 2px; width: 32px; height: 5px;
+  transform: translateX(-50%);
+  border-radius: 3px;
+  background: var(--border);
+  transition: background 0.1s;
+}
+.split-resizer:hover::before, .split-resizer:active::before,
+.split-resizer:hover::after, .split-resizer:active::after {
   background: var(--accent);
 }
+
+.dir-row { padding-top: 0; }
+.dir-count { opacity: 0.6; margin-left: 2px; }
 
 .pane-fill {
   height: 100%;

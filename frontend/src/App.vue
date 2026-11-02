@@ -27,8 +27,10 @@ onMounted(() => {
 /*
  * LabWeaver design tokens.
  *
- * Palette: warm-slate dark with a faint green-yellow tint (LabWeaver hue = 135°).
- * Neutrals are OKLCH-defined so lightness steps are perceptually even.
+ * Theme: "liquid glass" — translucent slate panes floating over a soft
+ * ambient gradient (coral / cornflower / sage). Surfaces are OKLCH with
+ * alpha, so every pane picks up the light behind it; `.glass` adds the
+ * blur + specular rim. Neutrals keep the LabWeaver 135° tint.
  * Accents (coral primary, sage success, amber warning, oxblood danger) are
  * chosen to feel like pigments from scientific illustration — *not*
  * corporate-tech saturation.
@@ -38,13 +40,21 @@ onMounted(() => {
  */
 
 :root {
-  /* ── Surfaces (slate tinted 135° — near-neutral, barely green) ─── */
-  --bg-primary:   oklch(0.172 0.008 135);
-  --bg-secondary: oklch(0.215 0.010 135);
-  --bg-tertiary:  oklch(0.260 0.012 135);
-  --bg-hover:     oklch(0.315 0.014 135);
-  --border:       oklch(0.310 0.013 135);
-  --border-soft:  oklch(0.250 0.011 135);
+  /* ── Surfaces: translucent slate (135° tint) over the ambient glow ─ */
+  --bg-base:      oklch(0.155 0.010 135);   /* opaque page color */
+  --bg-primary:   oklch(0.150 0.010 135 / 0.45);
+  --bg-secondary: oklch(0.205 0.012 135 / 0.40);
+  --bg-tertiary:  oklch(1 0 0 / 0.07);
+  --bg-hover:     oklch(1 0 0 / 0.12);
+  --bg-elevated:  oklch(0.210 0.012 135 / 0.82);  /* menus, modals */
+  --border:       oklch(1 0 0 / 0.13);
+  --border-soft:  oklch(1 0 0 / 0.07);
+
+  /* ── Glass ─────────────────────────────────────────────────────── */
+  --glass-tint:   oklch(0.190 0.012 135 / 0.42);
+  --glass-filter: blur(28px) saturate(170%);
+  --glass-sheen:  oklch(1 0 0 / 0.09);      /* specular highlight */
+  --glass-rim:    inset 0 1px 0 oklch(1 0 0 / 0.16), inset 0 -1px 0 oklch(1 0 0 / 0.04);
 
   /* ── Text (warm off-white, tinted 85°) ─────────────────────────── */
   --text-primary:   oklch(0.945 0.013 85);
@@ -56,6 +66,8 @@ onMounted(() => {
   --accent:       oklch(0.725 0.148 35);
   --accent-hover: oklch(0.790 0.118 38);
   --accent-soft:  oklch(0.725 0.148 35 / 0.14);
+  --on-accent:    #fff;                      /* text on an accent fill */
+  --selection:    oklch(0.725 0.148 35 / 0.32);
 
   /* Sage-green success (Seurat plot energy, not neon green) */
   --success:      oklch(0.760 0.105 148);
@@ -73,12 +85,12 @@ onMounted(() => {
   --info:         oklch(0.735 0.110 240);
 
   /* ── Code surfaces ─────────────────────────────────────────────── */
-  --code-bg:        oklch(0.150 0.008 135);
-  --code-bg-inline: oklch(0.245 0.010 135);
+  --code-bg:        oklch(0.120 0.008 135 / 0.60);
+  --code-bg-inline: oklch(1 0 0 / 0.08);
 
   /* Scrollbar */
-  --scrollbar-bg:    oklch(0.215 0.010 135);
-  --scrollbar-thumb: oklch(0.330 0.015 135);
+  --scrollbar-bg:    transparent;
+  --scrollbar-thumb: oklch(1 0 0 / 0.16);
 
   /* ── Typography ────────────────────────────────────────────────── */
   --font-display: 'Bricolage Grotesque', ui-serif, Georgia, serif;
@@ -125,6 +137,59 @@ onMounted(() => {
   /* Motion */
   --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
   --ease-out-expo:  cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Page backdrop the glass panes refract: the colorful ambient glow. */
+  --page-bg:
+    radial-gradient(55% 65% at 10% 15%, oklch(0.66 0.16 35 / 0.55), transparent 72%),
+    radial-gradient(50% 60% at 90% 10%, oklch(0.66 0.12 240 / 0.50), transparent 72%),
+    radial-gradient(60% 60% at 75% 95%, oklch(0.68 0.11 150 / 0.42), transparent 72%),
+    radial-gradient(45% 55% at 25% 92%, oklch(0.58 0.13 300 / 0.36), transparent 72%),
+    var(--bg-base);
+}
+
+/*
+ * Dark theme: gray on near-black, no ambient color. Surfaces go nearly
+ * opaque and the accent turns a light neutral gray; status colors stay but
+ * are muted so they still read as success / warning / danger.
+ * Toggled from the top bar (utils/theme.ts sets data-theme on <html>).
+ */
+:root[data-theme="dark"] {
+  --bg-base:      oklch(0.145 0 0);
+  --bg-primary:   oklch(0.165 0 0 / 0.90);
+  --bg-secondary: oklch(0.205 0 0 / 0.90);
+  --bg-tertiary:  oklch(1 0 0 / 0.06);
+  --bg-hover:     oklch(1 0 0 / 0.10);
+  --bg-elevated:  oklch(0.225 0 0 / 0.97);
+  --border:       oklch(1 0 0 / 0.10);
+  --border-soft:  oklch(1 0 0 / 0.05);
+
+  --glass-tint:   oklch(0.185 0 0 / 0.94);
+  --glass-rim:    inset 0 1px 0 oklch(1 0 0 / 0.06);
+  --glass-sheen:  oklch(1 0 0 / 0.03);
+
+  --text-primary:   oklch(0.920 0 0);
+  --text-secondary: oklch(0.720 0 0);
+  --text-muted:     oklch(0.540 0 0);
+
+  --accent:       oklch(0.820 0 0);
+  --accent-hover: oklch(0.900 0 0);
+  --accent-soft:  oklch(1 0 0 / 0.10);
+  --on-accent:    oklch(0.170 0 0);
+  --selection:    oklch(1 0 0 / 0.20);
+
+  --success:      oklch(0.720 0.070 150);
+  --success-soft: oklch(0.720 0.070 150 / 0.14);
+  --warning:      oklch(0.760 0.090 80);
+  --warning-soft: oklch(0.760 0.090 80 / 0.14);
+  --danger:       oklch(0.640 0.130 25);
+  --danger-soft:  oklch(0.640 0.130 25 / 0.14);
+  --info:         oklch(0.720 0.050 240);
+
+  --code-bg:        oklch(0.110 0 0 / 0.80);
+  --code-bg-inline: oklch(1 0 0 / 0.07);
+  --scrollbar-thumb: oklch(1 0 0 / 0.14);
+
+  --page-bg: var(--bg-base);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -133,7 +198,9 @@ html, body, #app { height: 100%; overflow: hidden; }
 body {
   font-family: var(--font-sans);
   font-feature-settings: 'ss01', 'ss02', 'cv11';
-  background: var(--bg-primary);
+  /* Ambient light the glass panes refract. Static on purpose: animating
+     it would force every backdrop-filter to re-blur each frame. */
+  background: var(--page-bg);
   color: var(--text-primary);
   font-size: var(--text-md);
   line-height: 1.5;
@@ -151,19 +218,52 @@ body {
 
 .app { height: 100%; display: flex; flex-direction: column; }
 
+/*
+ * Glass pane. The blur lives on a z-index:-1 pseudo-element, not the
+ * pane itself: backdrop-filter on an element makes it the containing
+ * block for position:fixed descendants, which would trap every modal
+ * rendered inside a pane. Panes must not be scroll containers (the
+ * pseudo would scroll away) — put the scroller one level down.
+ */
+.glass {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+.glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  /* specular sheen from the top-left, over the tint */
+  background:
+    linear-gradient(135deg, var(--glass-sheen), transparent 45%),
+    var(--glass-tint);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-rim);
+  pointer-events: none;
+}
+
+/* Native <select> popups ignore alpha — give options a solid surface. */
+option, optgroup { background: var(--bg-base); color: var(--text-primary); }
+
 /* ── Scrollbars (tinted to match surfaces) ──────────────────────── */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   border-radius: var(--radius-pill);
-  border: 2px solid var(--bg-primary);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--bg-hover); }
 
 /* ── Selection tinted to the brand coral ────────────────────────── */
 ::selection {
-  background: oklch(0.725 0.148 35 / 0.32);
+  background: var(--selection);
   color: var(--text-primary);
 }
 

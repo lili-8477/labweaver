@@ -3,9 +3,9 @@
 // local_projects/, a new chat bound to it, and the kickoff message the
 // caller will send.
 //
-// The chat→project binding is persisted via set_chat_project_dir, so the
-// adapter cd's the agent into the project for every turn and harness
-// progress.md lookups go to the right file even after the run finishes.
+// The chat is created bound to the project (create_chat's project_dir), so
+// the adapter runs every turn with the project as cwd and harness progress.md
+// lookups go to the right file even after the run finishes.
 // The kickoff message still spells out the working directory so the
 // agent's first turn doesn't need to query its own cwd.
 
@@ -48,9 +48,9 @@ export function pickProjectName(seedFilename: string): string {
   return `${slugify(seedFilename)}-${randomSuffix()}`
 }
 
-/** Compose the first user message for a freshly-created project. The agent
- *  has no per-chat working dir today, so the prompt is what tells it where
- *  to operate. Keep this terse — agents pick up structure faster than prose. */
+/** Compose the first user message for a freshly-created project. The chat
+ *  already runs in the project dir; spelling it out keeps the agent's outputs
+ *  there. Keep this terse — agents pick up structure faster than prose. */
 export function composeKickoffMessage(proj: CreatedProject, userText: string): string {
   const fileLines = proj.files.map(f => `- ${f.workspacePath}`).join('\n')
   const noun = proj.files.length === 1 ? 'file' : 'files'
@@ -108,19 +108,8 @@ export async function createProjectWithFiles(
   // hits Refresh.
   filesStore.requestReveal(projectDir)
 
-  const chatId = await chatStore.createChat(projectName)
-  if (chatId) {
-    // Bind first, then select. Selecting triggers refreshHarnessProgress,
-    // which looks up by chat_id — without the binding it would miss.
-    try {
-      await chatStore.setChatProjectDir(chatId, projectDir)
-    } catch (e) {
-      // Non-fatal: the agent will still work via the kickoff message's cwd
-      // hint, just without persistent binding. Log and continue.
-      console.warn('[project-from-drop] failed to bind chat to project:', e)
-    }
-    await chatStore.selectChat(chatId)
-  }
+  const chatId = await chatStore.createChat(projectName, projectDir)
+  if (chatId) await chatStore.selectChat(chatId)
 
   return { projectName, projectDir, workspaceDir, files: uploaded, chatId }
 }

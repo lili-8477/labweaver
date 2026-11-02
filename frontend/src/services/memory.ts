@@ -4,7 +4,7 @@
 import { natsService } from './nats'
 import type {
   MemoryListItem, MemoryDetail, MemoryAuditEntry, MemorySearchHit,
-  MemoryType, MemorySource, ScopeTier,
+  MemoryType, MemorySource, ScopeTier, MemoryTree, MemoryGraph,
 } from '@/types'
 
 // ============================================================
@@ -16,6 +16,7 @@ export interface ListQuery {
   scope?: ScopeTier
   type?: MemoryType[]
   source?: MemorySource
+  dir_key?: string
   include_deleted?: boolean
   sort?: 'created' | 'hit'
   limit?: number
@@ -83,6 +84,22 @@ export const memoryService = {
   list: async (q: ListQuery): Promise<ListResponse> => {
     const result = await natsService.invoke('memory_list', q as Record<string, unknown>) as { items: MemoryListItem[]; next_cursor: string | null }
     return result
+  },
+
+  /**
+   * Directory tree: every directory instance with its memories.
+   */
+  tree: async (q: { include_deleted?: boolean }): Promise<MemoryTree> => {
+    const { cap, limit, dirs } = await natsService.invoke('memory_tree', q) as MemoryTree
+    return { cap, limit, dirs }
+  },
+
+  /**
+   * Context graph: memories, skills, resources and topics with typed edges.
+   */
+  graph: async (q: { include_deleted?: boolean }): Promise<MemoryGraph> => {
+    const { nodes, edges, dropped } = await natsService.invoke('memory_graph', q) as MemoryGraph
+    return { nodes, edges, dropped }
   },
 
   /**

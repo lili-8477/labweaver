@@ -71,18 +71,47 @@ export const toolDefinitions = [
     },
   },
   {
+    name: "memory_dir",
+    description:
+      "Browse memory directories. Without dir: every directory visible to you with its one-line summary (L0), live entry count and over_cap flag. With dir: that directory's overview (L1) — its top entries' names and one-line descriptions; read an entry's full body with memory_get. Directories: user/{preferences,experience,notes}, project/{entities,trajectories,decisions}, org/{entities,experience,references}. Project directories need project_path or project_dir.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dir:          { type: "string", description: "dir_key, e.g. project/decisions. Omit to list directories." },
+        project_path: { type: "string", description: "Absolute project path (your cwd), e.g. /workspace/pbmc3k." },
+        project_dir:  { type: "string", description: "Encoded project dir (e.g. -workspace-pbmc3k); alternative to project_path." },
+        limit:        { type: "integer", minimum: 1, maximum: 100, description: "Entries to return with dir (default 20)." },
+      },
+    },
+  },
+  {
+    name: "memory_tree",
+    description:
+      "The whole memory tree: every directory (per project when no project is given) with its L0 summary, live/deleted counts, over_cap flag and its memories' metadata (id, name, description, type, source, hit_count, timestamps). Use it to review or tidy memory; read bodies with memory_get.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        project_path:    { type: "string", description: "Absolute project path; limits project directories to that project." },
+        project_dir:     { type: "string", description: "Encoded project dir; alternative to project_path." },
+        include_deleted: { type: "boolean", description: "Also list soft-deleted memories (still restorable)." },
+        limit:           { type: "integer", minimum: 1, maximum: 200, description: "Memories per directory (default 50)." },
+      },
+    },
+  },
+  {
     name: "memory_write",
     description:
-      "Author a new memory. scope='user' for personal memories, scope='project' (with project_dir) for project-scoped. scope='org' is admin-only and rejected here.",
+      "Author a new memory. scope='user' for personal memories, scope='project' (with project_dir) for project-scoped. scope='org' is admin-only and rejected here. Put it in a directory with dir_key (user/preferences, user/experience, user/notes, or for scope='project' project/entities, project/trajectories, project/decisions); omitted, it defaults from type. Body is capped at 4000 characters. If a near-duplicate already exists in that directory the write is merged into it (result merged=true, its memory_id) instead of adding a new memory.",
     inputSchema: {
       type: "object",
       properties: {
         scope:       { type: "string", enum: ["user", "project"] },
         project_dir: { type: "string", description: "Required when scope='project'." },
         type:        { type: "string", enum: ["user", "feedback", "project", "reference"] },
+        dir_key:     { type: "string", description: "Target directory in the scope, e.g. user/preferences or project/decisions." },
         name:        { type: "string" },
         description: { type: "string" },
-        body:        { type: "string" },
+        body:        { type: "string", maxLength: 4000 },
         facets:      { type: "object", additionalProperties: { type: "array", items: { type: "string" } } },
       },
       required: ["scope", "type", "name", "description", "body"],
@@ -223,26 +252,45 @@ export async function callMemoryGet(args: any, deps: ToolDeps): Promise<ToolResu
   // encodeURIComponent because memory ids are content hashes today but the
   // schema permits any string; defensive against future id changes.
   const id = encodeURIComponent(String(args?.id ?? ""));
+  return getTool(`/memory/${id}`, "memory_get", deps);
+}
+
+// Querystring for the GET tools: the process's username plus whichever of
+// `keys` the agent supplied.
+function queryOf(args: any, deps: ToolDeps, keys: string[]): string {
+  const params = new URLSearchParams({ username: deps.username });
+  for (const k of keys) {
+    if (args?.[k] !== undefined) params.set(k, String(args[k]));
+  }
+  return params.toString();
+}
+
+async function getTool(path: string, label: string, deps: ToolDeps): Promise<ToolResult> {
   try {
-    const res = await deps.fetch(`${deps.baseUrl}/memory/${id}`);
-    return await unwrap(res, "memory_get");
+    const res = await deps.fetch(`${deps.baseUrl}${path}`);
+    return await unwrap(res, label);
   } catch (err) {
-    return fail(`memory_get network error: ${(err as Error).message}`);
+    return fail(`${label} network error: ${(err as Error).message}`);
   }
 }
 
 export async function callMemoryTimeline(args: any, deps: ToolDeps): Promise<ToolResult> {
-  const params = new URLSearchParams({ username: deps.username });
-  if (args?.project_dir !== undefined) params.set("project_dir", String(args.project_dir));
-  if (args?.since       !== undefined) params.set("since",       String(args.since));
-  if (args?.until       !== undefined) params.set("until",       String(args.until));
-  if (args?.limit       !== undefined) params.set("limit",       String(args.limit));
-  try {
-    const res = await deps.fetch(`${deps.baseUrl}/memory/timeline?${params.toString()}`);
-    return await unwrap(res, "memory_timeline");
-  } catch (err) {
-    return fail(`memory_timeline network error: ${(err as Error).message}`);
-  }
+  const qs = queryOf(args, deps, ["project_dir", "since", "until", "limit"]);
+  return getTool(`/memory/timeline?${qs}`, "memory_timeline", deps);
+}
+
+export async function callMemoryDir(args: any, deps: ToolDeps): Promise<ToolResult> {
+  const qs = queryOf(args, deps, ["project_dir", "project_path", "limit"]);
+  // dir_key keeps its "/" (project/decisions): the API route takes it raw.
+  const path = args?.dir === undefined
+    ? "/memory/dirs"
+    : `/memory/dirs/${String(args.dir).split("/").map(encodeURIComponent).join("/")}`;
+  return getTool(`${path}?${qs}`, "memory_dir", deps);
+}
+
+export async function callMemoryTree(args: any, deps: ToolDeps): Promise<ToolResult> {
+  const qs = queryOf(args, deps, ["project_dir", "project_path", "include_deleted", "limit"]);
+  return getTool(`/memory/tree?${qs}`, "memory_tree", deps);
 }
 
 export async function callMemoryWrite(args: any, deps: ToolDeps): Promise<ToolResult> {
@@ -265,6 +313,7 @@ export async function callMemoryWrite(args: any, deps: ToolDeps): Promise<ToolRe
   };
   if (args?.project_dir !== undefined) body.project_dir = args.project_dir;
   if (args?.facets      !== undefined) body.facets      = args.facets;
+  if (args?.dir_key     !== undefined) body.dir_key     = args.dir_key;
   try {
     const res = await deps.fetch(`${deps.baseUrl}/memory/write`, {
       method:  "POST",
@@ -360,6 +409,8 @@ async function main(): Promise<void> {
       case "memory_search":   result = await callMemorySearch(args, deps); break;
       case "memory_get":      result = await callMemoryGet(args, deps); break;
       case "memory_timeline": result = await callMemoryTimeline(args, deps); break;
+      case "memory_dir":      result = await callMemoryDir(args, deps); break;
+      case "memory_tree":     result = await callMemoryTree(args, deps); break;
       case "memory_write":    result = await callMemoryWrite(args, deps); break;
       case "memory_forget":   result = await callMemoryForget(args, deps); break;
       case "memory_distill_session": result = await callMemoryDistillSession(args, deps); break;

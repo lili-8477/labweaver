@@ -159,7 +159,7 @@ async function applyTemplate(template: TemplateFile) {
 .agent-panel { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
 .panel-header {
   padding: 12px 16px; border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; background: var(--bg-secondary); z-index: 5;
+  position: sticky; top: 0; background: var(--bg-elevated); z-index: 5;
 }
 .title { font-weight: 600; font-size: 0.9em; }
 
@@ -196,7 +196,7 @@ async function applyTemplate(template: TemplateFile) {
 }
 .btn-activate:hover { border-color: var(--accent); color: var(--accent); }
 .btn-activate.active {
-  background: var(--accent); border-color: var(--accent); color: #fff;
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
 }
 
 .agent-desc {
@@ -244,7 +244,7 @@ async function applyTemplate(template: TemplateFile) {
 }
 .btn-toggle:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .btn-toggle.on {
-  background: var(--accent); border-color: var(--accent); color: #fff;
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
 }
 .btn-toggle:disabled { cursor: not-allowed; opacity: 0.5; }
 </style>

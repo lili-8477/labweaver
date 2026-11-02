@@ -149,25 +149,17 @@ function stepStatusClass(step: TimelineStep): string {
 </template>
 
 <style scoped>
-.execution-timeline {
-  margin: 4px 0 12px 42px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-secondary);
-  overflow: hidden;
-}
-.execution-timeline.live {
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-}
+/* A slim 24px row of muted text, no box (as in v2). */
+.execution-timeline { margin: 2px 0 6px; }
 
 .timeline-header {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 12px; cursor: pointer;
-  font-size: 0.82em; color: var(--text-secondary);
-  transition: background 0.1s;
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 24px; cursor: pointer;
+  font-size: 13px; color: var(--text-muted);
+  transition: color 0.1s;
 }
-.timeline-header:hover { background: var(--bg-tertiary); }
-.toggle-icon { font-size: 0.7em; width: 10px; color: var(--text-muted); }
+.timeline-header:hover { color: var(--text-secondary); }
+.toggle-icon { font-size: 0.7em; width: 10px; }
 .timeline-icon { font-size: 0.9em; }
 .timeline-summary { flex: 1; }
 .timeline-duration {
@@ -176,7 +168,7 @@ function stepStatusClass(step: TimelineStep): string {
 .live-badge {
   font-size: 0.65em; font-weight: 700; letter-spacing: 0.5px;
   padding: 1px 5px; border-radius: 3px;
-  background: var(--accent); color: #fff;
+  background: var(--accent); color: var(--on-accent);
   animation: pulse-badge 2s infinite;
 }
 @keyframes pulse-badge {
@@ -185,10 +177,10 @@ function stepStatusClass(step: TimelineStep): string {
 }
 
 .timeline-steps {
-  position: relative; padding: 4px 12px 8px;
+  position: relative; padding: 2px 0 4px;
 }
 .timeline-line {
-  position: absolute; left: 24px; top: 0; bottom: 8px;
+  position: absolute; left: 8px; top: 0; bottom: 4px;
   width: 1px; background: var(--border);
 }
 
@@ -198,10 +190,10 @@ function stepStatusClass(step: TimelineStep): string {
 }
 
 .step-dot {
-  width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+  width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  font-size: 0.65em; z-index: 1; margin-top: 3px;
-  background: var(--bg-primary); border: 2px solid var(--border);
+  font-size: 0.6em; z-index: 1; margin-top: 4px;
+  background: var(--bg-base); border: 2px solid var(--border);
 }
 .step-dot.completed { border-color: var(--success); color: var(--success); }
 .step-dot.running {
@@ -219,14 +211,14 @@ function stepStatusClass(step: TimelineStep): string {
 
 .step-row {
   display: flex; align-items: center; gap: 6px;
-  padding: 3px 6px; border-radius: 4px; cursor: pointer;
-  font-size: 0.82em; transition: background 0.1s;
+  height: 24px; padding: 0 6px; border-radius: 4px; cursor: pointer;
+  font-size: 13px; transition: background 0.1s;
 }
 .step-row:hover { background: var(--bg-tertiary); }
 
 .step-name {
   font-family: var(--font-mono); font-weight: 500;
-  color: var(--text-primary); white-space: nowrap;
+  color: var(--text-secondary); white-space: nowrap;
 }
 .transfer-label { color: var(--text-muted); font-weight: 400; margin-right: 4px; }
 .agent-name { color: var(--accent); }

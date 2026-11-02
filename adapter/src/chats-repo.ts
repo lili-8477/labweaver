@@ -7,9 +7,12 @@ export interface ChatRow {
   name: string;
   active_agent: string | null;
   /** Workspace-relative project dir (e.g. "local_projects/foo-1a2b") or null
-   *  for chats that aren't bound to a project. When set, the agent cd's here
-   *  and harness lookups read this dir's progress.md. */
+   *  for chats that aren't bound to a project. When set, the chat's session
+   *  starts with this dir as cwd and harness lookups read its progress.md. */
   project_dir: string | null;
+  /** Absolute cwd the session started in; null for legacy chats, which ran
+   *  in the default cwd. Pinned for the session's life (see migration 0016). */
+  cwd: string | null;
   created_at: string;
   last_used_at: string;
   deleted_at: string | null;
@@ -35,18 +38,18 @@ export interface ChatInfo {
 export class ChatsRepo {
   constructor(private pool: Pool, private username: string) {}
 
-  async create(chatId: string, name: string): Promise<void> {
+  async create(chatId: string, name: string, projectDir: string | null = null): Promise<void> {
     await this.pool.query(
-      `INSERT INTO chats (chat_id, username, name)
-       VALUES ($1, $2, $3)
+      `INSERT INTO chats (chat_id, username, name, project_dir)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (chat_id) DO NOTHING`,
-      [chatId, this.username, name],
+      [chatId, this.username, name, projectDir],
     );
   }
 
   async read(chatId: string): Promise<ChatRow | null> {
     const r = await this.pool.query(
-      `SELECT chat_id, username, session_id, name, active_agent, project_dir,
+      `SELECT chat_id, username, session_id, name, active_agent, project_dir, cwd,
               created_at, last_used_at, deleted_at
        FROM chats
        WHERE chat_id = $1 AND username = $2 AND deleted_at IS NULL`,
@@ -61,6 +64,7 @@ export class ChatsRepo {
       name: row.name,
       active_agent: row.active_agent,
       project_dir: row.project_dir,
+      cwd: row.cwd,
       created_at: row.created_at.toISOString(),
       last_used_at: row.last_used_at.toISOString(),
       deleted_at: row.deleted_at ? row.deleted_at.toISOString() : null,
@@ -122,12 +126,14 @@ export class ChatsRepo {
     );
   }
 
-  async setSessionUuid(chatId: string, sessionId: string): Promise<void> {
+  /** Record the SDK session and the cwd it runs in — stored together so a
+   *  session is always resumed from the dir its transcript lives under. */
+  async setSessionUuid(chatId: string, sessionId: string, cwd: string): Promise<void> {
     await this.pool.query(
-      `UPDATE chats SET session_id = $3, last_used_at = now()
+      `UPDATE chats SET session_id = $3, cwd = $4, last_used_at = now()
        WHERE chat_id = $1 AND username = $2 AND deleted_at IS NULL
          AND (session_id IS NULL OR session_id <> $3::uuid)`,
-      [chatId, this.username, sessionId],
+      [chatId, this.username, sessionId, cwd],
     );
   }
 
@@ -144,5 +150,14 @@ export class ChatsRepo {
       `DELETE FROM chats WHERE chat_id = $1 AND username = $2`,
       [chatId, this.username],
     );
+  }
+
+  /** Delete every chat bound to a project; returns their ids. */
+  async deleteByProject(projectDir: string): Promise<string[]> {
+    const { rows } = await this.pool.query<{ chat_id: string }>(
+      `DELETE FROM chats WHERE project_dir = $1 AND username = $2 RETURNING chat_id`,
+      [projectDir, this.username],
+    );
+    return rows.map((r) => r.chat_id);
   }
 }
