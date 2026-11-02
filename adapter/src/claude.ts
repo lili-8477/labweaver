@@ -181,7 +181,13 @@ function handleSdkMessage(
   const type = anyMsg.type as string;
 
   if (type === "stream_event") {
-    const ev = anyMsg.event as { type: string; delta?: { type: string; text?: string } } | undefined;
+    const ev = anyMsg.event as
+      | { type: string; delta?: { type: string; text?: string }; content_block?: { type: string } }
+      | undefined;
+    if (ev?.type === "content_block_start" && ev.content_block?.type === "text") {
+      const brk = t.textBlockStart(chatId);
+      if (brk) emit(brk);
+    }
     if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
       emit(t.textDelta(ev.delta.text, chatId));
     }

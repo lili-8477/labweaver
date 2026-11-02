@@ -17,10 +17,18 @@ export class EventTranslator {
   private toolTimings = new Map<string, ToolTiming>();
   private lastUsage = { input: 0, output: 0 };
   private cumulativeCost = 0;
+  private streamedText = false;
 
   /** Emit a frontend `chunk` event for a streamed text delta. */
   textDelta(text: string, chatId: string): StreamEvent {
+    this.streamedText = true;
     return { type: "chunk", chunk: { type: "text", text }, chat_id: chatId };
+  }
+
+  /** A new text block began: a paragraph break if text already streamed, so
+   *  the frontend's running text doesn't glue "done.Next" across blocks. */
+  textBlockStart(chatId: string): StreamEvent | null {
+    return this.streamedText ? this.textDelta("\n\n", chatId) : null;
   }
 
   /**
