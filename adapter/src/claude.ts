@@ -30,10 +30,14 @@ export interface RunTurnArgs {
   onSessionId: (sessionId: string) => void;
   /** In-process MCP servers added to the ones .mcp.json declares. */
   mcpServers?: Options["mcpServers"];
+  /** Callback hooks, run alongside the ones in settings.json. */
+  hooks?: Options["hooks"];
+  /** Appended to the claude_code system prompt. */
+  appendSystemPrompt?: string;
 }
 
 export async function runTurn(args: RunTurnArgs): Promise<void> {
-  const { chatId, prompt, images = [], cwd, projectConfigRoot, model, resumeSessionId, signal, onEvent, onSessionId, mcpServers } = args;
+  const { chatId, prompt, images = [], cwd, projectConfigRoot, model, resumeSessionId, signal, onEvent, onSessionId, mcpServers, hooks, appendSystemPrompt } = args;
   const translator = new EventTranslator();
 
   // Point the SDK at the global CLI binary we installed in the image.
@@ -55,8 +59,9 @@ export async function runTurn(args: RunTurnArgs): Promise<void> {
     // in isolation mode and ignores both, so per-workspace instructions and
     // skills never reach the model.
     settingSources: ["project"],
-    systemPrompt: { type: "preset", preset: "claude_code" },
+    systemPrompt: { type: "preset", preset: "claude_code", ...(appendSystemPrompt ? { append: appendSystemPrompt } : {}) },
     ...(mcpServers ? { mcpServers } : {}),
+    ...(hooks ? { hooks } : {}),
     // SDK generates its own session UUID for new sessions; we capture it via
     // onSessionId and stash it against the chat_id so get_chat_messages works.
     ...(resumeSessionId ? { resume: resumeSessionId } : {}),

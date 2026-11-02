@@ -12,12 +12,14 @@ export interface HintInputs {
   messages:       Ref<ChatMessage[]>
   attachments:    Ref<ChatAttachment[]>
   pendingProject: Ref<CreatedProject | null>
+  nextSteps:      Ref<string[]>
 }
 
 // Rule-based "what to do next" chips. First matching rule wins.
 //   - empty chat (no messages, no pending project) -> two starter hints
 //   - pending project queued                       -> send-to-analyze hint
 //   - uploads in flight                            -> none (chips already show)
+//   - the agent suggested next steps               -> those
 //   - otherwise                                    -> none
 export function useChatHints(inputs: HintInputs): ComputedRef<Hint[]> {
   return computed<Hint[]>(() => {
@@ -38,6 +40,6 @@ export function useChatHints(inputs: HintInputs): ComputedRef<Hint[]> {
       ]
     }
 
-    return []
+    return inputs.nextSteps.value.map((text, i) => ({ id: `next-step-${i}`, text }))
   })
 }

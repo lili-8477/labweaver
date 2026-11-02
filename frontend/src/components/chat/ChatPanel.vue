@@ -63,11 +63,12 @@ let voiceBaseText = ''
 const slashMenuRef = ref<InstanceType<typeof SlashMenu> | null>(null)
 const inputRef = ref<HTMLTextAreaElement | null>(null)
 
-const { messages: chatMessages } = storeToRefs(chat)
+const { messages: chatMessages, nextSteps } = storeToRefs(chat)
 const hints = useChatHints({
   messages:       chatMessages,
   attachments,
   pendingProject,
+  nextSteps,
 })
 
 const anyUploading = computed(() => attachments.value.some(a => a.state === 'uploading'))

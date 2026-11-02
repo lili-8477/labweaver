@@ -16,6 +16,7 @@ import { KernelBridge, type IOPubEvent } from "./kernel.js";
 import { MemoryRpcClient } from "./memory-rpc.js";
 import { NotebookManager } from "./notebook-rpc.js";
 import { notebookToolsServer } from "./notebook-tools.js";
+import { NEXT_STEP_GUIDANCE, nextStepHooks, nextStepServer } from "./next-step.js";
 import { createProject, listProjectNotebooks, listProjects, renameProject, trashProject } from "./projects.js";
 import { ShareRpcClient } from "./share-rpc.js";
 import { listOrgSkills } from "./org-skills-rpc.js";
@@ -748,7 +749,12 @@ export class RpcRouter {
           // Resume only if we've already captured a real SDK session UUID.
           resumeSessionId: chat.session_id ?? undefined,
           signal: ac.signal,
-          mcpServers: { notebook: notebookToolsServer(this.notebooks, this.deps.workspaceRoot, cwd) },
+          mcpServers: {
+            notebook: notebookToolsServer(this.notebooks, this.deps.workspaceRoot, cwd),
+            next_step: nextStepServer(),
+          },
+          hooks: nextStepHooks(path.join(this.deps.home, ".claude", ".harness_active")),
+          appendSystemPrompt: NEXT_STEP_GUIDANCE,
           onEvent: (ev) => this.deps.publishStream(`chat_${chatId}`, ev),
           onSessionId: (sessionId) => {
             // Fire-and-forget — stash the real session UUID so next resume works.
