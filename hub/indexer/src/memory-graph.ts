@@ -13,29 +13,12 @@
 import { readdir, readFile } from "node:fs/promises";
 import * as path from "node:path";
 import type { Pool } from "pg";
-import type { Scope } from "./memory-dirs.js";
-import { graphMemories } from "./memory-repo.js";
+import type { AccessClass } from "./access-classes.js";
+import { DEFAULT_CLEARANCE, visibleSql } from "./memory-access.js";
+import type { GraphEdge, GraphNode, MemoryGraph, Scope } from "./memory-contract.js";
+import type { Domain } from "./memory-domain.js";
+import { PRIOR_SCORE_SQL } from "./memory-search.js";
 import { encodeProjectDir } from "./path-decode.js";
-
-export type GraphNode =
-  | { id: string; kind: "memory"; label: string; description: string; scope: Scope; dir_key: string; deleted?: true }
-  | { id: string; kind: "skill"; label: string; description: string; scope: "user" | "org"; path: string }
-  | { id: string; kind: "resource"; label: string; type: "project" | "file" | "dataset"; path: string }
-  | { id: string; kind: "topic"; label: string; facet: "gene" | "tool" };
-
-export interface GraphEdge {
-  source: string;
-  target: string;
-  kind:   "facet" | "project" | "mention";
-}
-
-export interface MemoryGraph {
-  nodes:   GraphNode[];
-  edges:   GraphEdge[];
-  // Nodes left out by the caps, per kind (memories: lowest prior first;
-  // others: fewest edges first).
-  dropped: Record<GraphNode["kind"], number>;
-}
 
 export const GRAPH_MEMORY_LIMIT = 300;
 export const GRAPH_NODE_LIMIT = 500;
@@ -71,10 +54,12 @@ export async function memoryGraph(args: {
   workspacesRoot:   string;
   username:         string;
   include_deleted?: boolean;
+  clearance?:       AccessClass;
+  domain?:          Domain;
 }): Promise<MemoryGraph> {
   const home = path.join(args.workspacesRoot, args.username);
   const [mem, userSkills, orgSkills, projects] = await Promise.all([
-    graphMemories({ pool: args.pool, username: args.username, include_deleted: args.include_deleted, limit: GRAPH_MEMORY_LIMIT }),
+    graphMemories({ ...args, limit: GRAPH_MEMORY_LIMIT }),
     readSkills(path.join(home, ".claude", "skills"), "user", `${CONTAINER_WORKSPACE}/.claude/skills`),
     readSkills(path.join(args.workspacesRoot, "shared", "skills"), "org", `${CONTAINER_WORKSPACE}/shared/skills`),
     readProjects(path.join(home, "local_projects")),
@@ -166,6 +151,53 @@ export async function memoryGraph(args: {
   }
 
   return capGraph([...nodes.values()], [...edges.values()], mem.total - mem.rows.length);
+}
+
+interface GraphMemoryRow {
+  memory_id:   string;
+  name:        string;
+  description: string;
+  scope:       Scope;
+  dir_key:     string;
+  project_dir: string | null;
+  deleted:     boolean;
+  facets:      Record<string, string[]>;
+}
+
+// The memories the viewer sees, across every project: best `limit` by the
+// prior, each with its facets.
+async function graphMemories(args: {
+  pool:             Pool;
+  username:         string;
+  include_deleted?: boolean;
+  clearance?:       AccessClass;
+  domain?:          Domain;
+  limit:            number;
+}): Promise<{ rows: GraphMemoryRow[]; total: number }> {
+  const r = await args.pool.query<GraphMemoryRow & { total: number }>(
+    `SELECT m.memory_id, m.name, m.description, m.scope, m.dir_key, m.project_dir,
+            m.deleted_at IS NOT NULL AS deleted,
+            COALESCE(
+              (SELECT jsonb_object_agg(key, vals) FROM (
+                 SELECT key, jsonb_agg(value ORDER BY value COLLATE "C") AS vals
+                   FROM memory_facets
+                  WHERE memory_id = m.memory_id
+                  GROUP BY key
+               ) g),
+              '{}'::jsonb
+            ) AS facets,
+            (COUNT(*) OVER ())::int AS total
+       FROM memories m
+      WHERE ($4 OR m.deleted_at IS NULL)
+        AND ${visibleSql("m", "$1", "$2", "$3")}
+      ORDER BY m.deleted_at IS NOT NULL, ${PRIOR_SCORE_SQL} DESC, m.name, m.memory_id
+      LIMIT $5`,
+    [args.username, args.clearance ?? DEFAULT_CLEARANCE, args.domain ?? null, args.include_deleted ?? false, args.limit],
+  );
+  return {
+    rows:  r.rows.map(({ total: _total, ...row }) => row),
+    total: r.rows[0]?.total ?? 0,
+  };
 }
 
 // Whole word: no letter, digit, "_" or "-" either side, so "hci-chipseq"

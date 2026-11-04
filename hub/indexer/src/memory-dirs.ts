@@ -4,14 +4,12 @@
 
 export type Scope = "user" | "project" | "org";
 
-// Live entries a directory instance (username, project_dir, dir_key) holds
-// before it's flagged over_cap. A flag only: nothing retires memories.
-// MEMORY_DIR_CAP overrides it.
-export const DEFAULT_DIR_CAP = 50;
+/** The username org memories are stored under (scope 'org' in migration 0017). */
+export const ORG_USER = "__org__";
 
 // Mirrors the generated `memories.scope` column.
 export function scopeOf(username: string, project_dir: string | null): Scope {
-  if (username === "__org__") return "org";
+  if (username === ORG_USER) return "org";
   return project_dir === null ? "user" : "project";
 }
 
@@ -25,13 +23,20 @@ export function defaultDir(scope: Scope, type: string): string {
       return "project/decisions";
     case "user":
       if (type === "user" || type === "feedback") return "user/preferences";
-      if (type === "observation") return "user/experience";
+      if (type === "observation" || type === "experience") return "user/experience";
       return "user/notes";
     case "org":
       if (type === "project") return "org/entities";
-      if (type === "reference" || type === "session_summary") return "org/references";
+      if (type === "reference" || type === "session_summary" || type === "claim") return "org/references";
       return "org/experience";
   }
+}
+
+// The directory a write lands in: the caller's choice, else the default.
+export function resolveDir(
+  username: string, project_dir: string | null, type: string, dir?: string,
+): string {
+  return dir ?? defaultDir(scopeOf(username, project_dir), type);
 }
 
 // Thrown when a caller names a directory that doesn't exist or belongs to a

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runMigrations } from "../src/migrate.js";
 import { insertMemoryRow } from "../src/distiller-repo.js";
 import { contentHash } from "../src/content-hash.js";
-import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext, updateMemory, restoreMemory, listMemories, getAuditTrail, getMetrics, recordUse } from "../src/memory-repo.js";
+import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext, updateMemory, restoreMemory, listMemories, getAuditTrail, getMetrics } from "../src/memory-repo.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 let pg: StartedPostgreSqlContainer;
@@ -66,7 +66,7 @@ async function seedMemory(args: SeedArgs): Promise<string> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const memId = await insertMemoryRow(client, {
+    const memId = await insertMemoryRow(client, { domain: "lab",
       username:          args.username,
       project_dir:       args.project_dir,
       source:            "user",
@@ -107,7 +107,7 @@ const downEmbedder = {
 };
 
 describe("searchMemories", () => {
-  it("returns project > user > org for the same FTS body and doesn't count results as hits", async () => {
+  it("returns project > user > org for the same FTS body and does not count retrieval as a hit", async () => {
     const orgId     = await seedMemory({ username: "__org__", project_dir: null,   body: QUERY_BODY, seed: 1 });
     const userId    = await seedMemory({ username: "alice",   project_dir: null,   body: QUERY_BODY, seed: 2 });
     const projectId = await seedMemory({ username: "alice",   project_dir: "-w-p", body: QUERY_BODY, seed: 3 });
@@ -131,8 +131,8 @@ describe("searchMemories", () => {
     }
     // Ordering must be by score (not insertion order); scope multiplier
     // dominates here, so scores must be strictly descending.
-    expect(hits[0].score).toBeGreaterThan(hits[1].score);
-    expect(hits[1].score).toBeGreaterThan(hits[2].score);
+    expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score);
+    expect(hits[1]!.score).toBeGreaterThan(hits[2]!.score);
 
     const counts = await pool.query<{ memory_id: string; hit_count: number }>(
       `SELECT memory_id, hit_count FROM memories
@@ -156,38 +156,6 @@ describe("searchMemories", () => {
     expect(ids).not.toContain(deletedId);
   });
 
-  it("search ranks by reinforcement count: hits, creation date and time since use play no part", async () => {
-    const plain = await seedMemory({ username: "alice", project_dir: "-w-p", body: QUERY_BODY, seed: 201 });
-    const hitOld = await seedMemory({ username: "alice", project_dir: "-w-p", body: QUERY_BODY, seed: 202 });
-    await pool.query(
-      `UPDATE memories SET hit_count = 1000, created_at = now() - interval '3 years' WHERE memory_id = $1`,
-      [hitOld],
-    );
-    const scores = async (embedderClient: typeof stubEmbedder) => {
-      const hits = await searchMemories({
-        pool, embedderClient, username: "alice", project_dir: "-w-p", query: QUERY, limit: 10,
-      });
-      return (id: string) => hits.find((h) => h.memory_id === id)!.score;
-    };
-    for (const embedderClient of [stubEmbedder, downEmbedder]) {
-      const score = await scores(embedderClient);
-      expect(score(hitOld)).toBeCloseTo(score(plain), 4);
-    }
-
-    // Unused for three years: no fade in search.
-    await pool.query(`UPDATE memories SET reinforced_at = now() - interval '3 years' WHERE memory_id = $1`, [hitOld]);
-    let score = await scores(stubEmbedder);
-    expect(score(hitOld)).toBeCloseTo(score(plain), 8);
-
-    // Opened once: a small boost over the unopened row.
-    await recordUse(pool, hitOld);
-    score = await scores(stubEmbedder);
-    expect(score(hitOld)).toBeGreaterThan(score(plain));
-    const r = await pool.query(`SELECT reinforce_count, hit_count, last_hit_at FROM memories WHERE memory_id = $1`, [hitOld]);
-    expect(r.rows[0]).toMatchObject({ reinforce_count: 1, hit_count: 1001 });
-    expect(r.rows[0].last_hit_at).not.toBeNull();
-  });
-
   it("falls back to FTS when the embedder throws", async () => {
     const id = await seedMemory({ username: "alice", project_dir: "-w-p", body: QUERY_BODY, seed: 6 });
     const hits = await searchMemories({
@@ -201,7 +169,8 @@ describe("searchMemories", () => {
   });
 
   it("FTS-only fallback orders results by ts_rank when scope is equal", async () => {
-    // Same scope (project) so the scope multiplier is identical; ranking must come from ts_rank(fts_score) alone. The strong
+    // Same scope (project) so the scope/popularity/recency multipliers are
+    // identical; ranking must come from ts_rank(fts_score) alone. The strong
     // body repeats the query terms more often than the weak body.
     // plainto_tsquery is conjunctive — both bodies must contain every query
     // term ("scanpy", "preprocessing", "pipeline"). Strong repeats them many
@@ -289,7 +258,7 @@ describe("getMemory", () => {
       gene: ["TP53"],
     });
 
-    const got = await getMemory(pool, id);
+    const got = await getMemory({ pool, memoryId: id, username: "alice" });
     expect(got).not.toBeNull();
     expect(got!.memory_id).toBe(id);
     expect(got!.username).toBe("alice");
@@ -302,8 +271,8 @@ describe("getMemory", () => {
     expect(got!.source_session_id).toBeNull();
     expect(got!.hit_count).toBe(0);
     expect(got!.last_hit_at).toBeNull();
-    expect(got!.created_at).toBeInstanceOf(Date);
-    expect(got!.updated_at).toBeInstanceOf(Date);
+    expect(got!.created_at).toMatch(/^\d{4}-\d\d-\d\dT/);
+    expect(got!.updated_at).toMatch(/^\d{4}-\d\d-\d\dT/);
     // facets grouped by key; values returned in sorted order.
     expect(got!.facets).toEqual({
       tool: ["STAR", "fastp"],
@@ -315,13 +284,13 @@ describe("getMemory", () => {
     const id = await seedMemory({
       username: "alice", project_dir: null, body: "no facets here", seed: 201,
     });
-    const got = await getMemory(pool, id);
+    const got = await getMemory({ pool, memoryId: id, username: "alice" });
     expect(got).not.toBeNull();
     expect(got!.facets).toEqual({});
   });
 
   it("returns null for a nonexistent id", async () => {
-    const got = await getMemory(pool, "00000000-0000-0000-0000-000000000000");
+    const got = await getMemory({ pool, memoryId: "00000000-0000-0000-0000-000000000000", username: "alice" });
     expect(got).toBeNull();
   });
 
@@ -330,9 +299,9 @@ describe("getMemory", () => {
       username: "alice", project_dir: "-w-p", body: "soon deleted", seed: 202,
     });
     await pool.query("UPDATE memories SET deleted_at = now() WHERE memory_id = $1", [id]);
-    const got = await getMemory(pool, id);
+    const got = await getMemory({ pool, memoryId: id, username: "alice" });
     expect(got).not.toBeNull();
-    expect(got!.deleted_at).toBeInstanceOf(Date);
+    expect(got!.deleted_at).toMatch(/^\d{4}-\d\d-\d\dT/);
   });
 
   it("returns scope_tier='project' for project-scoped rows and 'user' for user-scoped rows", async () => {
@@ -342,8 +311,8 @@ describe("getMemory", () => {
     const userId = await seedMemory({
       username: "alice", project_dir: null, body: "user body", seed: 204,
     });
-    expect((await getMemory(pool, projectId))!.scope_tier).toBe("project");
-    expect((await getMemory(pool, userId))!.scope_tier).toBe("user");
+    expect((await getMemory({ pool, memoryId: projectId, username: "alice" }))!.scope_tier).toBe("project");
+    expect((await getMemory({ pool, memoryId: userId, username: "alice" }))!.scope_tier).toBe("user");
   });
 });
 
@@ -369,9 +338,9 @@ describe("timelineMemories", () => {
 
     const rows = await timelineMemories({ pool, username: "alice" });
     expect(rows.map((r) => r.memory_id)).toEqual([newId, midId, oldId]);
-    expect(rows.every((r) => r.created_at instanceof Date)).toBe(true);
-    expect(rows[0].name).toBe("seed-302");
-    expect(rows[0].type).toBe("observation");
+    expect(rows.every((r) => !Number.isNaN(Date.parse(r.created_at)))).toBe(true);
+    expect(rows[0]!.name).toBe("seed-302");
+    expect(rows[0]!.type).toBe("observation");
   });
 
   it("respects since/until inclusive bounds", async () => {
@@ -448,7 +417,7 @@ describe("timelineMemories", () => {
 
 describe("writeUserMemory", () => {
   it("scope='user' writes a row with (username, NULL) and source='user'", async () => {
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "alice",
       scope:       "user",
@@ -464,13 +433,13 @@ describe("writeUserMemory", () => {
       [memory_id],
     );
     expect(r.rowCount).toBe(1);
-    expect(r.rows[0].username).toBe("alice");
-    expect(r.rows[0].project_dir).toBeNull();
-    expect(r.rows[0].source).toBe("user");
+    expect(r.rows[0]!.username).toBe("alice");
+    expect(r.rows[0]!.project_dir).toBeNull();
+    expect(r.rows[0]!.source).toBe("user");
   });
 
   it("scope='user' coerces project_dir to NULL even when caller passes a non-null value", async () => {
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "alice",
       scope:       "user",
@@ -485,11 +454,11 @@ describe("writeUserMemory", () => {
       `SELECT project_dir FROM memories WHERE memory_id = $1`,
       [memory_id],
     );
-    expect(r.rows[0].project_dir).toBeNull();
+    expect(r.rows[0]!.project_dir).toBeNull();
   });
 
   it("scope='project' writes a row with (username, project_dir)", async () => {
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "alice",
       scope:       "project",
@@ -505,14 +474,14 @@ describe("writeUserMemory", () => {
       [memory_id],
     );
     expect(r.rowCount).toBe(1);
-    expect(r.rows[0].username).toBe("alice");
-    expect(r.rows[0].project_dir).toBe("-w-bio-pipeline");
-    expect(r.rows[0].source).toBe("user");
+    expect(r.rows[0]!.username).toBe("alice");
+    expect(r.rows[0]!.project_dir).toBe("-w-bio-pipeline");
+    expect(r.rows[0]!.source).toBe("user");
   });
 
   it("scope='project' without project_dir throws", async () => {
     await expect(
-      writeUserMemory({
+      writeUserMemory({ domain: "lab",
         pool,
         username:    "alice",
         scope:       "project",
@@ -527,7 +496,7 @@ describe("writeUserMemory", () => {
 
   it("scope='org' throws (admin-only)", async () => {
     await expect(
-      writeUserMemory({
+      writeUserMemory({ domain: "lab",
         pool,
         username:    "alice",
         scope:       "org",
@@ -541,7 +510,7 @@ describe("writeUserMemory", () => {
   });
 
   it("creates exactly one chunk in memory_chunks", async () => {
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "alice",
       scope:       "user",
@@ -555,11 +524,11 @@ describe("writeUserMemory", () => {
       `SELECT COUNT(*)::text AS count FROM memory_chunks WHERE memory_id = $1`,
       [memory_id],
     );
-    expect(r.rows[0].count).toBe("1");
+    expect(r.rows[0]!.count).toBe("1");
   });
 
   it("enqueues exactly one row in embedder_queue for the new chunk", async () => {
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "alice",
       scope:       "user",
@@ -575,11 +544,11 @@ describe("writeUserMemory", () => {
         WHERE chunk_id IN (SELECT chunk_id FROM memory_chunks WHERE memory_id = $1)`,
       [memory_id],
     );
-    expect(r.rows[0].count).toBe("1");
+    expect(r.rows[0]!.count).toBe("1");
   });
 
   it("writes facets when supplied", async () => {
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "alice",
       scope:       "user",
@@ -607,6 +576,7 @@ describe("writeUserMemory", () => {
       name:        "dup-test",
       description: "first write",
       body:        "alice always uses scanpy for single-cell analysis pipelines",
+      domain:      "lab" as const,
     };
     const first = await writeUserMemory(args);
     expect(first.memory_id).not.toBeNull();
@@ -620,16 +590,16 @@ describe("forgetMemory", () => {
     const id = await seedMemory({
       username: "alice", project_dir: "-w-p", body: "to be forgotten", seed: 500,
     });
-    const before = await getMemory(pool, id);
+    const before = await getMemory({ pool, memoryId: id, username: "alice" });
     expect(before).not.toBeNull();
     expect(before!.deleted_at).toBeNull();
 
     const res = await forgetMemory({ pool, username: "alice", memoryId: id });
     expect(res).toEqual({ ok: true });
 
-    const after = await getMemory(pool, id);
+    const after = await getMemory({ pool, memoryId: id, username: "alice" });
     expect(after).not.toBeNull();
-    expect(after!.deleted_at).toBeInstanceOf(Date);
+    expect(after!.deleted_at).toMatch(/^\d{4}-\d\d-\d\dT/);
 
     // Confirm deleted_at was set (and updated_at advanced) without nuking
     // chunks / facets / queue rows.
@@ -638,12 +608,12 @@ describe("forgetMemory", () => {
       [id],
     );
     expect(r.rowCount).toBe(1);
-    expect(r.rows[0].deleted_at).not.toBeNull();
+    expect(r.rows[0]!.deleted_at).not.toBeNull();
     const chunkCount = await pool.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM memory_chunks WHERE memory_id = $1`,
       [id],
     );
-    expect(chunkCount.rows[0].count).toBe("1");
+    expect(chunkCount.rows[0]!.count).toBe("1");
   });
 
   it("returns {ok: false} for a nonexistent id", async () => {
@@ -662,7 +632,7 @@ describe("forgetMemory", () => {
     expect(res).toEqual({ ok: false });
 
     // bob's row is still alive
-    const got = await getMemory(pool, bobId);
+    const got = await getMemory({ pool, memoryId: bobId, username: "bob" });
     expect(got).not.toBeNull();
   });
 
@@ -677,7 +647,7 @@ describe("forgetMemory", () => {
   });
 });
 
-describe("getContext (directory index)", () => {
+describe("getContext", () => {
   it("returns empty bundle when the user has no memories", async () => {
     const ctx = await getContext({
       pool, username: "alice",
@@ -687,7 +657,7 @@ describe("getContext (directory index)", () => {
     expect(ctx).toEqual({ system_prompt: "", memory_ids: [] });
   });
 
-  it("includes a single memory and emits the header line", async () => {
+  it("indexes a single memory under its directory with name, description and id", async () => {
     const id = await seedMemory({
       username: "alice", project_dir: null,
       body: "alice prefers fastp for adapter trimming", seed: 600,
@@ -695,20 +665,17 @@ describe("getContext (directory index)", () => {
     const ctx = await getContext({
       pool, username: "alice",
       project_path: "/workspace",
-      budget_tokens: 2000,
+      budget_tokens: 800,
     });
     expect(ctx.memory_ids).toEqual([id]);
-    expect(ctx.system_prompt.startsWith("# Memory index\n\n")).toBe(true);
-    // L0 line for the directory, then the entry as name: description [id];
-    // bodies (L2) stay out of the bundle.
-    expect(ctx.system_prompt).toContain(
-      "- user/experience (1): Personal practices not yet reviewed for the lab\n" +
-      `  - seed-600: desc-600 [${id}]\n`,
-    );
-    expect(ctx.system_prompt).not.toContain("alice prefers fastp for adapter trimming");
+    expect(ctx.system_prompt.startsWith("# Memory index\n")).toBe(true);
+    expect(ctx.system_prompt).toContain("- user/experience (1): ");
+    expect(ctx.system_prompt).toContain(`  - seed-600: desc-600 [${id}]`);
+    // Index only: bodies are read on demand with memory_get.
+    expect(ctx.system_prompt).not.toContain("alice prefers fastp");
   });
 
-  it("orders multiple in-budget memories by score DESC (project > user > org)", async () => {
+  it("lists project directories first, then user, then org", async () => {
     // Encoded form of "/workspace/pbmc3k" → "-workspace-pbmc3k"
     const projectDir = "-workspace-pbmc3k";
     const orgId     = await seedMemory({ username: "__org__", project_dir: null,        body: "org body",     seed: 610 });
@@ -718,38 +685,30 @@ describe("getContext (directory index)", () => {
     const ctx = await getContext({
       pool, username: "alice",
       project_path: "/workspace/pbmc3k",
-      budget_tokens: 2000,
+      budget_tokens: 800,
     });
     expect(ctx.memory_ids).toEqual([projectId, userId, orgId]);
 
-    // Order in the prompt mirrors memory_ids order
-    const prj = ctx.system_prompt.indexOf("seed-612");
-    const usr = ctx.system_prompt.indexOf("seed-611");
-    const org = ctx.system_prompt.indexOf("seed-610");
+    const prj = ctx.system_prompt.indexOf("- project/decisions (1)");
+    const usr = ctx.system_prompt.indexOf("- user/experience (1)");
+    const org = ctx.system_prompt.indexOf("- org/experience (1)");
     expect(prj).toBeGreaterThan(-1);
     expect(usr).toBeGreaterThan(prj);
     expect(org).toBeGreaterThan(usr);
-
-    // Directory lines exist for each scope, in the same order
-    const p = ctx.system_prompt;
-    expect(p.indexOf("- project/decisions (1)")).toBeGreaterThan(-1);
-    expect(p.indexOf("- user/experience (1)")).toBeGreaterThan(p.indexOf("- project/decisions (1)"));
-    expect(p.indexOf("- org/experience (1)")).toBeGreaterThan(p.indexOf("- user/experience (1)"));
   });
 
-  it("includes at least one memory even when budget is too small to fit any", async () => {
-    const id = await seedMemory({
-      username: "alice", project_dir: null,
-      body: "x".repeat(500), seed: 620,
-    });
-    // budget_tokens=1 → 4 chars budget; the single memory will overshoot.
+  it("stays within the budget, cutting entries rather than overshooting", async () => {
+    for (let i = 0; i < 40; i++) {
+      await seedMemory({ username: "alice", project_dir: null, body: `b${i}`, seed: 620 + i, type: i % 2 ? "feedback" : "reference" });
+    }
     const ctx = await getContext({
       pool, username: "alice",
       project_path: "/workspace",
-      budget_tokens: 1,
+      budget_tokens: 150,
     });
-    expect(ctx.memory_ids).toEqual([id]);
-    expect(ctx.system_prompt.length).toBeGreaterThan(4);
+    expect(ctx.system_prompt.length).toBeLessThanOrEqual(150 * 4);
+    expect(ctx.memory_ids.length).toBeGreaterThan(0);
+    expect(ctx.memory_ids.length).toBeLessThan(6);  // at most 3 per non-empty dir
   });
 
   it("excludes soft-deleted memories", async () => {
@@ -1077,7 +1036,7 @@ describe("restoreMemory", () => {
 
 describe("getAuditTrail", () => {
   it("happy path: write → forget → restore returns 3 rows in DESC order (restore, forget, write)", async () => {
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "alice",
       scope:       "user",
@@ -1130,7 +1089,7 @@ describe("getAuditTrail", () => {
   });
 
   it("forbidden: returns {error:'forbidden'} when actor is not the owner", async () => {
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "bob",
       scope:       "user",
@@ -1152,7 +1111,7 @@ describe("getAuditTrail", () => {
 
   it("respects limit parameter (max 100)", async () => {
     // Create a memory to get its ID
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "alice",
       scope:       "user",
@@ -1376,7 +1335,7 @@ describe("listMemories", () => {
       await client.query("BEGIN");
 
       // User-authored memory: type "observation"
-      const memId1 = await insertMemoryRow(client, {
+      const memId1 = await insertMemoryRow(client, { domain: "lab",
         username:          "alice",
         project_dir:       null,
         source:            "user",
@@ -1390,7 +1349,7 @@ describe("listMemories", () => {
       });
 
       // User-authored memory: type "feedback"
-      const memId2 = await insertMemoryRow(client, {
+      const memId2 = await insertMemoryRow(client, { domain: "lab",
         username:          "bob",
         project_dir:       null,
         source:            "user",
@@ -1404,7 +1363,7 @@ describe("listMemories", () => {
       });
 
       // Distilled memory: type "session_summary"
-      const memId3 = await insertMemoryRow(client, {
+      const memId3 = await insertMemoryRow(client, { domain: "lab",
         username:          "alice",
         project_dir:       null,
         source:            "distilled",
@@ -1418,7 +1377,7 @@ describe("listMemories", () => {
       });
 
       // Distilled memory: type "reference"
-      const memId4 = await insertMemoryRow(client, {
+      const memId4 = await insertMemoryRow(client, { domain: "lab",
         username:          "bob",
         project_dir:       null,
         source:            "distilled",
@@ -1432,7 +1391,7 @@ describe("listMemories", () => {
       });
 
       // Soft-deleted memory
-      const memId5 = await insertMemoryRow(client, {
+      const memId5 = await insertMemoryRow(client, { domain: "lab",
         username:          "alice",
         project_dir:       null,
         source:            "user",
@@ -1452,9 +1411,9 @@ describe("listMemories", () => {
         [memId1, memId2, memId3],
       );
       const chunkMap = new Map(chunks.rows.map((r) => [r.memory_id, r.chunk_id]));
-      const chunk1Id = chunkMap.get(memId1);
-      const chunk2Id = chunkMap.get(memId2);
-      const chunk3Id = chunkMap.get(memId3);
+      const chunk1Id = chunkMap.get(memId1!);
+      const chunk2Id = chunkMap.get(memId2!);
+      const chunk3Id = chunkMap.get(memId3!);
 
       // Update enqueued_at times to simulate different enqueue times (insertMemoryRow already added them to queue)
       if (chunk1Id && chunk2Id && chunk3Id) {

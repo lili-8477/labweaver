@@ -36,7 +36,9 @@ describe("embedTexts", () => {
     nextBody = { vectors: [[0.1, 0.2], [0.3, 0.4]] };
     const v = await embedTexts({ baseUrl, texts: ["a", "b"] });
     expect(v).toEqual([[0.1, 0.2], [0.3, 0.4]]);
-    expect(lastReceived).toEqual({ texts: ["a", "b"] });
+    expect(lastReceived).toEqual({ texts: ["a", "b"], kind: "passage" });
+    await embedTexts({ baseUrl, texts: ["q", "r"], kind: "query" });
+    expect(lastReceived).toEqual({ texts: ["q", "r"], kind: "query" });
   });
 
   it("throws EmbedderError on non-2xx", async () => {

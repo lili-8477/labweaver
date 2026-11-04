@@ -1,9 +1,13 @@
+// The memory audit log: one memory_audit_log row per change to a memory,
+// written inside the change's own transaction.
+
 import type { PoolClient } from "pg";
+import type { AuditRow } from "./memory-contract.js";
 
 export interface AuditEntry {
   memory_id: string;
   actor:     string;
-  action:    'write' | 'update' | 'forget' | 'restore' | 'merge';
+  action:    AuditRow["action"];
   before:    Record<string, unknown> | null;
   after:     Record<string, unknown> | null;
 }

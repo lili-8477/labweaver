@@ -12,7 +12,6 @@ import { buildApp } from "./memory-api.js";
 import {
   searchMemories,
   getMemory,
-  recordUse,
   timelineMemories,
   writeUserMemory,
   forgetMemory,
@@ -25,9 +24,17 @@ import {
   listDirs,
   getDir,
   memoryTree,
+  recordFeedback,
+  recordUse,
+  usedSince,
 } from "./memory-repo.js";
 import { memoryGraph } from "./memory-graph.js";
 import { writeDistillation } from "./distiller-repo.js";
+import { proposeExperiences } from "./experience-promotion.js";
+import { linkMemories } from "./lineage-repo.js";
+import { buildBundle } from "./context-bundle.js";
+import { consolidate } from "./consolidate.js";
+import { checkCallers } from "./caller-check.js";
 import { shareRoutesPlugin } from "./share-api.js";
 import { glassesRoutesPlugin } from "./glasses-api.js";
 import { execRunner, runMuxOnce } from "./glasses-mux.js";
@@ -61,6 +68,8 @@ async function main(): Promise<void> {
     lockKey: cfg.migrationLockKey,
   });
   logger.info({ workspacesRoot: cfg.workspacesRoot }, "migrations applied — starting watcher");
+
+  if (!cfg.callerMapFile) throw new Error("CALLER_MAP_FILE is required (hub/service-map.conf, mounted read-only)");
 
   const handle = startWatcher({
     pool,
@@ -167,18 +176,18 @@ async function main(): Promise<void> {
   const app = buildApp({
     pool,
     embedderClient: {
-      // Request-path embeds (search, merge check) must finish inside the
+      // Request-path embeds (search, similarity check) must finish inside the
       // adapter's 5 s memory RPC timeout; on failure both fall back (FTS /
-      // write without merge) instead of hanging.
-      embedTexts: (texts) => embedTexts({ baseUrl: cfg.embedderUrl, texts, timeoutMs: 3_000 }),
+      // write without the check) instead of hanging.
+      embedTexts: (texts, kind) => embedTexts({ baseUrl: cfg.embedderUrl, texts, kind, timeoutMs: 3_000 }),
     },
     mergeSimilarity: cfg.memoryMergeSimilarity,
-    dirCap:          cfg.memoryDirCap,
+    managers:        cfg.memoryOrgManagers,
+    clearance:       cfg.memoryClearance,
     workspacesRoot:  cfg.workspacesRoot,
     repo: {
       searchMemories,
       getMemory,
-      recordUse,
       timelineMemories,
       writeUserMemory,
       forgetMemory,
@@ -188,13 +197,21 @@ async function main(): Promise<void> {
       listMemories,
       getAuditTrail,
       getMetrics,
-      writeDistillation,
       listDirs,
       getDir,
       memoryTree,
+      recordFeedback,
+      recordUse,
+      usedSince,
+      proposeExperiences,
+      writeDistillation,
+      linkMemories,
+      buildBundle,
+      consolidate,
       memoryGraph,
     },
   });
+  checkCallers(app, { mapFile: cfg.callerMapFile, warn: (obj, msg) => logger.warn(obj, msg) });
   await app.register(shareRoutesPlugin({
     pool,
     managers:            cfg.memoryOrgManagers,

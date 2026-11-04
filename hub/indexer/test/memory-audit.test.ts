@@ -27,7 +27,7 @@ beforeEach(async () => {
 describe("memory_audit_log", () => {
   it("writeUserMemory produces exactly one audit row with action='write'", async () => {
     const name = "audit write test";
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "alice",
       scope:       "user",
@@ -65,7 +65,7 @@ describe("memory_audit_log", () => {
 
   it("forgetMemory produces an audit row with action='forget' and before.deleted_at=null", async () => {
     const name = "audit forget test";
-    const { memory_id } = await writeUserMemory({
+    const { memory_id } = await writeUserMemory({ domain: "lab",
       pool,
       username:    "alice",
       scope:       "user",

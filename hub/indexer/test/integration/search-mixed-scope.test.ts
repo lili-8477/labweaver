@@ -67,7 +67,7 @@ async function seedMemory(args: SeedArgs): Promise<string> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const memId = await insertMemoryRow(client, {
+    const memId = await insertMemoryRow(client, { domain: "lab",
       username:          args.username,
       project_dir:       args.project_dir,
       source:            "user",
@@ -97,7 +97,7 @@ async function seedMemory(args: SeedArgs): Promise<string> {
 }
 
 describe("integration: mixed-scope hybrid search against real pgvector", () => {
-  it("returns all 5 in-scope rows, ranks the embedding-twin highest, and doesn't count results as hits", async () => {
+  it("returns all 5 in-scope rows, ranks the embedding-twin highest, and leaves hit_count alone", async () => {
     // 5 memories, all with body containing "scanpy" so FTS matches every row.
     // 1 org, 2 user, 2 project. Each gets a distinct random unit vector
     // (seeds 1001..1005).
@@ -138,7 +138,7 @@ describe("integration: mixed-scope hybrid search against real pgvector", () => {
     // The row whose embedding the stub returned must rank first; its
     // vec_sim of 1.0 beats every other row's near-zero vec_sim by enough to
     // out-weigh the project tier's 1.20 vs user tier's 1.10 multiplier.
-    expect(hits[0].memory_id).toBe(userBId);
+    expect(hits[0]!.memory_id).toBe(userBId);
 
     // Scope tier classification per row.
     const tierByMem = new Map(hits.map((h) => [h.memory_id, h.scope_tier]));
@@ -154,7 +154,7 @@ describe("integration: mixed-scope hybrid search against real pgvector", () => {
       expect(h.snippet.length).toBeGreaterThan(0);
     }
 
-    // Appearing in results isn't a hit.
+    // Retrieval is not a use: hit_count/last_hit_at stay untouched.
     const counts = await pool.query<{ memory_id: string; hit_count: number; last_hit_at: Date | null }>(
       `SELECT memory_id, hit_count, last_hit_at FROM memories
         WHERE memory_id = ANY($1::uuid[])

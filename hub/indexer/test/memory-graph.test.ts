@@ -8,7 +8,8 @@ import * as path from "node:path";
 import { runMigrations } from "../src/migrate.js";
 import { contentHash } from "../src/content-hash.js";
 import { defaultDir, scopeOf } from "../src/memory-dirs.js";
-import { GRAPH_MEMORY_LIMIT, GRAPH_NODE_LIMIT, memoryGraph, normName, type MemoryGraph } from "../src/memory-graph.js";
+import { GRAPH_MEMORY_LIMIT, GRAPH_NODE_LIMIT, memoryGraph, normName } from "../src/memory-graph.js";
+import type { MemoryGraph } from "../src/memory-contract.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 let pg: StartedPostgreSqlContainer;

@@ -4,6 +4,7 @@ import { commitPass, readOffset } from "./db.js";
 import { parseJsonlBuffer } from "./jsonl-parser.js";
 import { resolveJsonlPath } from "./path-decode.js";
 import { projectEntries } from "./session-projector.js";
+import { captureEvidence } from "./evidence-capture.js";
 
 export interface ProcessFileOptions {
   pool: Pool;
@@ -71,6 +72,7 @@ export async function processFile(opts: ProcessFileOptions): Promise<void> {
           resetSessionIds: [],
         });
         isResetPass = false;
+    await captureEvidence(pool, buf, username);
         chunkStart = committedEnd;
         continue;
       }

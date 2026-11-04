@@ -79,8 +79,10 @@ services:
       WORKSPACES_ROOT: /workspaces
       MAX_CONCURRENT_FILES: "4"
       LOG_LEVEL: debug
+      CALLER_MAP_FILE: /etc/bioflow/service-map.conf
     volumes:
       - ./hub/workspaces:/workspaces:ro
+      - ./hub/service-map.conf:/etc/bioflow/service-map.conf:ro
     depends_on:
       postgres:
         condition: service_healthy

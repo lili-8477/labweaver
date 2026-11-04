@@ -1,32 +1,24 @@
-// Merge-on-write support. Before a new memory is inserted, its body is
-// embedded and compared with the owner's live entries in the same directory;
-// the closest match at or above `mergeSimilarity` (cosine) absorbs the write
-// instead of a new row being added (distiller-repo.ts storeMemory).
+// Merge-on-write support (phase 2). Before a new memory is inserted, its body
+// is embedded and compared with live entries of the same owner in the same
+// directory. Near matches are handed back to the agent, which either merges
+// them (PUT /memory/:id with merge=true) or re-sends with force_new.
 import type { PoolClient } from "pg";
 import { logger } from "./config.js";
+import type { SimilarMemory } from "./memory-contract.js";
+import { vectorLiteral, type EmbedderClient } from "./embedder-client.js";
 
-export interface EmbedderClient {
-  embedTexts: (texts: string[]) => Promise<number[][]>;
+export interface MergeCheck {
+  embedderClient: EmbedderClient;
+  similarity:     number;   // cosine similarity at or above which a match is "similar"
 }
 
-// SET clause that reinforces a memory: it was opened for work or merged into.
-export const REINFORCE_SQL = `reinforced_at = now(), reinforce_count = reinforce_count + 1`;
+export type { SimilarMemory } from "./memory-contract.js";
 
-// Knobs for the write path. Without an embedderClient no merge check runs.
-export interface WritePolicy {
-  embedderClient?: EmbedderClient;
-  mergeSimilarity: number;
-}
-
-// Embed texts for the merge check. Returns null when there is no embedder or
-// it is unavailable: the caller then writes without a check rather than failing.
-export async function embedForMerge(
-  policy: WritePolicy | undefined,
-  texts: string[],
-): Promise<number[][] | null> {
-  if (!policy?.embedderClient || texts.length === 0) return null;
+// Embed texts for the similarity check. Returns null when the embedder is
+// unavailable: the caller then writes without a check rather than failing.
+export async function embedForMerge(check: MergeCheck, texts: string[]): Promise<number[][] | null> {
   try {
-    const out = await policy.embedderClient.embedTexts(texts);
+    const out = await check.embedderClient.embedTexts(texts);
     if (!Array.isArray(out) || out.length !== texts.length) throw new Error("embedder returned malformed vectors");
     return out;
   } catch (e) {
@@ -38,23 +30,7 @@ export async function embedForMerge(
   }
 }
 
-export interface MergeTarget {
-  memory_id:   string;
-  source:      "user" | "distilled";
-  type:        string;
-  name:        string;
-  description: string;
-  body:        string;
-  sim:         number;
-}
-
-export function vectorLiteral(v: number[]): string {
-  return "[" + v.join(",") + "]";
-}
-
-// The live entry in the owner's directory most similar to `embedding`, if any
-// reaches `similarity`.
-export async function findMergeTarget(
+export async function findSimilar(
   client: PoolClient,
   args: {
     username:    string;
@@ -62,10 +38,11 @@ export async function findMergeTarget(
     dir_key:     string;
     embedding:   number[];
     similarity:  number;
+    limit?:      number;
   },
-): Promise<MergeTarget | null> {
-  const r = await client.query<MergeTarget>(
-    `SELECT m.memory_id, m.source, m.type, m.name, m.description, m.body,
+): Promise<SimilarMemory[]> {
+  const r = await client.query<SimilarMemory>(
+    `SELECT m.memory_id, m.name, m.description, m.body,
             MAX(1 - (mc.embedding <=> $1::vector))::float8 AS sim
        FROM memories m JOIN memory_chunks mc USING (memory_id)
       WHERE m.username = $2
@@ -76,8 +53,11 @@ export async function findMergeTarget(
         AND 1 - (mc.embedding <=> $1::vector) >= $5
       GROUP BY m.memory_id
       ORDER BY sim DESC
-      LIMIT 1`,
-    [vectorLiteral(args.embedding), args.username, args.project_dir, args.dir_key, args.similarity],
+      LIMIT $6`,
+    [
+      vectorLiteral(args.embedding),
+      args.username, args.project_dir, args.dir_key, args.similarity, args.limit ?? 3,
+    ],
   );
-  return r.rows[0] ?? null;
+  return r.rows;
 }

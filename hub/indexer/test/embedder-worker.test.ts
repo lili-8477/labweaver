@@ -52,7 +52,7 @@ beforeEach(async () => {
 async function seedChunk(content: string): Promise<number> {
   const m = await pool.query<{ memory_id: string }>(
     `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash, dir_key)
-     VALUES (gen_random_uuid(),'alice','observation','distilled','n','d',$1,$2::bytea,'user/experience')
+     VALUES (gen_random_uuid(),'alice','observation','distilled','n','d',$1,$2::bytea, 'user/experience')
      RETURNING memory_id`,
     [content, Buffer.from(content)],
   );

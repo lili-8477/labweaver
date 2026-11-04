@@ -1,5 +1,5 @@
 import pino from "pino";
-import { DEFAULT_DIR_CAP } from "./memory-dirs.js";
+import { ACCESS_ORDER, type AccessClass } from "./access-classes.js";
 
 export const logger = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
@@ -17,7 +17,9 @@ export interface Config {
   memoryApiPort:        number;
   memoryOrgManagers:    string[];
   memoryMergeSimilarity:        number;
-  memoryDirCap:                 number;
+  // Per-user access clearance for memory reads (MEMORY_CLEARANCE, e.g.
+  // "alice=irb,bob=restricted"); users not listed read up to 'internal'.
+  memoryClearance:              Record<string, AccessClass>;
   shareSnapshotsDir:          string;
   shareMaxFolderBytes:        number;
   shareSnapshotTtlDays:       number;
@@ -30,6 +32,8 @@ export interface Config {
   glassesProxySecret:   string;
   ffmpegBin:            string;
   ffprobeBin:           string;
+  // service-map.conf: which service ID is whose (caller-check.ts). Required.
+  callerMapFile:        string;
 }
 
 function parseIntVar(env: Record<string, string | undefined>, name: string, fallback: number): number {
@@ -62,6 +66,20 @@ function parseUnitVar(env: Record<string, string | undefined>, name: string, fal
   return n;
 }
 
+const isAccessClass = (v: string): v is AccessClass => (ACCESS_ORDER as readonly string[]).includes(v);
+
+function parseClearance(raw: string): Record<string, AccessClass> {
+  const out: Record<string, AccessClass> = {};
+  for (const pair of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const [user, level] = pair.split("=").map((s) => s.trim());
+    if (!user || !level || !isAccessClass(level)) {
+      throw new Error(`MEMORY_CLEARANCE entries must be user=${ACCESS_ORDER.join("|")}; got ${JSON.stringify(pair)}`);
+    }
+    out[user] = level;
+  }
+  return out;
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   const pgUrl = env.PG_URL;
   if (!pgUrl) throw new Error("PG_URL is required");
@@ -92,7 +110,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     memoryApiPort:        parseIntVar(env, "MEMORY_API_PORT",         8400),
     memoryOrgManagers,
     memoryMergeSimilarity:        parseUnitVar(env, "MEMORY_MERGE_SIMILARITY",         0.9),
-    memoryDirCap:                 parseIntVar(env, "MEMORY_DIR_CAP",                   DEFAULT_DIR_CAP),
+    memoryClearance:              parseClearance(env.MEMORY_CLEARANCE ?? ""),
     shareSnapshotsDir,
     shareMaxFolderBytes,
     shareSnapshotTtlDays,
@@ -105,5 +123,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     glassesProxySecret:   env.GLASSES_PROXY_SECRET ?? "",
     ffmpegBin:            env.FFMPEG_BIN  ?? "ffmpeg",
     ffprobeBin:           env.FFPROBE_BIN ?? "ffprobe",
+    callerMapFile:        env.CALLER_MAP_FILE ?? "",
   };
 }

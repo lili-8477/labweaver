@@ -2,117 +2,169 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PostgreSqlContainer, StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
 import { fileURLToPath } from "node:url";
-import { cp, mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import * as path from "node:path";
+import { DistillationResult } from "../src/distiller-prompts.js";
 import { runMigrations } from "../src/migrate.js";
+import { insertMemoryRow, writeDistillation } from "../src/distiller-repo.js";
 import { contentHash } from "../src/content-hash.js";
-import { defaultDir, scopeOf } from "../src/memory-dirs.js";
-import { getContext, getDir, listDirs, listMemories, memoryTree, writeUserMemory } from "../src/memory-repo.js";
+import { InvalidDirError } from "../src/memory-dirs.js";
+import {
+  searchMemories, writeUserMemory, updateMemory, getAuditTrail, getMemory,
+  listMemories, listDirs, getDir, recordFeedback, memoryTree,
+} from "../src/memory-repo.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
-const LOCK = 0x62696f666c77n;
 let pg: StartedPostgreSqlContainer;
 let pool: Pool;
-let preDirsMigrations: string;
 
-const V1_TYPES = ["user", "feedback", "project", "reference", "session_summary", "observation"];
-const OWNERS: Array<[string, string | null]> = [["alice", null], ["alice", "-w-p"], ["__org__", null]];
-
-// Bring the DB up to 0016 only, so the backfill in 0017 runs over pre-existing rows.
 beforeAll(async () => {
   pg = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
   pool = new Pool({ connectionString: pg.getConnectionUri() });
-  preDirsMigrations = await mkdtemp(path.join(tmpdir(), "mig-"));
-  for (const f of await readdir(MIGRATIONS_DIR)) {
-    const v = Number(/^(\d+)_/.exec(f)?.[1]);
-    if (f.endsWith(".sql") && v < 17) await cp(path.join(MIGRATIONS_DIR, f), path.join(preDirsMigrations, f));
-  }
-  await runMigrations({ pool, migrationsDir: preDirsMigrations, lockKey: LOCK });
+  await runMigrations({ pool, migrationsDir: MIGRATIONS_DIR, lockKey: 0x6d656d646972n });
 }, 120_000);
 
 afterAll(async () => {
   await pool?.end();
   await pg?.stop();
-  if (preDirsMigrations) await rm(preDirsMigrations, { recursive: true, force: true });
 }, 30_000);
 
-describe("migration 0017 backfill", () => {
-  it("assigns every existing row (deleted ones too) the directory defaultDir() picks", async () => {
-    let n = 0;
-    for (const [username, project_dir] of OWNERS) {
-      for (const type of V1_TYPES) {
-        n++;
-        await pool.query(
-          `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body,
-                                 content_hash, deleted_at)
-           VALUES (gen_random_uuid(), $1, $2, $3, 'distilled', $4, 'd', 'b', $5, $6)`,
-          [username, project_dir, type, `${username}-${project_dir}-${type}`,
-           contentHash({ body: `b${n}`, promptVersion: 1 }), n % 2 === 0 ? new Date() : null],
+beforeEach(async () => {
+  await pool.query("TRUNCATE memories CASCADE");
+});
+
+const DIM = 384;
+const QUERY_VEC = Array.from({ length: DIM }, (_, i) => (i === 0 ? 1 : 0));
+const FAR_VEC   = Array.from({ length: DIM }, (_, i) => (i === 0 ? -1 : 0));
+const MID_VEC   = Array.from({ length: DIM }, (_, i) => (i === 1 ? 1 : 0));
+const vecLiteral = (v: number[]) => "[" + v.join(",") + "]";
+const embedder = { embedTexts: async () => [QUERY_VEC] };
+
+let seq = 0;
+interface Seed {
+  username:     string;
+  project_dir?: string | null;
+  body:         string;
+  vec?:         number[] | null;   // null = leave un-embedded
+  type?:        string;
+  name?:        string;
+  dir?:         string;
+  facets?:      Record<string, string[]>;
+}
+
+async function seed(rows: Seed[]): Promise<string[]> {
+  const client = await pool.connect();
+  const ids: string[] = [];
+  try {
+    await client.query("BEGIN");
+    for (const r of rows) {
+      const n = seq++;
+      const id = await insertMemoryRow(client, { domain: "lab",
+        username:          r.username,
+        project_dir:       r.project_dir ?? null,
+        source:            "user",
+        type:              r.type ?? "observation",
+        source_session_id: null,
+        name:              r.name ?? `m-${n}`,
+        description:       `d-${n}`,
+        body:              r.body,
+        facets:            r.facets ?? {},
+        content_hash:      contentHash({ body: `${n}`, promptVersion: 0 }),
+        dir_key:           r.dir,
+      });
+      if (!id) throw new Error("seed dedup");
+      if (r.vec !== null) {
+        await client.query(
+          `UPDATE memory_chunks SET embedding = $1::vector WHERE memory_id = $2`,
+          [vecLiteral(r.vec ?? MID_VEC), id],
         );
       }
+      ids.push(id);
     }
-    await runMigrations({ pool, migrationsDir: MIGRATIONS_DIR, lockKey: LOCK });
+    await client.query("COMMIT");
+  } finally {
+    client.release();
+  }
+  return ids;
+}
 
-    const r = await pool.query<{ username: string; project_dir: string | null; type: string; scope: string; dir_key: string }>(
-      `SELECT username, project_dir, type, scope, dir_key FROM memories`,
-    );
-    expect(r.rowCount).toBe(n);
-    for (const row of r.rows) {
-      expect(row.scope).toBe(scopeOf(row.username, row.project_dir));
-      expect(row.dir_key).toBe(defaultDir(scopeOf(row.username, row.project_dir), row.type));
-    }
-    // Spot-check the mapping itself.
-    const pick = (u: string, p: string | null, t: string) =>
-      r.rows.find((x) => x.username === u && x.project_dir === p && x.type === t)!.dir_key;
-    expect(pick("alice", null, "feedback")).toBe("user/preferences");
-    expect(pick("alice", null, "observation")).toBe("user/experience");
-    expect(pick("alice", null, "session_summary")).toBe("user/notes");
-    expect(pick("alice", "-w-p", "reference")).toBe("project/entities");
-    expect(pick("alice", "-w-p", "session_summary")).toBe("project/trajectories");
-    expect(pick("alice", "-w-p", "feedback")).toBe("project/decisions");
-    expect(pick("__org__", null, "project")).toBe("org/entities");
-    expect(pick("__org__", null, "reference")).toBe("org/references");
-    expect(pick("__org__", null, "feedback")).toBe("org/experience");
+const search = (extra: Partial<Parameters<typeof searchMemories>[0]> = {}) =>
+  searchMemories({
+    pool, embedderClient: embedder, username: "alice", project_dir: "-w-p",
+    query: "scanpy normalisation", limit: 50, ...extra,
   });
 
-  it("rejects a directory from another scope (memories_dir_fk)", async () => {
-    await expect(pool.query(
-      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body,
-                             content_hash, dir_key)
-       VALUES (gen_random_uuid(), 'alice', NULL, 'user', 'user', 'n', 'd', 'b', '\\x01'::bytea, 'project/decisions')`,
-    )).rejects.toThrow(/memories_dir_fk/);
+describe("searchMemories candidate selection", () => {
+  it("filters visibility before the vector cap: other users' near chunks can't crowd the caller out", async () => {
+    await seed(Array.from({ length: 300 }, () => ({ username: "bob", body: "unrelated", vec: QUERY_VEC })));
+    const [mine] = await seed([{ username: "alice", body: "unrelated too", vec: MID_VEC }]);
+
+    const hits = await search();
+    expect(hits.map((h) => h.memory_id)).toEqual([mine]);
   });
 
-  it("allows the 'merge' audit action", async () => {
-    const m = await pool.query<{ memory_id: string }>(`SELECT memory_id FROM memories LIMIT 1`);
+  it("returns a full-text-only match that is outside the 200 nearest vectors", async () => {
+    await seed(Array.from({ length: 201 }, () => ({ username: "alice", body: "unrelated", vec: QUERY_VEC })));
+    const [ftsHit] = await seed([{ username: "alice", body: "scanpy normalisation recipe", vec: FAR_VEC }]);
+
+    const hits = await search({ limit: 300 });
+    expect(hits.map((h) => h.memory_id)).toContain(ftsHit);
+  });
+
+  it("ranks an un-embedded memory by full text with a finite score, below an embedded match", async () => {
+    const [embedded, bare] = await seed([
+      { username: "alice", body: "scanpy normalisation", vec: QUERY_VEC },
+      { username: "alice", body: "scanpy normalisation", vec: null },
+    ]);
+    const hits = await search();
+    expect(hits.map((h) => h.memory_id)).toEqual([embedded, bare]);
+    for (const h of hits) expect(Number.isFinite(h.score)).toBe(true);
+  });
+
+  it("works without an embedder (full-text only)", async () => {
+    const [hit] = await seed([{ username: "alice", body: "scanpy normalisation" }]);
+    const hits = await search({
+      embedderClient: { embedTexts: async () => { throw new Error("down"); } },
+    });
+    expect(hits.map((h) => h.memory_id)).toEqual([hit]);
+    expect(Number.isFinite(hits[0]!.score)).toBe(true);
+  });
+
+  it("returns one hit per memory when several chunks match", async () => {
+    const [id] = await seed([{ username: "alice", body: "scanpy normalisation part one" }]);
     await pool.query(
-      `INSERT INTO memory_audit_log (memory_id, actor, action) VALUES ($1, 'alice', 'merge')`,
-      [m.rows[0]!.memory_id],
+      `INSERT INTO memory_chunks (memory_id, chunk_idx, content, embedding)
+       VALUES ($1, 1, 'scanpy normalisation part two', $2::vector)`,
+      [id, vecLiteral(QUERY_VEC)],
     );
+    const hits = await search();
+    expect(hits.map((h) => h.memory_id)).toEqual([id]);
+    expect(hits[0]!.snippet).toBe("scanpy normalisation part two");
+  });
+
+  it("filters by directory and reports dir_key", async () => {
+    const [notes, prefs] = await seed([
+      { username: "alice", body: "scanpy normalisation", type: "reference" },
+      { username: "alice", body: "scanpy normalisation", type: "feedback" },
+    ]);
+    const all = await search();
+    expect(new Map(all.map((h) => [h.memory_id, h.dir_key]))).toEqual(
+      new Map([[notes, "user/notes"], [prefs, "user/preferences"]]),
+    );
+    const only = await search({ dirs: ["user/preferences"] });
+    expect(only.map((h) => h.memory_id)).toEqual([prefs]);
   });
 });
 
-describe("directories and tree", () => {
-  beforeEach(async () => {
-    await pool.query("TRUNCATE memories CASCADE");
-  });
-
-  async function write(
-    username: string, scope: "user" | "project", project_dir: string | null, name: string,
-    extra: { dir_key?: string; type?: "user" | "feedback" | "project" | "reference" } = {},
-  ): Promise<string> {
-    const { memory_id } = await writeUserMemory({
-      pool, username, scope, project_dir, type: extra.type ?? "user", name,
-      description: `${name} desc`, body: `${name} body`, dir_key: extra.dir_key,
-    });
-    return memory_id!;
-  }
-
-  it("listDirs: user+org directories always, project ones only with a project", async () => {
-    await write("alice", "user", null, "pref");
-    await write("alice", "project", "-w-p", "dec");
-    await write("alice", "project", "-w-other", "elsewhere");
+describe("listDirs / getDir", () => {
+  it("lists visible directories with counts; project dirs only with a project_dir", async () => {
+    await seed([
+      { username: "alice", body: "a", type: "feedback" },
+      { username: "alice", body: "b", type: "feedback" },
+      { username: "alice", project_dir: "-w-p", body: "c", type: "project" },
+      { username: "alice", project_dir: "-w-other", body: "d", type: "project" },
+      { username: "bob",   body: "e", type: "feedback" },
+      { username: "__org__", body: "f", type: "reference" },
+      { username: "alice", body: "g", type: "feedback", name: "raw distillation failed" },
+    ]);
 
     const noProject = await listDirs({ pool, username: "alice", project_dir: null });
     expect(noProject.map((d) => d.dir_key)).toEqual([
@@ -120,114 +172,162 @@ describe("directories and tree", () => {
       "user/preferences", "user/experience", "user/notes",
     ]);
 
-    const withProject = await listDirs({ pool, username: "alice", project_dir: "-w-p", cap: 1 });
-    expect(withProject).toHaveLength(9);
-    const byKey = Object.fromEntries(withProject.map((d) => [d.dir_key, d]));
-    expect(byKey["project/decisions"]!.entry_count).toBe(1);          // -w-other not counted
-    expect(byKey["user/preferences"]).toMatchObject({ entry_count: 1, over_cap: false, scope: "user" });
-    expect(byKey["user/notes"]).toMatchObject({ entry_count: 0, updated_at: null });
-    expect(byKey["project/decisions"]!.l0).toBe("Decisions and findings, with dates and evidence");
+    const withProject = await listDirs({ pool, username: "alice", project_dir: "-w-p" });
+    const counts = Object.fromEntries(withProject.map((d) => [d.dir_key, d.entry_count]));
+    expect(counts).toEqual({
+      "project/entities": 0, "project/trajectories": 0, "project/decisions": 1,
+      "org/entities": 0, "org/experience": 0, "org/references": 1,
+      "user/preferences": 2, "user/experience": 0, "user/notes": 0,
+    });
+    expect(withProject.find((d) => d.dir_key === "user/experience")!.updated_at).toBeNull();
+    expect(withProject[0]!.l0.length).toBeGreaterThan(0);
   });
 
-  it("listMemories: dir_key narrows the list to one directory", async () => {
-    await write("alice", "user", null, "pref", { dir_key: "user/preferences" });
-    await write("alice", "user", null, "note", { dir_key: "user/notes" });
-    const all = await listMemories({ pool, username: "alice", project_dir: null, scope: "user" });
-    expect(all.items.map((i) => i.name).sort()).toEqual(["note", "pref"]);
-    const notes = await listMemories({ pool, username: "alice", project_dir: null, dir_key: "user/notes" });
-    expect(notes.items.map((i) => i.name)).toEqual(["note"]);
-  });
-
-  it("getDir: L1 entries ranked by the prior (reinforcement), only the caller's", async () => {
-    const a = await write("alice", "user", null, "a");
-    const b = await write("alice", "user", null, "b");
-    await write("bob", "user", null, "bobs");
-    await pool.query(`UPDATE memories SET reinforce_count = 10 WHERE memory_id = $1`, [b]);
-
+  it("getDir returns L0 + ranked entries, and null for unknown or invisible dirs", async () => {
+    const [a] = await seed([{ username: "alice", body: "x", type: "feedback", name: "likes tabs" }]);
     const dir = await getDir({ pool, username: "alice", project_dir: null, dir_key: "user/preferences" });
-    expect(dir).toMatchObject({ dir_key: "user/preferences", entry_count: 2, over_cap: false });
-    expect(dir!.entries.map((e) => e.memory_id)).toEqual([b, a]);
-    expect(dir!.entries[0]).toMatchObject({ name: "b", description: "b desc", type: "user", source: "user", hit_count: 0 });
-
-    expect(await getDir({ pool, username: "alice", project_dir: null, dir_key: "project/decisions" })).toBeNull();
-    expect(await getDir({ pool, username: "alice", project_dir: null, dir_key: "user/nope" })).toBeNull();
-  });
-
-  it("browse order ignores time: an old unused entry keeps its place", async () => {
-    const a = await write("alice", "user", null, "a");
-    const b = await write("alice", "user", null, "b");
-    await pool.query(
-      `UPDATE memories SET reinforced_at = now() - interval '3 years', created_at = now() - interval '3 years' WHERE memory_id = $1`,
-      [a],
-    );
-    const dir = await getDir({ pool, username: "alice", project_dir: null, dir_key: "user/preferences" });
-    expect(dir!.entries.map((e) => e.memory_id)).toEqual([a, b]);
-  });
-
-  it("writes honour an explicit dir_key", async () => {
-    const id = await write("alice", "user", null, "n", { dir_key: "user/notes" });
-    const r = await pool.query(`SELECT dir_key FROM memories WHERE memory_id = $1`, [id]);
-    expect(r.rows[0].dir_key).toBe("user/notes");
-  });
-
-  it("memoryTree: instances per project, counts, over_cap, deleted rows and truncation", async () => {
-    const pref1 = await write("alice", "user", null, "pref1");
-    const pref2 = await write("alice", "user", null, "pref2");
-    const pref3 = await write("alice", "user", null, "pref3");
-    await write("alice", "project", "-w-b", "decB");
-    await write("alice", "project", "-w-a", "decA");
-    await write("bob", "user", null, "bobs");
-    await pool.query(`UPDATE memories SET deleted_at = now() WHERE memory_id = $1`, [pref3]);
-    await pool.query(`UPDATE memories SET reinforce_count = 5 WHERE memory_id = $1`, [pref2]);
-
-    const tree = await memoryTree({ pool, username: "alice", project_dir: null, cap: 1, limit: 1 });
-    expect(tree.cap).toBe(1);
-    expect(tree.limit).toBe(1);
-    expect(tree.dirs.map((d) => `${d.dir_key}@${d.project_dir}`)).toEqual([
-      "user/preferences@null", "user/experience@null", "user/notes@null",
-      "project/entities@-w-a", "project/trajectories@-w-a", "project/decisions@-w-a",
-      "project/entities@-w-b", "project/trajectories@-w-b", "project/decisions@-w-b",
-      "org/entities@null", "org/experience@null", "org/references@null",
+    expect(dir!.entry_count).toBe(1);
+    expect(dir!.entries).toEqual([
+      expect.objectContaining({ memory_id: a, name: "likes tabs" }),
     ]);
-    const prefs = tree.dirs[0]!;
-    expect(prefs).toMatchObject({
-      scope: "user", l0: "Working habits, preferences and corrections",
-      entry_count: 2, deleted_count: 1, over_cap: true, truncated: true,
-    });
-    expect(prefs.memories).toHaveLength(1);
-    expect(prefs.memories[0]).toEqual({
-      memory_id: pref2, name: "pref2", description: "pref2 desc",
-      dir_key: "user/preferences", scope: "user", project_dir: null,
-      type: "user", source: "user", hit_count: 0, last_hit_at: null,
-      created_at: expect.any(String), updated_at: expect.any(String), deleted_at: null,
-    });
-    expect(tree.dirs[5]!.memories.map((m) => m.name)).toEqual(["decA"]);
-    expect(tree.dirs[1]).toMatchObject({ entry_count: 0, memories: [], truncated: false, over_cap: false });
 
-    const withDeleted = await memoryTree({ pool, username: "alice", project_dir: null, include_deleted: true });
-    const prefsAll = withDeleted.dirs[0]!;
-    expect(prefsAll.memories.map((m) => m.memory_id)).toEqual([pref2, pref1, pref3]);   // live first
-    expect(prefsAll.memories[2]!.deleted_at).not.toBeNull();
-    expect(prefsAll.truncated).toBe(false);
+    expect(await getDir({ pool, username: "alice", project_dir: null, dir_key: "nope/x" })).toBeNull();
+    expect(await getDir({ pool, username: "alice", project_dir: null, dir_key: "project/decisions" })).toBeNull();
+  });
+});
 
-    const oneProject = await memoryTree({ pool, username: "alice", project_dir: "-w-empty" });
-    expect(oneProject.dirs.filter((d) => d.scope === "project").map((d) => d.project_dir))
-      .toEqual(["-w-empty", "-w-empty", "-w-empty"]);
+describe("writes and directories", () => {
+  it("defaults the directory from (scope, type), honours an explicit one, and rejects a cross-scope one", async () => {
+    const dflt = await writeUserMemory({ domain: "lab",
+      pool, username: "alice", scope: "project", project_dir: "-w-p",
+      type: "reference", name: "n1", description: "d", body: "b1",
+    });
+    expect((await getMemory({ pool, memoryId: dflt.memory_id!, username: "alice" }))!.dir_key).toBe("project/entities");
+
+    const explicit = await writeUserMemory({ domain: "lab",
+      pool, username: "alice", scope: "project", project_dir: "-w-p",
+      type: "project", name: "n2", description: "d", body: "b2", dir: "project/trajectories",
+    });
+    expect((await getMemory({ pool, memoryId: explicit.memory_id!, username: "alice" }))!.dir_key).toBe("project/trajectories");
+
+    await expect(writeUserMemory({ domain: "lab",
+      pool, username: "alice", scope: "user", project_dir: null,
+      type: "user", name: "n3", description: "d", body: "b3", dir: "project/decisions",
+    })).rejects.toBeInstanceOf(InvalidDirError);
   });
 
-  it("getContext: directory lines then top entries, project first, within budget", async () => {
-    const ids: string[] = [];
-    for (const n of ["p1", "p2", "p3", "p4"]) ids.push(await write("alice", "project", "-workspace-x", n));
-    await write("alice", "user", null, "pref");
+  it("files distilled rows by default mapping", async () => {
+    await writeDistillation(pool, {
+      sessionMeta: { username: "alice", project_dir: "-w-p", source_session_id: null },
+      result: DistillationResult.parse({
+        run: { subject: "s", statement: "summary" },
+        claims: [{ claim_kind: "observation", subject: "o", statement: "obs" }],
+      }),
+      promptVersion: 2,
+    });
+    const { items } = await listMemories({ pool, username: "alice", project_dir: "-w-p" });
+    expect(new Map(items.map((i) => [i.name, i.dir_key]))).toEqual(new Map([
+      ["s", "project/trajectories"],
+      ["o", "project/decisions"],
+    ]));
+  });
 
-    const ctx = await getContext({ pool, username: "alice", project_path: "/workspace/x", budget_tokens: 2000 });
-    const lines = ctx.system_prompt.split("\n").filter((l) => l.startsWith("- ") || l.startsWith("  - "));
-    expect(lines[0]).toBe("- project/decisions (4): Decisions and findings, with dates and evidence");
-    expect(lines.slice(1, 4).every((l) => l.startsWith("  - p"))).toBe(true);   // top 3 of 4
-    expect(lines[4]).toBe("- user/preferences (1): Working habits, preferences and corrections");
-    expect(ctx.memory_ids).toHaveLength(4);
+  it("updateMemory moves within a scope, audits it, and rejects a cross-scope move", async () => {
+    const { memory_id } = await writeUserMemory({ domain: "lab",
+      pool, username: "alice", scope: "user", project_dir: null,
+      type: "user", name: "n", description: "d", body: "b",
+    });
+    const id = memory_id!;
+    const base = { pool, actor: "alice", memoryId: id, name: "n", description: "d", body: "b" };
 
-    const tight = await getContext({ pool, username: "alice", project_path: "/workspace/x", budget_tokens: 1 });
-    expect(tight.memory_ids).toHaveLength(1);   // first entry always fits
+    expect(await updateMemory({ ...base, dir: "user/notes" })).toEqual({ ok: true });
+    expect((await getMemory({ pool, memoryId: id, username: "alice" }))!.dir_key).toBe("user/notes");
+    const trail = await getAuditTrail({ pool, actor: "alice", memoryId: id });
+    if ("error" in trail) throw new Error(trail.error);
+    expect(trail.rows[0]).toMatchObject({
+      action: "update",
+      before: expect.objectContaining({ dir_key: "user/preferences" }),
+      after:  expect.objectContaining({ dir_key: "user/notes" }),
+    });
+
+    await expect(updateMemory({ ...base, dir: "org/experience" })).rejects.toBeInstanceOf(InvalidDirError);
+    expect((await getMemory({ pool, memoryId: id, username: "alice" }))!.dir_key).toBe("user/notes");
+  });
+
+  it("listMemories filters by dir", async () => {
+    const [, pref] = await seed([
+      { username: "alice", body: "a", type: "reference" },
+      { username: "alice", body: "b", type: "feedback" },
+    ]);
+    const { items } = await listMemories({ pool, username: "alice", project_dir: null, dir: "user/preferences" });
+    expect(items.map((i) => i.memory_id)).toEqual([pref]);
+  });
+});
+
+describe("recordFeedback", () => {
+  it("counts outcomes only on memories the caller can see, and is not a hit", async () => {
+    const [mine, org, bobs] = await seed([
+      { username: "alice", body: "a" },
+      { username: "__org__", body: "o" },
+      { username: "bob", body: "b" },
+    ]);
+    const r = await recordFeedback({ pool, username: "alice", memory_ids: [mine!, org!, bobs!, mine!], outcome: "success" });
+    expect(r).toEqual({ updated: 2 });
+    await recordFeedback({ pool, username: "alice", memory_ids: [mine!], outcome: "failure" });
+
+    const rows = await pool.query(
+      `SELECT memory_id, hit_count, success_count, failure_count, last_hit_at IS NOT NULL AS used
+         FROM memories ORDER BY username`,
+    );
+    const by = Object.fromEntries(rows.rows.map((x) => [x.memory_id, x]));
+    expect(by[mine!]).toMatchObject({ hit_count: 0, success_count: 1, failure_count: 1, used: false });
+    expect(by[org!]).toMatchObject({ hit_count: 0, success_count: 1, failure_count: 0 });
+    expect(by[bobs!]).toMatchObject({ hit_count: 0, used: false });
+  });
+
+  it("ranks a memory that helped tasks above one that preceded failures", async () => {
+    const [helped, hurt] = await seed([
+      { username: "alice", body: "x", type: "feedback", name: "helped" },
+      { username: "alice", body: "y", type: "feedback", name: "hurt" },
+    ]);
+    for (let i = 0; i < 3; i++) {
+      await recordFeedback({ pool, username: "alice", memory_ids: [helped!], outcome: "success" });
+      await recordFeedback({ pool, username: "alice", memory_ids: [hurt!], outcome: "failure" });
+    }
+    const dir = await getDir({ pool, username: "alice", project_dir: null, dir_key: "user/preferences" });
+    expect(dir!.entries.map((e) => e.name)).toEqual(["helped", "hurt"]);
+  });
+});
+
+describe("memoryTree", () => {
+  it("groups the caller's memories into facet topics ranked by skill readiness", async () => {
+    const qc = { pipeline: ["scrna-qc"], tool: ["scanpy"] };
+    const [a, b, c] = await seed([
+      { username: "alice", project_dir: "-w-p", body: "qc 1", facets: qc },
+      { username: "alice", body: "qc 2", facets: qc },
+      { username: "alice", body: "qc 3", facets: { ...qc, file: ["x.py"] } },
+      { username: "alice", body: "plot", facets: { tool: ["matplotlib"] } },
+      { username: "bob",   body: "bob qc", facets: qc },
+    ]);
+    await recordFeedback({ pool, username: "alice", memory_ids: [a!, b!, c!], outcome: "success" });
+
+    const tree = await memoryTree({ pool, username: "alice" });
+
+    expect(tree.memories).toHaveLength(4);                       // bob's excluded
+    expect(tree.memories.find((m) => m.memory_id === c)!.topics)
+      .toEqual(["pipeline:scrna-qc", "tool:scanpy"]);            // file facet is not a topic
+    expect(tree.topics.map((t) => t.topic)).toEqual(["pipeline:scrna-qc", "tool:scanpy"]); // singletons dropped
+    expect(tree.topics[0]).toMatchObject({
+      memory_count: 3, success_count: 3, readiness: 1, ready: true,
+      dirs: expect.arrayContaining(["project/decisions", "user/experience"]),
+    });
+    expect(tree.dirs.some((d) => d.dir_key === "project/decisions")).toBe(true);
+  });
+
+  it("scores partial readiness when a topic has knowledge but no proven uses", async () => {
+    await seed([1, 2].map((i) => ({ username: "alice", body: `p${i}`, facets: { pipeline: ["bulk-rna"] } })));
+    const [topic] = (await memoryTree({ pool, username: "alice" })).topics;
+    expect(topic).toMatchObject({ value: "bulk-rna", ready: false });
+    expect(topic!.readiness).toBeCloseTo(1 / 3);
   });
 });

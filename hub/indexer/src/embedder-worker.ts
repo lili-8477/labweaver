@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { logger } from "./config.js";
-import { embedTexts, EmbedderError } from "./embedder-client.js";
+import { embedTexts, EmbedderError, vectorLiteral } from "./embedder-client.js";
+import { withTx } from "./tx.js";
 
 export interface RunEmbedderOpts {
   embedderUrl: string;
@@ -41,11 +42,9 @@ export async function runEmbedderOnce(pool: Pool, opts: RunEmbedderOpts): Promis
     return summary;
   }
 
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
+  await withTx(pool, async (client) => {
     for (let i = 0; i < ids.length; i++) {
-      const literal = "[" + vectors[i]!.join(",") + "]";
+      const literal = vectorLiteral(vectors[i]!);
       await client.query(
         `UPDATE memory_chunks SET embedding = $1::vector WHERE chunk_id = $2`,
         [literal, ids[i]],
@@ -55,13 +54,7 @@ export async function runEmbedderOnce(pool: Pool, opts: RunEmbedderOpts): Promis
       `DELETE FROM embedder_queue WHERE chunk_id = ANY($1::bigint[])`,
       [ids],
     );
-    await client.query("COMMIT");
     summary.embedded = ids.length;
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
   return summary;
 }

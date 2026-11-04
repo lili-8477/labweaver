@@ -119,15 +119,21 @@ describe("loadConfig", () => {
     expect(cfg.shareAutoCloseIntervalHours).toBe(6);
   });
 
-  it('memory knobs default to 0.9 / 50 and read env overrides', () => {
+  it('memory knobs default to 0.9 and no clearances, and read env overrides', () => {
     expect(loadConfig({ PG_URL: 'x' })).toMatchObject({
-      memoryMergeSimilarity: 0.9, memoryDirCap: 50,
+      memoryMergeSimilarity: 0.9, memoryClearance: {}, callerMapFile: '',
     });
     expect(loadConfig({
-      PG_URL: 'x', MEMORY_MERGE_SIMILARITY: '0.85', MEMORY_DIR_CAP: '20',
+      PG_URL: 'x', MEMORY_MERGE_SIMILARITY: '0.85', MEMORY_CLEARANCE: 'alice=irb, bob=restricted',
+      CALLER_MAP_FILE: '/run/service-map.conf',
     })).toMatchObject({
-      memoryMergeSimilarity: 0.85, memoryDirCap: 20,
+      memoryMergeSimilarity: 0.85, memoryClearance: { alice: 'irb', bob: 'restricted' },
+      callerMapFile: '/run/service-map.conf',
     });
+  });
+
+  it('rejects a MEMORY_CLEARANCE entry with an unknown level', () => {
+    expect(() => loadConfig({ PG_URL: 'x', MEMORY_CLEARANCE: 'alice=secret' })).toThrow(/MEMORY_CLEARANCE/);
   });
 
   it('rejects MEMORY_MERGE_SIMILARITY outside (0, 1]', () => {
