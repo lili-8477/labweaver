@@ -475,3 +475,21 @@ VLM notes.
 - `capToolOutput` (900 KB) only limits what goes to the UI over NATS; it doesn't affect the model.
 - Subagents (Task/Agent tool) run in their own context and return a summary, which keeps big explorations out of the main thread.
 - Not done: no context-usage meter in the UI, and no automatic new session per task; a long-lived chat relies on compaction.
+
+## 2026-11-04 — Where the NGS log memory lives
+
+**Q:** Where is this memory now living? In pgsql?
+
+**A:** Yes. The 49 NGS memories are rows in the `bioflow` Postgres database (container `claude-bioflow-postgres`, pgvector on pg16), stored on the host in `hub/postgres-data/`. `memories` holds the text, `memory_chunks` the search text and embedding, and `memory_audit_log` the change history. They're owned by `__org__`, so every user's search includes them. The CSV tables are plain files in `hub/workspaces/shared/reference/ngs-log/`, not in Postgres. Agents reach the rows through the `bioflow-memory` MCP tools and the indexer API, not by querying the database.
+
+## 2026-11-04 — How memory_search and memory_get answer an NGS question
+
+**Q:** How does memory work with memory_search and memory_get when a user asks about NGS data? What are the name and description of the NGS memories?
+
+**A:** There are 49 rows in `org/references`: `NGS log overview: GNomEx project 63127`, plus one `NGS <request>: <title>` per order, for example `NGS 20643R: BRD9 PDX and p53 mouse`, described as `bulk RNA-seq, Human and mouse, 2023-03-16: BRD9 PDX and p53 mouse, 30 samples. All terms in sample names: ...`. Every new session first gets a short memory index from the SessionStart hook (`GET /memory/context`): each directory plus its top 3 entries, within about 8,000 characters. That's how the agent knows the NGS log exists. It then makes two calls. `memory_search` returns ranked hits with name, description, a 200-character snippet and `memory_id`, but not the body. `memory_get` takes one `memory_id` and returns the full body. Ranking (`hub/indexer/src/memory-repo.ts`) compares the query with the body only: 70% vector similarity plus 30% keyword match, then multiplied by scope, hit count and age. Name and description are not searched; they're what the agent reads to decide which hits to open.
+
+## 2026-11-04 — When auto-distill is triggered
+
+**Q:** I want to know when auto-distill will be triggered.
+
+**A:** Never, in v1 or v2. The background loop was removed on 2026-05-07 (`fc7e86c`; see the note in `hub/indexer/src/index.ts`) because it wrote low-signal rows for every settled session. `source='distilled'` rows now come only from `POST /memory/distill`, called by the `memory_distill_session` MCP tool. The `/memory` slash command is the intended route and tells the agent to run only when the user asks, but nothing technically stops an agent calling the tool itself. No hook calls it. The newest distilled row is from 2026-05-07.
