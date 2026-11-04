@@ -13,7 +13,7 @@ import { FileManager } from "./fs-rpc.js";
 import { readSessionMessages, type LegacyMessage } from "./history.js";
 import { H5adService } from "./h5ad-rpc.js";
 import { KernelBridge, type IOPubEvent } from "./kernel.js";
-import { MemoryRpcClient } from "./memory-rpc.js";
+import { MemoryForwarder } from "./memory-rpc.js";
 import { NotebookManager } from "./notebook-rpc.js";
 import { notebookToolsServer } from "./notebook-tools.js";
 import { NEXT_STEP_GUIDANCE, nextStepHooks, nextStepServer } from "./next-step.js";
@@ -46,8 +46,8 @@ export interface RpcDeps {
   kernelIdleCullMs?: number;
   /** How often to check for cull (ms). Defaults to 60_000. */
   kernelCullCheckIntervalMs?: number;
-  /** Memory API client. null when MEMORY_API_URL is not configured. */
-  memory: MemoryRpcClient | null;
+  /** Forwards the UI's memory_* ops to the memory-api. null when MEMORY_API_URL is not configured. */
+  memory: MemoryForwarder | null;
   /** Share API client. null when MEMORY_API_URL is not configured. */
   share: ShareRpcClient | null;
   /** Fleet monitor; set only in the manager container (LABWEAVER_ROLE=manager). */
@@ -219,6 +219,11 @@ export class RpcRouter {
   }
 
   private async dispatchInner(method: string, params: Record<string, unknown>): Promise<unknown> {
+    // The memory_* ops the UI may call go through the memory contract (memory-rpc.ts).
+    if (MemoryForwarder.handles(method)) {
+      if (!this.deps.memory) throw new Error("memory api not configured");
+      return this.deps.memory.call(method, params);
+    }
     switch (method) {
       case "get_endpoint":
         return { success: true, service_id: this.deps.serviceId };
@@ -534,89 +539,6 @@ export class RpcRouter {
         throw new Error(`unknown toolset: ${toolsetName}`);
       }
 
-      case "memory_search": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const hits = await this.deps.memory.search(params as Parameters<MemoryRpcClient["search"]>[0]);
-        return { success: true, hits };
-      }
-
-      case "memory_get": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const memory = await this.deps.memory.get(params.memory_id as string);
-        return { success: true, memory };
-      }
-
-      case "memory_timeline": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const entries = await this.deps.memory.timeline(params as Parameters<MemoryRpcClient["timeline"]>[0]);
-        return { success: true, entries };
-      }
-
-      case "memory_list": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const res = await this.deps.memory.list(params as Parameters<MemoryRpcClient["list"]>[0]);
-        return { success: true, ...(res as object) };
-      }
-
-      case "memory_dirs": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const dirs = await this.deps.memory.dirs(params as Parameters<MemoryRpcClient["dirs"]>[0]);
-        return { success: true, dirs };
-      }
-
-      case "memory_dir": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const { dir_key, ...qs } = params;
-        const dir = await this.deps.memory.dir(dir_key as string, qs as Parameters<MemoryRpcClient["dir"]>[1]);
-        return { success: true, dir };
-      }
-
-      case "memory_tree": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const res = await this.deps.memory.tree(params as Parameters<MemoryRpcClient["tree"]>[0]);
-        return { success: true, ...(res as object) };
-      }
-
-      case "memory_graph": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const res = await this.deps.memory.graph(params as Parameters<MemoryRpcClient["graph"]>[0]);
-        return { success: true, ...(res as object) };
-      }
-
-      case "memory_write": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const res = await this.deps.memory.write(params as Parameters<MemoryRpcClient["write"]>[0]);
-        return { success: true, ...(res as object) };
-      }
-
-      case "memory_update": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const { memory_id, ...body } = params as { memory_id: string; name: string; description: string; body: string };
-        const res = await this.deps.memory.update(memory_id, body);
-        return { success: true, ...(res as object) };
-      }
-
-      case "memory_forget": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const res = await this.deps.memory.forget(params.memory_id as string);
-        return { success: true, ...(res as object) };
-      }
-
-      case "memory_restore": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const res = await this.deps.memory.restore(params.memory_id as string);
-        return { success: true, ...(res as object) };
-      }
-
-      case "memory_audit": {
-        if (!this.deps.memory) throw new Error("memory api not configured");
-        const res = await this.deps.memory.audit(
-          params.memory_id as string,
-          params.limit as number | undefined,
-        );
-        return { success: true, ...(res as object) };
-      }
-
       case "share_submit": {
         if (!this.deps.share) throw new Error("share api not configured");
         const res = await this.deps.share.submit(
@@ -767,7 +689,7 @@ export class RpcRouter {
           },
           // Auto mode owns how its turn ends; a team lead stops while its
           // teammates work, so the next-step nudge would come too early.
-          hooks: auto ? autoModeHooks(this.deps.home, chatId) : team ? undefined : nextStepHooks(),
+          hooks: auto ? autoModeHooks(this.deps.home, chatId, this.deps.memory ? (o, since) => this.deps.memory!.outcome(o, since) : undefined) : team ? undefined : nextStepHooks(),
           appendSystemPrompt: NEXT_STEP_GUIDANCE,
           ...(team ? { env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1" } } : {}),
           onEvent: (ev) => this.deps.publishStream(`chat_${chatId}`, ev),

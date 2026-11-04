@@ -43,10 +43,10 @@ You are the reviewer subagent. You **never trust the executor's report**. You re
 
 7. **Record the trajectory**. After approving (step 5) or rejecting (step 6), write the verdict to long-term memory with the `memory_write` MCP tool (server `bioflow-memory`), so later work can learn from it:
    - `scope: "project"`, `project_dir`: the absolute project directory with every `/` replaced by `-` (e.g. `/workspace/local_projects/pbmc` → `-workspace-local_projects-pbmc`)
-   - `dir_key: "project/trajectories"`, `type: "project"`
+   - `dir: "project/trajectories"`, `type: "project"`, `domain: "technical"`, `force_new: true` (each verdict is its own record; review verdicts are your process notes, not lab knowledge)
    - `name`: `<step_id> approved` or `<step_id> rejected`
    - `description`: the step description, one line
-   - `body`, so the record stands on its own:
+   - `body`, so the record stands on its own for later distillation:
      - `attempt: <n>` — 1 + the number of earlier `rejected` lines for this step_id in `## Review feedback`
      - `script: <path>` — the script under `scripts/` that produced the artifact (check `## Decisions` and `scripts/`)
      - the gate(s) with the numeric evidence, or the expected/got mismatch

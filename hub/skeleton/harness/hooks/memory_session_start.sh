@@ -12,7 +12,10 @@ set -euo pipefail
 # CLAUDE_PROJECT_DIR to /workspace for config even when a chat runs in a
 # project dir.
 cwd=$(jq -r '.cwd // empty' 2>/dev/null || true)
-curl -fsS --max-time 3 -G \
+# SERVICE_ID tells the hub which container is calling.
+auth=()
+[ -n "${SERVICE_ID:-}" ] && auth=(-H "Authorization: Bearer ${SERVICE_ID}")
+curl -fsS --max-time 3 -G "${auth[@]+"${auth[@]}"}" \
   --data-urlencode "username=${USERNAME}" \
   --data-urlencode "project_path=${cwd:-${CLAUDE_PROJECT_DIR:-/workspace}}" \
   --data-urlencode "budget_tokens=2000" \

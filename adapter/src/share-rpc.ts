@@ -1,5 +1,7 @@
 // HTTP client for the share-api backend. Pure transport: one method per
-// share-api route, the username is supplied at construction time. No business
+// share-api route, the username is supplied at construction time and is set
+// last, so a caller-supplied requester/actor never survives. The container's
+// SERVICE_ID, when given, goes along as a Bearer token so the hub knows the caller. No business
 // logic. Handles HTTP errors as thrown Error with the API's `error` string
 // when present (so dispatchInner can surface them through NATS as RPC errors).
 
@@ -9,7 +11,12 @@ export class ShareRpcClient {
   constructor(
     private baseUrl: string,
     private username: string,
+    private token?: string,
   ) {}
+
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    return this.token ? { ...extra, authorization: `Bearer ${this.token}` } : extra;
+  }
 
   // POST /share/submit  body: { requester, kind, ref, note? }
   async submit(p: {
@@ -17,7 +24,7 @@ export class ShareRpcClient {
     ref: string;
     note?: string;
   }): Promise<unknown> {
-    return this.post("/share/submit", { requester: this.username, ...p });
+    return this.post("/share/submit", { ...p, requester: this.username });
   }
 
   // GET /share/list  query: actor, role, status?, limit?, cursor?
@@ -27,7 +34,7 @@ export class ShareRpcClient {
     limit?: number;
     cursor?: string;
   }): Promise<unknown> {
-    return this.fetchJson("/share/list", { actor: this.username, ...qs });
+    return this.fetchJson("/share/list", { ...qs, actor: this.username });
   }
 
   // GET /share/:id  query: actor
@@ -40,7 +47,7 @@ export class ShareRpcClient {
     id: string,
     p: { decision: "approve" | "reject"; comment?: string },
   ): Promise<unknown> {
-    return this.post(`/share/${encodeURIComponent(id)}/decide`, { actor: this.username, ...p });
+    return this.post(`/share/${encodeURIComponent(id)}/decide`, { ...p, actor: this.username });
   }
 
   // POST /share/:id/withdraw  body: { actor }
@@ -64,6 +71,7 @@ export class ShareRpcClient {
     try {
       const res = await fetch(url, {
         method: "GET",
+        headers: this.headers(),
         signal: controller.signal,
       });
 
@@ -93,7 +101,7 @@ export class ShareRpcClient {
     try {
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.headers({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
         signal: controller.signal,
       });

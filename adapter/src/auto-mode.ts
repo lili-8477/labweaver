@@ -9,11 +9,16 @@
 // context. It lets the turn stop when the project is complete, after
 // MAX_ROUNDS, or when the same step comes up more than MAX_REPEATS rounds in a
 // row (the step is not advancing progress.md).
+//
+// The outcome loop: after each review round it reads the verdict from
+// progress.md and reports it to the memory-api, which credits the memories the
+// agent used since the previous verdict (or since the turn began). No model
+// call: the verdict is the reviewer's line in progress.md.
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import { nextStep, type TickAgent } from "./progress.js";
+import { nextStep, verdict, type TickAgent } from "./progress.js";
 
 const MAX_ROUNDS = 40;
 const MAX_REPEATS = 3;
@@ -50,18 +55,30 @@ function instruction(home: string, round: number, file: string, dir: string | nu
   ].join("\n");
 }
 
+export type ReportOutcome = (outcome: "success" | "failure", since: string) => Promise<void>;
+
 /** Stop hook that drives one auto-mode turn for `chatId`. */
-export function autoModeHooks(home: string, chatId: string): NonNullable<Options["hooks"]> {
+export function autoModeHooks(home: string, chatId: string, reportOutcome?: ReportOutcome): NonNullable<Options["hooks"]> {
   const file = autoProjectFile(home, chatId);
   let rounds = 0;
   let last = "";
   let repeats = 0;
+  // The current outcome window, and the plan line the last round sent to the reviewer.
+  let since = new Date().toISOString();
+  let reviewing: string | null = null;
   return {
     Stop: [{
       hooks: [async () => {
         const dir = (await read(file))?.trim() || null;
         const progress = dir ? path.join(dir, "progress.md") : null;
         const md = progress ? await read(progress) : null;
+        const outcome = reviewing ? verdict(md, reviewing) : null;
+        if (outcome && reportOutcome) {
+          // Best effort: memory never blocks a run.
+          reportOutcome(outcome, since).catch((e) => console.warn(`[auto] outcome report failed: ${(e as Error).message}`));
+          since = new Date().toISOString();
+        }
+        reviewing = null;
         const step = nextStep(md);
         const key = step.complete ? "" : `${step.agent}\n${step.work}`;
         repeats = key === last ? repeats + 1 : 1;
@@ -77,6 +94,7 @@ export function autoModeHooks(home: string, chatId: string): NonNullable<Options
           return {};
         }
         rounds++;
+        if (step.agent === "tick-reviewer") reviewing = step.work;
         return { decision: "block", reason: instruction(home, rounds, file, dir, step.agent, step.work) };
       }],
     }],

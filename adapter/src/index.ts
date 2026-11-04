@@ -22,7 +22,7 @@ import { Pool } from "pg";
 import { ChatsRepo } from "./chats-repo.js";
 import { loadDbConfig } from "./db-config.js";
 import { FleetMonitor, StatusReporter, type Publish, type Subscribe } from "./fleet-status.js";
-import { MemoryRpcClient } from "./memory-rpc.js";
+import { MemoryForwarder } from "./memory-rpc.js";
 import { NatsBus } from "./nats-bus.js";
 import { ShareRpcClient } from "./share-rpc.js";
 import { RpcRouter, type RpcDeps } from "./rpc.js";
@@ -68,14 +68,14 @@ async function main(): Promise<void> {
 
   const memoryApiUrl = process.env.MEMORY_API_URL;
   const memoryClient = memoryApiUrl
-    ? new MemoryRpcClient(memoryApiUrl, dbCfg.username)
+    ? new MemoryForwarder({ baseUrl: memoryApiUrl, user: dbCfg.username, token: serviceId })
     : null;
   if (!memoryClient) {
     console.warn("[adapter] MEMORY_API_URL not set — memory_* RPCs will be unavailable");
   }
 
   const shareClient = memoryApiUrl
-    ? new ShareRpcClient(memoryApiUrl, dbCfg.username)
+    ? new ShareRpcClient(memoryApiUrl, dbCfg.username, serviceId)
     : null;
   if (!shareClient) {
     console.warn("[adapter] MEMORY_API_URL not set — share_* RPCs will be unavailable");
@@ -140,6 +140,7 @@ async function main(): Promise<void> {
       port:         uploadPort,
       username:     dbCfg.username,
       memoryApiUrl,
+      serviceId,
     });
   } catch (err) {
     console.warn(`[upload] failed to start on :${uploadPort}:`, err);

@@ -52,4 +52,12 @@ stitch_skills() {
 }
 stitch_skills
 
+# The container's service ID, derived from ID_HASH as the adapter does
+# (hub/scripts/service-id.sh). The memory hooks and the memory MCP server
+# inherit it and send it to the hub as a Bearer token (caller-check.ts).
+if [[ -n "${ID_HASH:-}" ]]; then
+    SERVICE_ID="$(printf '%s' "${ID_HASH}" | sha256sum | cut -c1-64)"
+    export SERVICE_ID
+fi
+
 exec node /opt/adapter/dist/index.js

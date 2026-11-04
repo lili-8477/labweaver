@@ -52,4 +52,45 @@ describe("autoModeHooks", () => {
     for (let i = 0; i < 3; i++) expect((await stop()).decision).toBe("block");
     expect(await stop()).toEqual({});
   });
+
+  describe("outcome loop", () => {
+    const plan = "## Plan\n- ☑ qc   filter cells\n- ☐ norm   normalise\n## Review feedback\n";
+    async function reviewRound(after: string) {
+      const sent: Array<{ outcome: string; since: string }> = [];
+      await startAutoRun(home, "c1", project);
+      const stop = autoModeHooks(home, "c1", async (outcome, since) => { sent.push({ outcome, since }); })
+        .Stop![0]!.hooks[0] as unknown as Stop;
+      const file = path.join(project, "progress.md");
+      await fs.writeFile(file, plan);
+      expect((await stop()).reason).toContain("Dispatch `tick-reviewer` now.");
+      await fs.writeFile(file, after);
+      await stop();
+      return { sent, stop, file };
+    }
+
+    it("credits an approval as a success, from the turn's start", async () => {
+      const before = new Date().toISOString();
+      const { sent } = await reviewRound("## Plan\n- ☑ (reviewed) qc   filter cells | n=2638\n- ☐ norm   normalise\n## Review feedback\n");
+      expect(sent.map((s) => s.outcome)).toEqual(["success"]);
+      // The window opened when the turn's hooks were made, before the review.
+      expect(sent[0]!.since >= before).toBe(true);
+    });
+
+    it("credits a rejection as a failure, and starts the next window at the verdict", async () => {
+      const { sent, stop, file } = await reviewRound(`${plan}- ☐ 2026-10-20 reviewer: qc rejected: n_cells: expected >2000, got 12\n`);
+      expect(sent.map((s) => s.outcome)).toEqual(["failure"]);
+      // The executor fixes it, the reviewer approves: a second window.
+      await fs.writeFile(file, `${plan}- ☑ 2026-10-20 reviewer: qc rejected: fixed\n`);
+      await stop();
+      await fs.writeFile(file, "## Plan\n- ☑ (reviewed) qc   filter cells\n- ☐ norm   normalise\n## Review feedback\n");
+      await stop();
+      expect(sent.map((s) => s.outcome)).toEqual(["failure", "success"]);
+      expect(sent[1]!.since >= sent[0]!.since).toBe(true);
+    });
+
+    it("reports nothing when a review did not finish", async () => {
+      const { sent } = await reviewRound(plan);
+      expect(sent).toEqual([]);
+    });
+  });
 });
