@@ -135,7 +135,7 @@ describe("callMemoryGet", () => {
       }),
     );
     const result = await callMemoryGet({ id: "abc-123" }, baseDeps(stub));
-    expect(calls[0]!.url).toBe("http://stub:8400/memory/abc-123");
+    expect(calls[0]!.url).toBe("http://stub:8400/memory/abc-123?use=1");
     expect(calls[0]!.init.method ?? "GET").toBe("GET");
     expect(result.isError).toBeFalsy();
     expect(JSON.parse(result.content[0]!.text).memory_id).toBe("abc-123");
@@ -147,7 +147,7 @@ describe("callMemoryGet", () => {
     );
     await callMemoryGet({ id: "weird id/with slash" }, baseDeps(stub));
     expect(calls[0]!.url).toBe(
-      "http://stub:8400/memory/" + encodeURIComponent("weird id/with slash"),
+      "http://stub:8400/memory/" + encodeURIComponent("weird id/with slash") + "?use=1",
     );
   });
 

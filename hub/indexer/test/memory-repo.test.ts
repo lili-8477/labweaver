@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runMigrations } from "../src/migrate.js";
 import { insertMemoryRow } from "../src/distiller-repo.js";
 import { contentHash } from "../src/content-hash.js";
-import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext, updateMemory, restoreMemory, listMemories, getAuditTrail, getMetrics } from "../src/memory-repo.js";
+import { searchMemories, getMemory, timelineMemories, writeUserMemory, forgetMemory, getContext, updateMemory, restoreMemory, listMemories, getAuditTrail, getMetrics, recordUse } from "../src/memory-repo.js";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 let pg: StartedPostgreSqlContainer;
@@ -107,7 +107,7 @@ const downEmbedder = {
 };
 
 describe("searchMemories", () => {
-  it("returns project > user > org for the same FTS body and increments hit_count", async () => {
+  it("returns project > user > org for the same FTS body and doesn't count results as hits", async () => {
     const orgId     = await seedMemory({ username: "__org__", project_dir: null,   body: QUERY_BODY, seed: 1 });
     const userId    = await seedMemory({ username: "alice",   project_dir: null,   body: QUERY_BODY, seed: 2 });
     const projectId = await seedMemory({ username: "alice",   project_dir: "-w-p", body: QUERY_BODY, seed: 3 });
@@ -139,14 +139,7 @@ describe("searchMemories", () => {
         WHERE memory_id = ANY($1::uuid[])`,
       [[orgId, userId, projectId]],
     );
-    for (const r of counts.rows) expect(r.hit_count).toBe(1);
-
-    const lastHit = await pool.query<{ memory_id: string; last_hit_at: Date | null }>(
-      `SELECT memory_id, last_hit_at FROM memories
-        WHERE memory_id = ANY($1::uuid[])`,
-      [[orgId, userId, projectId]],
-    );
-    for (const r of lastHit.rows) expect(r.last_hit_at).not.toBeNull();
+    for (const r of counts.rows) expect(r.hit_count).toBe(0);
   });
 
   it("excludes soft-deleted memories", async () => {
@@ -163,6 +156,38 @@ describe("searchMemories", () => {
     expect(ids).not.toContain(deletedId);
   });
 
+  it("search ranks by reinforcement count: hits, creation date and time since use play no part", async () => {
+    const plain = await seedMemory({ username: "alice", project_dir: "-w-p", body: QUERY_BODY, seed: 201 });
+    const hitOld = await seedMemory({ username: "alice", project_dir: "-w-p", body: QUERY_BODY, seed: 202 });
+    await pool.query(
+      `UPDATE memories SET hit_count = 1000, created_at = now() - interval '3 years' WHERE memory_id = $1`,
+      [hitOld],
+    );
+    const scores = async (embedderClient: typeof stubEmbedder) => {
+      const hits = await searchMemories({
+        pool, embedderClient, username: "alice", project_dir: "-w-p", query: QUERY, limit: 10,
+      });
+      return (id: string) => hits.find((h) => h.memory_id === id)!.score;
+    };
+    for (const embedderClient of [stubEmbedder, downEmbedder]) {
+      const score = await scores(embedderClient);
+      expect(score(hitOld)).toBeCloseTo(score(plain), 4);
+    }
+
+    // Unused for three years: no fade in search.
+    await pool.query(`UPDATE memories SET reinforced_at = now() - interval '3 years' WHERE memory_id = $1`, [hitOld]);
+    let score = await scores(stubEmbedder);
+    expect(score(hitOld)).toBeCloseTo(score(plain), 8);
+
+    // Opened once: a small boost over the unopened row.
+    await recordUse(pool, hitOld);
+    score = await scores(stubEmbedder);
+    expect(score(hitOld)).toBeGreaterThan(score(plain));
+    const r = await pool.query(`SELECT reinforce_count, hit_count, last_hit_at FROM memories WHERE memory_id = $1`, [hitOld]);
+    expect(r.rows[0]).toMatchObject({ reinforce_count: 1, hit_count: 1001 });
+    expect(r.rows[0].last_hit_at).not.toBeNull();
+  });
+
   it("falls back to FTS when the embedder throws", async () => {
     const id = await seedMemory({ username: "alice", project_dir: "-w-p", body: QUERY_BODY, seed: 6 });
     const hits = await searchMemories({
@@ -176,8 +201,7 @@ describe("searchMemories", () => {
   });
 
   it("FTS-only fallback orders results by ts_rank when scope is equal", async () => {
-    // Same scope (project) so the scope/popularity/recency multipliers are
-    // identical; ranking must come from ts_rank(fts_score) alone. The strong
+    // Same scope (project) so the scope multiplier is identical; ranking must come from ts_rank(fts_score) alone. The strong
     // body repeats the query terms more often than the weak body.
     // plainto_tsquery is conjunctive — both bodies must contain every query
     // term ("scanpy", "preprocessing", "pipeline"). Strong repeats them many

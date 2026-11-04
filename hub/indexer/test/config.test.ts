@@ -119,17 +119,14 @@ describe("loadConfig", () => {
     expect(cfg.shareAutoCloseIntervalHours).toBe(6);
   });
 
-  it('memory lifecycle knobs default to 0.9 / 50 / 90 / 30 / 24 and read env overrides', () => {
+  it('memory knobs default to 0.9 / 50 and read env overrides', () => {
     expect(loadConfig({ PG_URL: 'x' })).toMatchObject({
       memoryMergeSimilarity: 0.9, memoryDirCap: 50,
-      memoryRetentionStaleDays: 90, memoryRetentionPurgeDays: 30, memoryRetentionIntervalHours: 24,
     });
     expect(loadConfig({
       PG_URL: 'x', MEMORY_MERGE_SIMILARITY: '0.85', MEMORY_DIR_CAP: '20',
-      MEMORY_RETENTION_STALE_DAYS: '60', MEMORY_RETENTION_PURGE_DAYS: '7', MEMORY_RETENTION_INTERVAL_HOURS: '6',
     })).toMatchObject({
       memoryMergeSimilarity: 0.85, memoryDirCap: 20,
-      memoryRetentionStaleDays: 60, memoryRetentionPurgeDays: 7, memoryRetentionIntervalHours: 6,
     });
   });
 

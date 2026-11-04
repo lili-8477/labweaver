@@ -4,6 +4,7 @@ import { z } from "zod";
 import type {
   searchMemories,
   getMemory,
+  recordUse,
   timelineMemories,
   writeUserMemory,
   forgetMemory,
@@ -31,7 +32,7 @@ export interface MemoryApiDeps {
   pool:           Pool;
   embedderClient: { embedTexts: (texts: string[]) => Promise<number[][]> };
   // Cosine similarity at which a write merges into an existing entry of the
-  // same directory, and the live-entry cap per directory instance.
+  // same directory, and the live-entry count at which a directory is flagged.
   mergeSimilarity: number;
   dirCap:          number;
   // Host root of every user's workspace (<root>/<username>/...): the graph
@@ -40,6 +41,7 @@ export interface MemoryApiDeps {
   repo: {
     searchMemories:   typeof searchMemories;
     getMemory:        typeof getMemory;
+    recordUse:        typeof recordUse;
     timelineMemories: typeof timelineMemories;
     writeUserMemory:  typeof writeUserMemory;
     forgetMemory:     typeof forgetMemory;
@@ -211,7 +213,6 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
   const policy: WritePolicy = {
     embedderClient:  deps.embedderClient,
     mergeSimilarity: deps.mergeSimilarity,
-    dirCap:          deps.dirCap,
   };
 
   app.get("/healthz", async () => ({ ok: true }));
@@ -512,12 +513,15 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
 
   // GET /memory/:id — must be registered AFTER literal /memory/* routes
   // so fastify's radix tree prefers static segments over the wildcard.
-  app.get<{ Params: { id: string } }>("/memory/:id", async (req, reply) => {
+  // ?use=1: an agent is opening it for its work, which reinforces it. The UI
+  // reads without it, so browsing doesn't change a memory's rank.
+  app.get<{ Params: { id: string }; Querystring: { use?: string } }>("/memory/:id", async (req, reply) => {
     const detail = await deps.repo.getMemory(deps.pool, req.params.id);
     if (detail === null) {
       reply.code(404);
       return { error: "memory not found" };
     }
+    if (req.query.use === "1") await deps.repo.recordUse(deps.pool, detail.memory_id);
     return detail;
   });
 

@@ -19,6 +19,7 @@ import { InvalidDirError } from "../src/memory-dirs.js";
 function makeDeps(): { deps: MemoryApiDeps; repo: {
   searchMemories:   ReturnType<typeof vi.fn>;
   getMemory:        ReturnType<typeof vi.fn>;
+  recordUse:        ReturnType<typeof vi.fn>;
   timelineMemories: ReturnType<typeof vi.fn>;
   writeUserMemory:  ReturnType<typeof vi.fn>;
   forgetMemory:     ReturnType<typeof vi.fn>;
@@ -36,6 +37,7 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
 } } {
   const repo = {
     searchMemories:   vi.fn(async (): Promise<SearchHit[]>     => []),
+    recordUse:        vi.fn(async (): Promise<void> => undefined),
     getMemory:        vi.fn(async (): Promise<MemoryDetail | null> => null),
     timelineMemories: vi.fn(async (): Promise<TimelineEntry[]> => []),
     writeUserMemory:  vi.fn(async (): Promise<{ memory_id: string | null; dir_key: string; merged: boolean }> => ({ memory_id: "m-1", dir_key: "user/preferences", merged: false })),
@@ -152,6 +154,14 @@ describe("memory-api", () => {
   // ─────────────────────────────── /memory/:id ────────────────────────────────
 
   describe("GET /memory/:id", () => {
+    it("reinforces only when an agent opens it with ?use=1", async () => {
+      depsBag.repo.getMemory.mockResolvedValue({ memory_id: "abc" } as MemoryDetail);
+      await app.inject({ method: "GET", url: "/memory/abc" });
+      expect(depsBag.repo.recordUse).not.toHaveBeenCalled();
+      await app.inject({ method: "GET", url: "/memory/abc?use=1" });
+      expect(depsBag.repo.recordUse).toHaveBeenCalledWith(expect.anything(), "abc");
+    });
+
     it("happy path: returns the detail when getMemory finds it", async () => {
       const detail: MemoryDetail = {
         memory_id:         "abc",
@@ -278,7 +288,7 @@ describe("memory-api", () => {
       expect(res.json()).toEqual({ memory_id: "old-id", dir_key: "user/notes", merged: true });
       const arg = depsBag.repo.writeUserMemory.mock.calls[0]![0];
       expect(arg.dir_key).toBe("user/notes");
-      expect(arg.policy).toMatchObject({ mergeSimilarity: 0.9, dirCap: 50, embedderClient: depsBag.deps.embedderClient });
+      expect(arg.policy).toMatchObject({ mergeSimilarity: 0.9, embedderClient: depsBag.deps.embedderClient });
     });
 
     it("400 with the repo's message for a directory outside the scope", async () => {
@@ -698,7 +708,7 @@ describe("memory-api", () => {
       expect(arg.sessionMeta.username).toBe("alice");
       expect(arg.sessionMeta.project_dir).toBe("-home-alice-proj");
       expect(arg.sessionMeta.source_session_id).toBeNull();
-      expect(arg.policy).toMatchObject({ mergeSimilarity: 0.9, dirCap: 50 });
+      expect(arg.policy).toMatchObject({ mergeSimilarity: 0.9 });
       expect(arg.result.summary).toEqual(validBody.summary);
       expect(arg.result.observations).toEqual(validBody.observations);
     });

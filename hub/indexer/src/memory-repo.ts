@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { logger } from "./config.js";
 import { contentHash } from "./content-hash.js";
 import { insertChunk, storeMemory } from "./distiller-repo.js";
+import { REINFORCE_SQL } from "./memory-merge.js";
 import { appendAudit } from "./memory-audit.js";
 import { DEFAULT_DIR_CAP, type Scope } from "./memory-dirs.js";
 import { embedForMerge, type WritePolicy } from "./memory-merge.js";
@@ -51,6 +52,13 @@ export interface SearchHit {
 // neighbourhood will be silently dropped. See
 // docs/superpowers/plans/2026-05-06-agent-memory-sub-phase-b.md for the
 // follow-up (split into two sub-queries and UNION, or raise the cap).
+// Query-independent prior shared by search, directory L1, the tree, session
+// context and the graph: scope tier × reinforcement. Time is deliberately not
+// in it, so a memory never fades, and hit_count plays no part.
+const PRIOR_SCORE_SQL = `
+  (CASE m.scope WHEN 'org' THEN 1.00 WHEN 'user' THEN 1.10 ELSE 1.20 END
+   * (1.0 + LN(1 + m.reinforce_count) * 0.05))`;
+
 const HYBRID_SQL = `
 WITH q AS (SELECT $1::vector AS qv, plainto_tsquery('english', $2) AS qt),
 candidates AS (
@@ -72,13 +80,7 @@ SELECT m.memory_id, m.name, m.description,
        m.hit_count, m.last_hit_at, m.deleted_at,
        LEFT(c.content, 200) AS snippet,
        (c.vec_sim * 0.7 + LEAST(c.fts_score, 1.0) * 0.3)
-         * CASE
-             WHEN m.username = '__org__'                              THEN 1.00
-             WHEN m.project_dir IS NULL                               THEN 1.10
-             ELSE 1.20
-           END
-         * (1.0 + LN(1 + m.hit_count) * 0.05)
-         * EXP(-EXTRACT(EPOCH FROM (now() - m.created_at)) / (86400 * 90))  AS score,
+         * ${PRIOR_SCORE_SQL}  AS score,
        CASE
          WHEN m.username = '__org__'                              THEN 'org'
          WHEN m.project_dir IS NULL                               THEN 'user'
@@ -98,7 +100,7 @@ LIMIT $7
 // zero-vector returns NaN, which would poison every score and make the final
 // ORDER BY/LIMIT non-deterministic — so we drop the vector arm entirely
 // rather than feeding it a placeholder vector. vec_sim slot collapses to 0.0,
-// leaving score = 0.3 * LEAST(fts_score, 1.0) * scope * popularity * recency.
+// leaving score = 0.3 * LEAST(fts_score, 1.0) * prior.
 //
 // Params shift down by one (no qVec): $1 query text, $2 username,
 // $3 project_dir, $4 types[], $5 since, $6 limit.
@@ -121,13 +123,7 @@ SELECT m.memory_id, m.name, m.description,
        m.hit_count, m.last_hit_at, m.deleted_at,
        LEFT(c.content, 200) AS snippet,
        (LEAST(c.fts_score, 1.0) * 0.3)
-         * CASE
-             WHEN m.username = '__org__'                              THEN 1.00
-             WHEN m.project_dir IS NULL                               THEN 1.10
-             ELSE 1.20
-           END
-         * (1.0 + LN(1 + m.hit_count) * 0.05)
-         * EXP(-EXTRACT(EPOCH FROM (now() - m.created_at)) / (86400 * 90))  AS score,
+         * ${PRIOR_SCORE_SQL}  AS score,
        CASE
          WHEN m.username = '__org__'                              THEN 'org'
          WHEN m.project_dir IS NULL                               THEN 'user'
@@ -206,16 +202,8 @@ export async function searchMemories(args: SearchMemoriesArgs): Promise<SearchHi
     deleted_at:  r.deleted_at  ? r.deleted_at.toISOString()  : null,
   }));
 
-  if (hits.length > 0) {
-    await args.pool.query(
-      `UPDATE memories
-          SET hit_count   = hit_count + 1,
-              last_hit_at = now()
-        WHERE memory_id = ANY($1::uuid[])`,
-      [hits.map((h) => h.memory_id)],
-    );
-  }
-
+  // Appearing in results isn't a hit: hit_count moves only when an agent opens
+  // the memory (recordUse).
   return hits;
 }
 
@@ -251,6 +239,15 @@ export interface MemoryDetail {
 // One round-trip via a correlated subquery that builds the facets map in
 // Postgres (jsonb_object_agg over per-key jsonb_agg). Empty facet sets
 // collapse to '{}'::jsonb so the JS shape is always Record<string,string[]>.
+// An agent opened this memory for its work (memory_get with ?use=1). This is
+// the only thing that counts as a hit, and it reinforces the memory.
+export async function recordUse(pool: Pool, memoryId: string): Promise<void> {
+  await pool.query(
+    `UPDATE memories SET hit_count = hit_count + 1, last_hit_at = now(), ${REINFORCE_SQL} WHERE memory_id = $1`,
+    [memoryId],
+  );
+}
+
 export async function getMemory(
   pool:     Pool,
   memoryId: string,
@@ -540,7 +537,7 @@ export interface ForgetMemoryArgs {
 //
 // Chunks, facets, and embedder_queue rows are intentionally left in place.
 // Search and timeline already filter by `deleted_at IS NULL`, so the data is
-// invisible to readers; physical deletion is a separate retention concern.
+// invisible to readers and the row can be restored; nothing purges it.
 export async function forgetMemory(args: ForgetMemoryArgs): Promise<{ ok: boolean }> {
   const client = await args.pool.connect();
   try {
@@ -1116,7 +1113,7 @@ export interface DirSummary {
   scope:       Scope;
   l0:          string;
   entry_count: number;          // live entries
-  over_cap:    boolean;         // entry_count > cap: only user-authored rows are left to retire
+  over_cap:    boolean;         // entry_count > cap: a size flag only
   updated_at:  string | null;   // newest live entry; null when empty
 }
 
@@ -1138,13 +1135,6 @@ export interface DirDetail extends DirSummary {
 // Name of the sentinel row distiller.ts writes on permanent failure; never
 // surfaced in directories.
 const DISTILL_FAILED_NAME = "raw distillation failed";
-
-// Query-independent prior shared by directory L1, the tree and session
-// context: scope tier × popularity × recency (90-day e-folding), as in search.
-const PRIOR_SCORE_SQL = `
-  (CASE m.scope WHEN 'org' THEN 1.00 WHEN 'user' THEN 1.10 ELSE 1.20 END
-   * (1.0 + LN(1 + m.hit_count) * 0.05)
-   * EXP(-EXTRACT(EPOCH FROM (now() - m.created_at)) / (86400 * 90)))`;
 
 // Rows of the directory instances visible to $1 (username) for project $2.
 const DIR_ROW_VISIBLE_SQL = `
@@ -1211,7 +1201,7 @@ async function dirEntries(args: {
         AND m.deleted_at IS NULL
         AND m.name <> '${DISTILL_FAILED_NAME}'
         AND ${DIR_ROW_VISIBLE_SQL}
-      ORDER BY ${PRIOR_SCORE_SQL} DESC, m.memory_id
+      ORDER BY ${PRIOR_SCORE_SQL} DESC, m.name, m.memory_id
       LIMIT $4`,
     [args.username, args.project_dir, args.dir_key, args.limit],
   );
@@ -1293,7 +1283,7 @@ export async function memoryTree(args: {
                 m.type, m.source, m.hit_count, m.last_hit_at,
                 m.created_at, m.updated_at, m.deleted_at,
                 ROW_NUMBER() OVER (PARTITION BY m.dir_key, m.project_dir
-                                   ORDER BY m.deleted_at IS NOT NULL, ${PRIOR_SCORE_SQL} DESC, m.memory_id) AS rn,
+                                   ORDER BY m.deleted_at IS NOT NULL, ${PRIOR_SCORE_SQL} DESC, m.name, m.memory_id) AS rn,
                 (COUNT(*) FILTER (WHERE m.deleted_at IS NULL) OVER w)::int     AS entry_count,
                 (COUNT(*) FILTER (WHERE m.deleted_at IS NOT NULL) OVER w)::int AS deleted_count,
                 MAX(m.updated_at) FILTER (WHERE m.deleted_at IS NULL) OVER w   AS dir_updated_at
@@ -1392,7 +1382,7 @@ export async function graphMemories(args: {
       WHERE m.name <> '${DISTILL_FAILED_NAME}'
         AND ($3 OR m.deleted_at IS NULL)
         AND ${TREE_ROW_VISIBLE_SQL}
-      ORDER BY m.deleted_at IS NOT NULL, ${PRIOR_SCORE_SQL} DESC, m.memory_id
+      ORDER BY m.deleted_at IS NOT NULL, ${PRIOR_SCORE_SQL} DESC, m.name, m.memory_id
       LIMIT $4`,
     [args.username, null, args.include_deleted ?? false, args.limit],
   );

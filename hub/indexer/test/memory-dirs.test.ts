@@ -138,19 +138,30 @@ describe("directories and tree", () => {
     expect(notes.items.map((i) => i.name)).toEqual(["note"]);
   });
 
-  it("getDir: L1 entries ranked by the prior (hits), only the caller's", async () => {
+  it("getDir: L1 entries ranked by the prior (reinforcement), only the caller's", async () => {
     const a = await write("alice", "user", null, "a");
     const b = await write("alice", "user", null, "b");
     await write("bob", "user", null, "bobs");
-    await pool.query(`UPDATE memories SET hit_count = 10 WHERE memory_id = $1`, [b]);
+    await pool.query(`UPDATE memories SET reinforce_count = 10 WHERE memory_id = $1`, [b]);
 
     const dir = await getDir({ pool, username: "alice", project_dir: null, dir_key: "user/preferences" });
     expect(dir).toMatchObject({ dir_key: "user/preferences", entry_count: 2, over_cap: false });
     expect(dir!.entries.map((e) => e.memory_id)).toEqual([b, a]);
-    expect(dir!.entries[0]).toMatchObject({ name: "b", description: "b desc", type: "user", source: "user", hit_count: 10 });
+    expect(dir!.entries[0]).toMatchObject({ name: "b", description: "b desc", type: "user", source: "user", hit_count: 0 });
 
     expect(await getDir({ pool, username: "alice", project_dir: null, dir_key: "project/decisions" })).toBeNull();
     expect(await getDir({ pool, username: "alice", project_dir: null, dir_key: "user/nope" })).toBeNull();
+  });
+
+  it("browse order ignores time: an old unused entry keeps its place", async () => {
+    const a = await write("alice", "user", null, "a");
+    const b = await write("alice", "user", null, "b");
+    await pool.query(
+      `UPDATE memories SET reinforced_at = now() - interval '3 years', created_at = now() - interval '3 years' WHERE memory_id = $1`,
+      [a],
+    );
+    const dir = await getDir({ pool, username: "alice", project_dir: null, dir_key: "user/preferences" });
+    expect(dir!.entries.map((e) => e.memory_id)).toEqual([a, b]);
   });
 
   it("writes honour an explicit dir_key", async () => {
@@ -167,7 +178,7 @@ describe("directories and tree", () => {
     await write("alice", "project", "-w-a", "decA");
     await write("bob", "user", null, "bobs");
     await pool.query(`UPDATE memories SET deleted_at = now() WHERE memory_id = $1`, [pref3]);
-    await pool.query(`UPDATE memories SET hit_count = 5 WHERE memory_id = $1`, [pref2]);
+    await pool.query(`UPDATE memories SET reinforce_count = 5 WHERE memory_id = $1`, [pref2]);
 
     const tree = await memoryTree({ pool, username: "alice", project_dir: null, cap: 1, limit: 1 });
     expect(tree.cap).toBe(1);
@@ -187,7 +198,7 @@ describe("directories and tree", () => {
     expect(prefs.memories[0]).toEqual({
       memory_id: pref2, name: "pref2", description: "pref2 desc",
       dir_key: "user/preferences", scope: "user", project_dir: null,
-      type: "user", source: "user", hit_count: 5, last_hit_at: null,
+      type: "user", source: "user", hit_count: 0, last_hit_at: null,
       created_at: expect.any(String), updated_at: expect.any(String), deleted_at: null,
     });
     expect(tree.dirs[5]!.memories.map((m) => m.name)).toEqual(["decA"]);

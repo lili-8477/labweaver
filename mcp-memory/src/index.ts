@@ -34,7 +34,7 @@ export const toolDefinitions = [
   {
     name: "memory_search",
     description:
-      "Search agent memories by hybrid (vector + FTS) ranking. Scoped to the current user; pass project_dir to narrow to one project.",
+      "Search agent memories by hybrid (vector + FTS) ranking. Scoped to the current user; pass project_dir to narrow to one project. Results are snippets: open the ones you rely on with memory_get.",
     inputSchema: {
       type: "object",
       properties: {
@@ -49,7 +49,7 @@ export const toolDefinitions = [
   },
   {
     name: "memory_get",
-    description: "Fetch a single memory by id. Returns null/404-error if not found.",
+    description: "Fetch a single memory by id to use it in your work. Each fetch reinforces the memory, so call it for memories you actually rely on. Returns null/404-error if not found.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string" } },
@@ -252,7 +252,7 @@ export async function callMemoryGet(args: any, deps: ToolDeps): Promise<ToolResu
   // encodeURIComponent because memory ids are content hashes today but the
   // schema permits any string; defensive against future id changes.
   const id = encodeURIComponent(String(args?.id ?? ""));
-  return getTool(`/memory/${id}`, "memory_get", deps);
+  return getTool(`/memory/${id}?use=1`, "memory_get", deps);
 }
 
 // Querystring for the GET tools: the process's username plus whichever of

@@ -18,9 +18,6 @@ export interface Config {
   memoryOrgManagers:    string[];
   memoryMergeSimilarity:        number;
   memoryDirCap:                 number;
-  memoryRetentionStaleDays:     number;
-  memoryRetentionPurgeDays:     number;
-  memoryRetentionIntervalHours: number;
   shareSnapshotsDir:          string;
   shareMaxFolderBytes:        number;
   shareSnapshotTtlDays:       number;
@@ -96,9 +93,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     memoryOrgManagers,
     memoryMergeSimilarity:        parseUnitVar(env, "MEMORY_MERGE_SIMILARITY",         0.9),
     memoryDirCap:                 parseIntVar(env, "MEMORY_DIR_CAP",                   DEFAULT_DIR_CAP),
-    memoryRetentionStaleDays:     parseIntVar(env, "MEMORY_RETENTION_STALE_DAYS",      90),
-    memoryRetentionPurgeDays:     parseIntVar(env, "MEMORY_RETENTION_PURGE_DAYS",      30),
-    memoryRetentionIntervalHours: parseIntVar(env, "MEMORY_RETENTION_INTERVAL_HOURS",  24),
     shareSnapshotsDir,
     shareMaxFolderBytes,
     shareSnapshotTtlDays,

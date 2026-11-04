@@ -9,11 +9,13 @@ export interface EmbedderClient {
   embedTexts: (texts: string[]) => Promise<number[][]>;
 }
 
+// SET clause that reinforces a memory: it was opened for work or merged into.
+export const REINFORCE_SQL = `reinforced_at = now(), reinforce_count = reinforce_count + 1`;
+
 // Knobs for the write path. Without an embedderClient no merge check runs.
 export interface WritePolicy {
   embedderClient?: EmbedderClient;
   mergeSimilarity: number;
-  dirCap:          number;
 }
 
 // Embed texts for the merge check. Returns null when there is no embedder or

@@ -97,7 +97,7 @@ async function seedMemory(args: SeedArgs): Promise<string> {
 }
 
 describe("integration: mixed-scope hybrid search against real pgvector", () => {
-  it("returns all 5 in-scope rows, ranks the embedding-twin highest, and increments hit_count", async () => {
+  it("returns all 5 in-scope rows, ranks the embedding-twin highest, and doesn't count results as hits", async () => {
     // 5 memories, all with body containing "scanpy" so FTS matches every row.
     // 1 org, 2 user, 2 project. Each gets a distinct random unit vector
     // (seeds 1001..1005).
@@ -154,7 +154,7 @@ describe("integration: mixed-scope hybrid search against real pgvector", () => {
       expect(h.snippet.length).toBeGreaterThan(0);
     }
 
-    // hit_count incremented to 1 for every returned row.
+    // Appearing in results isn't a hit.
     const counts = await pool.query<{ memory_id: string; hit_count: number; last_hit_at: Date | null }>(
       `SELECT memory_id, hit_count, last_hit_at FROM memories
         WHERE memory_id = ANY($1::uuid[])
@@ -163,8 +163,8 @@ describe("integration: mixed-scope hybrid search against real pgvector", () => {
     );
     expect(counts.rowCount).toBe(5);
     for (const r of counts.rows) {
-      expect(r.hit_count).toBe(1);
-      expect(r.last_hit_at).not.toBeNull();
+      expect(r.hit_count).toBe(0);
+      expect(r.last_hit_at).toBeNull();
     }
   });
 });

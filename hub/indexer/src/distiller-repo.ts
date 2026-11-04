@@ -3,9 +3,8 @@ import type { Pool, PoolClient } from "pg";
 import type { DistillationResult, Observation } from "./distiller-prompts.js";
 import { contentHash } from "./content-hash.js";
 import { appendAudit } from "./memory-audit.js";
-import { DEFAULT_DIR_CAP, InvalidDirError, defaultDir, isDirFkViolation, scopeOf } from "./memory-dirs.js";
-import { embedForMerge, findMergeTarget, vectorLiteral, type WritePolicy } from "./memory-merge.js";
-import { enforceDirCap } from "./memory-retention.js";
+import { InvalidDirError, defaultDir, isDirFkViolation, scopeOf } from "./memory-dirs.js";
+import { REINFORCE_SQL, embedForMerge, findMergeTarget, vectorLiteral, type WritePolicy } from "./memory-merge.js";
 
 export interface SettledSession {
   session_id:          string;
@@ -141,10 +140,9 @@ export interface StoreResult {
 // entry in the same owner's directory at or above `mergeSimilarity` absorbs
 // the write: its name/description/body/type are replaced by the newer
 // content (the previous version is kept in the 'merge' audit row) and it
-// keeps its id, counters and created_at. A distilled write never overwrites
+// keeps its id, counters and created_at, and is reinforced. A distilled write never overwrites
 // a user-authored row; it is dropped instead. A user write into a distilled
-// row makes it user-authored. A genuinely new row is inserted and the
-// directory's cap enforced (memory-retention.ts).
+// row makes it user-authored. A genuinely new row is inserted.
 export async function storeMemory(
   client: PoolClient,
   row:    InsertMemoryRowArgs,
@@ -173,7 +171,7 @@ export async function storeMemory(
       await client.query(
         `UPDATE memories
             SET name = $1, description = $2, body = $3, content_hash = $4,
-                type = $5, source = $6, updated_at = now()
+                type = $5, source = $6, updated_at = now(), ${REINFORCE_SQL}
           WHERE memory_id = $7`,
         [row.name, row.description, row.body, row.content_hash, row.type, row.source, target.memory_id],
       );
@@ -192,13 +190,6 @@ export async function storeMemory(
   }
 
   const memory_id = await insertMemoryRow(client, { ...row, dir_key, embedding });
-  if (memory_id !== null) {
-    await enforceDirCap(client, {
-      cap:      policy?.dirCap ?? DEFAULT_DIR_CAP,
-      instance: { username: row.username, project_dir: row.project_dir, dir_key },
-      keep:     memory_id,
-    });
-  }
   return { memory_id, dir_key, merged: false };
 }
 

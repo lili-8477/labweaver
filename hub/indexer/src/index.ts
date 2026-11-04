@@ -12,6 +12,7 @@ import { buildApp } from "./memory-api.js";
 import {
   searchMemories,
   getMemory,
+  recordUse,
   timelineMemories,
   writeUserMemory,
   forgetMemory,
@@ -26,7 +27,6 @@ import {
   memoryTree,
 } from "./memory-repo.js";
 import { memoryGraph } from "./memory-graph.js";
-import { runRetentionOnce } from "./memory-retention.js";
 import { writeDistillation } from "./distiller-repo.js";
 import { shareRoutesPlugin } from "./share-api.js";
 import { glassesRoutesPlugin } from "./glasses-api.js";
@@ -144,29 +144,6 @@ async function main(): Promise<void> {
 
   startAutoCloseLoop();
 
-  // Memory anti-bloat pass (memory-retention.ts): retire never-recalled
-  // distilled rows, trim directories over the cap, purge old soft-deletes.
-  const startMemoryRetentionLoop = (): void => {
-    const intervalMs = cfg.memoryRetentionIntervalHours * 60 * 60 * 1000;
-    const tick = async (): Promise<void> => {
-      try {
-        const result = await runRetentionOnce(pool, {
-          staleDays: cfg.memoryRetentionStaleDays,
-          purgeDays: cfg.memoryRetentionPurgeDays,
-          dirCap:    cfg.memoryDirCap,
-        });
-        logger.info({ result }, "memory retention pass");
-      } catch (err) {
-        logger.error({ err }, "memory retention pass crashed");
-      } finally {
-        setTimeout(tick, intervalMs);
-      }
-    };
-    setTimeout(tick, 5_000);   // boot-time pass after a brief delay
-  };
-
-  startMemoryRetentionLoop();
-
   // Muxes completed glasses recordings into muxed/pNNN.mp4 (glasses-mux.ts).
   const startGlassesMuxLoop = (): void => {
     const tools = { ffmpeg: cfg.ffmpegBin, ffprobe: cfg.ffprobeBin, run: execRunner };
@@ -201,6 +178,7 @@ async function main(): Promise<void> {
     repo: {
       searchMemories,
       getMemory,
+      recordUse,
       timelineMemories,
       writeUserMemory,
       forgetMemory,

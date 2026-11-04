@@ -5,7 +5,8 @@
 export type Scope = "user" | "project" | "org";
 
 // Live entries a directory instance (username, project_dir, dir_key) holds
-// before distilled rows are retired. MEMORY_DIR_CAP overrides it.
+// before it's flagged over_cap. A flag only: nothing retires memories.
+// MEMORY_DIR_CAP overrides it.
 export const DEFAULT_DIR_CAP = 50;
 
 // Mirrors the generated `memories.scope` column.
