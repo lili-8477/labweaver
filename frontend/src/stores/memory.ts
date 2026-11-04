@@ -2,8 +2,11 @@
 
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { memoryService, type ListQuery, type WriteParams } from '@/services/memory'
-import type { MemoryListItem, MemoryDetail, MemoryAuditEntry, MemoryType, MemorySource, ScopeTier, MemoryTree, MemoryGraph } from '@/types'
+import { memoryService } from '@/services/memory'
+import type {
+  MemoryListItem, MemoryDetail, MemoryAuditEntry, MemoryType, MemorySource, ScopeTier, MemoryDirSummary, MemoryTree,
+  MemoryListQuery, MemoryGraph,
+} from '@/types'
 
 export const useMemoryStore = defineStore('memory', () => {
   const items = ref<MemoryListItem[]>([])
@@ -13,7 +16,7 @@ export const useMemoryStore = defineStore('memory', () => {
     scope?: ScopeTier
     type?: MemoryType[]
     source?: MemorySource
-    dir_key?: string
+    dir?: string
     include_deleted: boolean
     sort: 'created' | 'hit'
   }>({
@@ -25,19 +28,28 @@ export const useMemoryStore = defineStore('memory', () => {
   const editDirty = ref(false)
   const editDraft = ref<{ name: string; description: string; body: string } | null>(null)
   const error = ref<string | null>(null)
-  // Tree view payload; null until the tree view first loads it. Once loaded,
-  // mutations below refresh it so the tree never shows stale rows.
+  const dirs = ref<MemoryDirSummary[]>([])
   const tree = ref<MemoryTree | null>(null)
   const treeLoading = ref(false)
-  // Graph view payload; same lifecycle as the tree.
+  // The context graph view (v1); same lifecycle as the tree.
   const graph = ref<MemoryGraph | null>(null)
   const graphLoading = ref(false)
+
+  // Directory counts change with every write/forget, so refresh them with
+  // each first-page load. Failure only hides the directory row.
+  async function loadDirs() {
+    try {
+      dirs.value = await memoryService.dirs()
+    } catch {
+      dirs.value = []
+    }
+  }
 
   async function loadTree() {
     treeLoading.value = true
     error.value = null
     try {
-      tree.value = await memoryService.tree({ include_deleted: filters.value.include_deleted })
+      tree.value = await memoryService.tree()
     } catch (e) {
       error.value = (e as Error)?.message || 'Failed to load memory tree'
     } finally {
@@ -49,7 +61,7 @@ export const useMemoryStore = defineStore('memory', () => {
     graphLoading.value = true
     error.value = null
     try {
-      graph.value = await memoryService.graph({ include_deleted: filters.value.include_deleted })
+      graph.value = await memoryService.graph(filters.value.include_deleted)
     } catch (e) {
       error.value = (e as Error)?.message || 'Failed to load memory graph'
     } finally {
@@ -57,17 +69,13 @@ export const useMemoryStore = defineStore('memory', () => {
     }
   }
 
-  function refreshViews() {
-    if (tree.value) loadTree()
-    if (graph.value) loadGraph()
-  }
-
   async function loadFirstPage() {
+    void loadDirs()
     loading.value = true
     cursor.value = null
     error.value = null
     try {
-      const query: ListQuery = {
+      const query: MemoryListQuery = {
         ...filters.value,
         cursor: undefined,
       }
@@ -87,7 +95,7 @@ export const useMemoryStore = defineStore('memory', () => {
     loading.value = true
     error.value = null
     try {
-      const query: ListQuery = {
+      const query: MemoryListQuery = {
         ...filters.value,
         cursor: cursor.value,
       }
@@ -104,12 +112,13 @@ export const useMemoryStore = defineStore('memory', () => {
   async function select(id: string) {
     error.value = null
     try {
+      // The audit trail is owner-only: a lab (org) memory still opens, without it.
       const [detail, auditTrail] = await Promise.all([
         memoryService.get(id),
-        memoryService.audit(id),
+        memoryService.audit(id).catch(() => ({ rows: [] })),
       ])
       selected.value = detail
-      audit.value = auditTrail
+      audit.value = auditTrail.rows
       editDraft.value = null
       editDirty.value = false
     } catch (e) {
@@ -132,7 +141,6 @@ export const useMemoryStore = defineStore('memory', () => {
         await select(selected.value.memory_id)
         editDraft.value = null
         editDirty.value = false
-        refreshViews()
       }
     } catch (e) {
       error.value = (e as Error)?.message || 'Failed to save memory'
@@ -149,11 +157,11 @@ export const useMemoryStore = defineStore('memory', () => {
         if (idx >= 0) {
           items.value[idx].deleted_at = new Date().toISOString()
         }
+        if (tree.value) void loadTree()
         // If the selected item was just deleted, refetch it to get the updated state
         if (selected.value?.memory_id === id) {
           await select(id)
         }
-        refreshViews()
       }
     } catch (e) {
       error.value = (e as Error)?.message || 'Failed to forget memory'
@@ -170,28 +178,14 @@ export const useMemoryStore = defineStore('memory', () => {
         if (idx >= 0) {
           items.value[idx].deleted_at = null
         }
+        if (tree.value) void loadTree()
         // If the selected item was just restored, refetch it
         if (selected.value?.memory_id === id) {
           await select(id)
         }
-        refreshViews()
       }
     } catch (e) {
       error.value = (e as Error)?.message || 'Failed to restore memory'
-    }
-  }
-
-  async function memorize(p: WriteParams) {
-    error.value = null
-    try {
-      const response = await memoryService.write(p)
-      if (response.memory_id) {
-        // Reload the first page to include the newly created memory
-        await loadFirstPage()
-        refreshViews()
-      }
-    } catch (e) {
-      error.value = (e as Error)?.message || 'Failed to write memory'
     }
   }
 
@@ -225,21 +219,21 @@ export const useMemoryStore = defineStore('memory', () => {
     editDirty,
     editDraft,
     error,
-    tree,
-    treeLoading,
-    graph,
-    graphLoading,
     loadFirstPage,
-    loadTree,
-    loadGraph,
     loadMore,
     select,
     saveEdit,
     forget,
     restore,
-    memorize,
     startEdit,
     cancelEdit,
     setFilter,
+    dirs,
+    tree,
+    treeLoading,
+    loadTree,
+    graph,
+    graphLoading,
+    loadGraph,
   }
 })

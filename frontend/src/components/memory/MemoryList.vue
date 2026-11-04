@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { relTime } from '@/utils/format'
 // NOTE: loadFirstPage() is intentionally NOT called here.
 // MemoryPanel.vue owns the mount lifecycle for the memory feature.
 import { useMemoryStore } from '@/stores/memory'
@@ -9,19 +10,6 @@ const store = useMemoryStore()
 
 const tailRef = ref<HTMLDivElement | null>(null)
 let observer: IntersectionObserver | null = null
-
-function relTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  const sec = Math.floor(diff / 1000)
-  if (sec < 60) return 'just now'
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m ago`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h ago`
-  const day = Math.floor(hr / 24)
-  if (day < 7) return `${day}d ago`
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(iso))
-}
 
 function scopeLabel(tier: MemoryListItem['scope_tier']): string {
   return `[${tier}]`
