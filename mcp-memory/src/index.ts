@@ -186,7 +186,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // SERVICE_ID is inherited from the container (image/entrypoint.sh sets it).
+  // SERVICE_ID is inherited from the adapter, which spawns the agent (adapter/src/index.ts).
   const deps: ToolDeps = { fetch, baseUrl, username, token: process.env.SERVICE_ID || undefined };
   const server = new Server(
     { name: "bioflow-memory-mcp", version: "0.2.0" },

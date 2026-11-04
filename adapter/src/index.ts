@@ -36,6 +36,9 @@ function computeServiceId(idHash: string): string {
 async function main(): Promise<void> {
   const idHash = requireEnv("ID_HASH");
   const serviceId = computeServiceId(idHash);
+  // The agent and its hooks and MCP servers inherit this process's env: the
+  // memory hooks and mcp-memory send it to the hub as a Bearer token (caller-check.ts).
+  process.env.SERVICE_ID = serviceId;
   const servers = process.env.NATS_SERVERS ?? "nats://localhost:4222";
   const workspaceRoot = process.env.WORKSPACE_ROOT ?? "/workspace";
   const defaultProjectCwd = process.env.DEFAULT_PROJECT ?? workspaceRoot;
