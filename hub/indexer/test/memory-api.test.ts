@@ -44,6 +44,10 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
   buildBundle:      ReturnType<typeof vi.fn>;
   consolidate:      ReturnType<typeof vi.fn>;
   memoryGraph:      ReturnType<typeof vi.fn>;
+  importEntries:    ReturnType<typeof vi.fn>;
+  createBuildJob:   ReturnType<typeof vi.fn>;
+  updateBuildJob:   ReturnType<typeof vi.fn>;
+  listBuildJobs:    ReturnType<typeof vi.fn>;
 } } {
   const repo = {
     searchMemories:   vi.fn(async (): Promise<SearchHit[]>     => []),
@@ -80,6 +84,10 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
     })),
     consolidate:      vi.fn(async () => ({ proposed_supports: [], unlabeled_pairs: [], stale_experiences: [], similar_understandings: [] })),
     memoryGraph:      vi.fn(async (): Promise<MemoryGraph> => ({ nodes: [], edges: [], dropped: { memory: 0, skill: 0, resource: 0, topic: 0 } })),
+    importEntries:    vi.fn(async () => ({ created: 1, duplicates: 0, memory_ids: ["m-1"] })),
+    createBuildJob:   vi.fn(async () => "00000000-0000-4000-8000-000000000009"),
+    updateBuildJob:   vi.fn(async () => true),
+    listBuildJobs:    vi.fn(async () => []),
   };
   const deps: MemoryApiDeps = {
     pool: {} as Pool,
@@ -992,6 +1000,54 @@ describe("memory-api", () => {
         expect(res.statusCode).toBe(400);
       }
       expect(depsBag.repo.memoryGraph).not.toHaveBeenCalled();
+    });
+  });
+  describe("memory builder routes", () => {
+    const ENTRY = {
+      category: "data_record", name: "Order 20643R", description: "d", body: "order_id: 20643R",
+      origin_kind: "file", origin: "local_projects/ngs/orders.csv", origin_sha256: "ab".repeat(32),
+    };
+    const JOB = "00000000-0000-4000-8000-000000000009";
+
+    it("POST /memory/import validates entries and forwards them with the caller's username", async () => {
+      const res = await app.inject({ method: "POST", url: "/memory/import", payload: {
+        username: "alice", project_dir: "-workspace-local_projects-ngs", builder_version: 1, entries: [ENTRY],
+      } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ created: 1, duplicates: 0, memory_ids: ["m-1"] });
+      expect(depsBag.repo.importEntries).toHaveBeenCalledWith(expect.objectContaining({
+        pool: depsBag.deps.pool, username: "alice", project_dir: "-workspace-local_projects-ngs",
+        builder_version: 1, entries: [ENTRY],
+      }));
+    });
+
+    it("POST /memory/import rejects an unknown category and an over-long body", async () => {
+      for (const bad of [{ ...ENTRY, category: "gossip" }, { ...ENTRY, body: "x".repeat(1501) }]) {
+        const res = await app.inject({ method: "POST", url: "/memory/import", payload: {
+          username: "alice", project_dir: null, builder_version: 1, entries: [bad],
+        } });
+        expect(res.statusCode).toBe(400);
+      }
+      expect(depsBag.repo.importEntries).not.toHaveBeenCalled();
+    });
+
+    it("creates, updates and lists build jobs for the caller", async () => {
+      const created = await app.inject({ method: "POST", url: "/memory/build-jobs", payload: {
+        username: "alice", project_dir: null, origin_kind: "folder", origin: "local_projects/ngs",
+      } });
+      expect(created.json()).toEqual({ job_id: JOB });
+
+      const updated = await app.inject({ method: "PUT", url: `/memory/build-jobs/${JOB}`, payload: {
+        username: "alice", status: "done", entries_created: 3,
+      } });
+      expect(updated.json()).toEqual({ ok: true });
+      expect(depsBag.repo.updateBuildJob).toHaveBeenCalledWith(depsBag.deps.pool, expect.objectContaining({
+        username: "alice", job_id: JOB, status: "done", entries_created: 3,
+      }));
+
+      const listed = await app.inject({ method: "GET", url: "/memory/build-jobs?username=alice&limit=5" });
+      expect(listed.statusCode).toBe(200);
+      expect(depsBag.repo.listBuildJobs).toHaveBeenCalledWith(depsBag.deps.pool, { username: "alice", limit: 5 });
     });
   });
 });

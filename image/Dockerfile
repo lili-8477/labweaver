@@ -82,6 +82,7 @@ COPY adapter/package.json adapter/package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY adapter/dist/ ./dist/
 COPY image/kernel-bridge.py ./kernel-bridge.py
+COPY image/memory-builder.py ./memory-builder.py
 
 # 3b. bioflow-memory MCP server. Pre-built dist/ is copied in (same convention
 #     as adapter/). A direct symlink to dist/index.js puts the

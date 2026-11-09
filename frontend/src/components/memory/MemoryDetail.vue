@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { relTime } from '@/utils/format'
+import { relTime, sourceBadge } from '@/utils/format'
 import { useMemoryStore } from '@/stores/memory'
 import { useShareStore } from '@/stores/share'
 import ShareSubmitModal from '@/components/share/ShareSubmitModal.vue'
@@ -82,7 +82,7 @@ function handleRestore() {
         <p v-if="store.selected.description" class="memory-desc">{{ store.selected.description }}</p>
         <div class="header-badges">
           <span class="badge badge-scope">[{{ store.selected.dir_key }}]</span>
-          <span class="badge badge-source">{{ store.selected.source === 'distilled' ? '[distilled]' : '[manual]' }}</span>
+          <span class="badge badge-source">{{ sourceBadge(store.selected.source) }}</span>
           <span class="badge badge-type">[{{ store.selected.type }}]</span>
           <span v-if="store.selected.deleted_at !== null" class="badge badge-deleted">[deleted]</span>
         </div>

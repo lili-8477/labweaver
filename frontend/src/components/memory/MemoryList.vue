@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted } from 'vue'
-import { relTime } from '@/utils/format'
+import { relTime, sourceBadge } from '@/utils/format'
 // NOTE: loadFirstPage() is intentionally NOT called here.
 // MemoryPanel.vue owns the mount lifecycle for the memory feature.
 import { useMemoryStore } from '@/stores/memory'
@@ -15,9 +15,6 @@ function scopeLabel(tier: MemoryListItem['scope_tier']): string {
   return `[${tier}]`
 }
 
-function sourceLabel(src: MemoryListItem['source']): string {
-  return src === 'distilled' ? '[distilled]' : '[manual]'
-}
 
 function connectObserver() {
   if (!tailRef.value) return
@@ -75,7 +72,7 @@ onUnmounted(() => observer?.disconnect())
           <span class="row-desc">{{ item.description }}</span>
           <div class="row-badges">
             <span class="badge badge-scope">{{ scopeLabel(item.scope_tier) }}</span>
-            <span class="badge badge-source">{{ sourceLabel(item.source) }}</span>
+            <span class="badge badge-source">{{ sourceBadge(item.source) }}</span>
             <span v-if="item.deleted_at !== null" class="badge badge-deleted">[deleted]</span>
           </div>
         </div>

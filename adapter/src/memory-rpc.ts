@@ -7,7 +7,7 @@
 // the API sends them, typed by the contract.
 
 import {
-  callerRefusal, callMemoryApi, UI_DOMAIN, UI_DOMAIN_OPS, UI_OPS, type MemoryResult, type UiOp,
+  callerRefusal, callMemoryApi, UI_DOMAIN, UI_DOMAIN_OPS, UI_OPS, type MemoryOp, type MemoryResult, type UiOp,
 } from "../../hub/indexer/src/memory-contract.js";
 
 export class MemoryForwarder {
@@ -24,6 +24,11 @@ export class MemoryForwarder {
     // The UI's users are life scientists: its listings show lab memories only.
     const pinned = (UI_DOMAIN_OPS as readonly string[]).includes(op) ? { ...params, domain: UI_DOMAIN } : params;
     return callMemoryApi(op, pinned, this.opts);
+  }
+
+  /** This process's own calls (the memory builder): any operation, as its own user. */
+  async request<O extends MemoryOp>(op: O, params: Record<string, unknown>): Promise<MemoryResult<O>> {
+    return callMemoryApi(op, params, this.opts);
   }
 
   /** Credit a task outcome to the memories this user's agent used since `since` (the outcome loop). */

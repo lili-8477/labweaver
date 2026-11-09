@@ -1,11 +1,14 @@
 // The chat UI's memory_* RPCs, end to end through RpcRouter with a fake
 // memory-api: which calls are forwarded, as whom, and what comes back.
 
+import { promises as fs } from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { MemoryForwarder } from "../src/memory-rpc.js";
 import { RpcRouter, type RpcDeps } from "../src/rpc.js";
 
-function setup(reply: unknown = { ok: true }) {
+function setup(reply: unknown = { ok: true }, memoryBuilder?: string[]) {
   const requests: Array<{ url: URL; method: string; body: unknown }> = [];
   const fetchImpl = (async (input: URL | string, init?: RequestInit) => {
     requests.push({
@@ -29,6 +32,7 @@ function setup(reply: unknown = { ok: true }) {
     kernelCullCheckIntervalMs: 60_000,
     memory: new MemoryForwarder({ baseUrl: "http://indexer:8400", user: "alice", fetch: fetchImpl }),
     share: null,
+    memoryBuilder,
   };
   return { router: new RpcRouter(deps), requests };
 }
@@ -67,5 +71,37 @@ describe("memory_* RPCs", () => {
       await expect(router.dispatch(method, { scope: "org" })).rejects.toThrow(/unknown method/);
     }
     expect(requests).toEqual([]);
+  });
+});
+
+describe("memory builder RPCs", () => {
+  async function helper(): Promise<string[]> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "rpc-builder-"));
+    const file = path.join(dir, "helper.mjs");
+    await fs.writeFile(file, `
+      if (process.argv[2] === "scan") console.log(JSON.stringify({ files: [], estimate: { table_rows: 1, documents: 0 } }));
+    `);
+    return [process.execPath, file];
+  }
+
+  it("memory_build_jobs is a UI read, forwarded as this container's user", async () => {
+    const { router, requests } = setup([]);
+    expect(await router.dispatch("memory_build_jobs", { username: "mallory" })).toEqual([]);
+    expect(requests[0]!.url.pathname).toBe("/memory/build-jobs");
+    expect(requests[0]!.url.searchParams.get("username")).toBe("alice");
+  });
+
+  it("memory_build_preview scans with the helper; memory_build starts a job as this user", async () => {
+    const { router, requests } = setup({ job_id: "job-1" }, await helper());
+    expect(await router.dispatch("memory_build_preview", { path: "local_projects/p" }))
+      .toEqual({ success: true, files: [], estimate: { table_rows: 1, documents: 0 } });
+    expect(await router.dispatch("memory_build", { path: "local_projects/p", scope: "user" }))
+      .toEqual({ success: true, job_id: "job-1" });
+    expect(requests[0]).toMatchObject({ method: "POST", body: { username: "alice", origin: "local_projects/p", project_dir: null } });
+  });
+
+  it("memory_build refuses a scope other than project or user", async () => {
+    const { router } = setup({ job_id: "job-1" }, await helper());
+    await expect(router.dispatch("memory_build", { path: "local_projects/p", scope: "org" })).rejects.toThrow(/scope/);
   });
 });

@@ -7,6 +7,7 @@ import type {
   MemoryListItem, MemoryDetail, MemoryAuditEntry, MemoryType, MemorySource, ScopeTier, MemoryDirSummary, MemoryTree,
   MemoryListQuery, MemoryGraph,
 } from '@/types'
+import type { BuildJob } from '@memory-contract'
 
 export const useMemoryStore = defineStore('memory', () => {
   const items = ref<MemoryListItem[]>([])
@@ -34,6 +35,32 @@ export const useMemoryStore = defineStore('memory', () => {
   // The context graph view (v1); same lifecycle as the tree.
   const graph = ref<MemoryGraph | null>(null)
   const graphLoading = ref(false)
+  // The Import dialog (MemoryImport.vue): the path it opens on, null when closed.
+  const importPath = ref<string | null>(null)
+  const jobs = ref<BuildJob[]>([])
+  let jobsTimer: ReturnType<typeof setTimeout> | null = null
+
+  function openImport(path: string) {
+    importPath.value = path
+  }
+
+  // Build jobs refresh every few seconds while one is queued or running; when
+  // a job finishes, the list, directories, tree and graph reload to show its memories.
+  async function loadJobs() {
+    if (jobsTimer !== null) { clearTimeout(jobsTimer); jobsTimer = null }
+    const wasActive = new Set(jobs.value.filter(isActive).map((j) => j.job_id))
+    try {
+      jobs.value = await memoryService.buildJobs()
+    } catch {
+      return
+    }
+    if (jobs.value.some((j) => wasActive.has(j.job_id) && !isActive(j))) {
+      void loadFirstPage()
+      void loadTree()
+      void loadGraph()
+    }
+    if (jobs.value.some(isActive)) jobsTimer = setTimeout(() => void loadJobs(), 3000)
+  }
 
   // Directory counts change with every write/forget, so refresh them with
   // each first-page load. Failure only hides the directory row.
@@ -235,5 +262,11 @@ export const useMemoryStore = defineStore('memory', () => {
     graph,
     graphLoading,
     loadGraph,
+    importPath,
+    openImport,
+    jobs,
+    loadJobs,
   }
 })
+
+const isActive = (j: BuildJob) => j.status === 'queued' || j.status === 'running'

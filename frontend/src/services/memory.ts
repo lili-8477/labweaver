@@ -20,4 +20,18 @@ export const memoryService = {
   forget:  (memory_id: string) => call('memory_forget', { memory_id }),
   restore: (memory_id: string) => call('memory_restore', { memory_id }),
   audit:   (memory_id: string) => call('memory_audit', { memory_id }),
+  buildJobs: () => call('memory_build_jobs', {}),
+}
+
+/** memory-builder.py's scan: the files a build would read (adapter/src/memory-builder.ts ScanResult). */
+export interface ScanResult {
+  files: Array<{ path: string; size: number; action: 'parse' | 'skip'; kind: 'table' | 'document' | null; reason?: string }>
+  estimate: { table_rows: number; documents: number }
+}
+
+/** The memory builder runs in this member's adapter (adapter/src/memory-builder.ts). */
+export const memoryBuilder = {
+  preview: (path: string) => natsService.invoke('memory_build_preview', { path }) as Promise<ScanResult>,
+  start:   (path: string, scope: 'project' | 'user') =>
+    natsService.invoke('memory_build', { path, scope }) as Promise<{ job_id: string }>,
 }

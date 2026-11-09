@@ -61,3 +61,8 @@ export function formatDuration(ms: number): string {
   if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
 }
+
+/** A memory's source as its badge: written by hand, distilled from a session, or imported by the memory builder. */
+export function sourceBadge(source: 'user' | 'distilled' | 'import'): string {
+  return { user: '[manual]', distilled: '[distilled]', import: '[import]' }[source]
+}

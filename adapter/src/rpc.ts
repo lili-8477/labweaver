@@ -26,6 +26,9 @@ import { parseProgress } from "./progress.js";
 import { autoModeHooks, autoProjectDir, startAutoRun } from "./auto-mode.js";
 import { CHAT_MODES, MODE_COMMANDS, modePrompt, type ChatMode } from "./modes.js";
 import { teamBoardServer } from "./team-board.js";
+import { MemoryBuilder } from "./memory-builder.js";
+import { memoryBuildToolsServer } from "./memory-build-tools.js";
+import { modelSegmenter, sdkComplete } from "./memory-segmenter.js";
 import { readChatStats } from "./chat-stats.js";
 import type { StreamEvent } from "./types.js";
 
@@ -52,6 +55,8 @@ export interface RpcDeps {
   share: ShareRpcClient | null;
   /** Fleet monitor; set only in the manager container (LABWEAVER_ROLE=manager). */
   fleet?: FleetMonitor | null;
+  /** Command that runs memory-builder.py; omit to turn the memory builder off. */
+  memoryBuilder?: string[];
 }
 
 export class RpcRouter {
@@ -60,6 +65,8 @@ export class RpcRouter {
   private notebooks: NotebookManager;
   private h5ad: H5adService;
   private chpc: ChpcBridge;
+  /** Builds memory from workspace files; also serves the agent's build tools. */
+  private readonly builder: MemoryBuilder | null;
   private mutexes = new ChatMutexRegistry();
   private aborts = new AbortRegistry();
   /** Chats with a turn running, and that turn's mode. */
@@ -68,6 +75,13 @@ export class RpcRouter {
   constructor(private deps: RpcDeps) {
     this.chats = deps.chats;
     this.files = new FileManager(deps.workspaceRoot);
+    // Documents are segmented on the agent's own login, with the chat model.
+    this.builder = deps.memory && deps.memoryBuilder
+      ? new MemoryBuilder({
+          helper: deps.memoryBuilder, workspaceRoot: deps.workspaceRoot, memory: deps.memory,
+          segment: modelSegmenter(sdkComplete({ model: async () => (await this.readSettings()).model as string | undefined })),
+        })
+      : null;
     // CHPC bridge: publishes OpenEvent frames on pantheon.stream.chpc_bridge_events.
     this.chpc = new ChpcBridge(deps.home, (ev) => {
       const subject = deps.streamSubject("chpc_bridge_events");
@@ -107,6 +121,11 @@ export class RpcRouter {
 
   private settingsPath(): string {
     return path.join(this.deps.home, ".claude", "settings.json");
+  }
+
+  private memoryBuilder(): MemoryBuilder {
+    if (!this.builder) throw new Error("memory builder not configured");
+    return this.builder;
   }
 
   private async readSettings(): Promise<Record<string, unknown>> {
@@ -290,6 +309,16 @@ export class RpcRouter {
         const deleted = await this.chats.deleteByProject(params.project_dir as string);
         for (const id of deleted) this.mutexes.delete(id);
         return { success: true, trashed_to: trashedTo, deleted_chats: deleted.length };
+      }
+
+      case "memory_build_preview":
+        return { success: true, ...(await this.memoryBuilder().preview(String(params.path ?? ""))) };
+
+      case "memory_build": {
+        if (params.scope !== "project" && params.scope !== "user") {
+          throw new Error("scope must be project or user; the lab scope goes through review");
+        }
+        return { success: true, job_id: await this.memoryBuilder().start({ path: String(params.path ?? ""), scope: params.scope }) };
       }
 
       case "delete_chat": {
@@ -686,6 +715,7 @@ export class RpcRouter {
             notebook: notebookToolsServer(this.notebooks, this.deps.workspaceRoot, cwd),
             next_step: nextStepServer(),
             ...(team ? { team: teamBoardServer(this.deps.home, chatId) } : {}),
+            ...(this.builder ? { memory_builder: memoryBuildToolsServer(this.builder) } : {}),
           },
           // Auto mode owns how its turn ends; a team lead stops while its
           // teammates work, so the next-step nudge would come too early.

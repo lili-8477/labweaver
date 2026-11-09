@@ -34,8 +34,16 @@ import MemoryList from './MemoryList.vue'
 import MemoryDetail from './MemoryDetail.vue'
 import MemoryOverview from './MemoryOverview.vue'
 import MemoryContextGraph from './MemoryContextGraph.vue'
+import MemoryBuildJobs from './MemoryBuildJobs.vue'
+import { useChatStore } from '@/stores/chat'
 
 const store = useMemoryStore()
+const chat = useChatStore()
+
+// Import starts in the open chat's project, else the projects folder.
+function openImport() {
+  store.openImport(chat.activeChat?.project_dir || 'local_projects')
+}
 
 // ── View: tree overview or filterable list ────────────────────────────────────
 
@@ -133,13 +141,14 @@ function toggleDir(dirKey: string) {
 
 // ── Source chip ───────────────────────────────────────────────────────────────
 
-// Cycles: undefined → 'user' → 'distilled' → undefined
-const sourceOrder: (MemorySource | undefined)[] = [undefined, 'user', 'distilled']
+// Cycles: undefined → 'user' → 'distilled' → 'import' → undefined
+const sourceOrder: (MemorySource | undefined)[] = [undefined, 'user', 'distilled', 'import']
 
 const sourceLabel = computed(() => {
   const s = store.filters.source
   if (s === 'user') return 'Source: manual'
   if (s === 'distilled') return 'Source: distilled'
+  if (s === 'import') return 'Source: imported'
   return 'Source: any'
 })
 
@@ -267,7 +276,9 @@ onUnmounted(() => {
             @click="setView(v.value)"
           >{{ v.label }}</button>
         </div>
+        <button class="scope-tab import-btn" title="Build memory from files and folders" @click="openImport">Import</button>
       </div>
+      <MemoryBuildJobs />
 
       <!-- Scope tabs -->
       <div v-if="view === 'list'" class="filter-row" role="tablist" aria-label="Scope">
@@ -443,6 +454,7 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
+.import-btn { flex: none; border-color: var(--border); }
 .scope-tab {
   padding: 2px 10px;
   border-radius: var(--radius-pill);

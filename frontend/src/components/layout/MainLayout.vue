@@ -21,6 +21,8 @@ import { fleetService } from '@/services/fleet'
 import { useNotebookStore } from '@/stores/notebook'
 import { useShareStore } from '@/stores/share'
 import { useSkillsStore } from '@/stores/skills'
+import { useMemoryStore } from '@/stores/memory'
+import MemoryImport from '@/components/memory/MemoryImport.vue'
 import { applyTheme, loadTheme, type Theme } from '@/utils/theme'
 import { useSelectionStore } from '@/stores/selection'
 import { watchDomSelections } from '@/utils/selection'
@@ -37,6 +39,7 @@ const files = useFileStore()
 const nb = useNotebookStore()
 const shareStore = useShareStore()
 const skillsStore = useSkillsStore()
+const memoryStore = useMemoryStore()
 
 type RightPanel = 'none' | 'files' | 'notebook' | 'agents' | 'memory' | 'share' | 'skills' | 'manager'
 
@@ -291,6 +294,8 @@ const connStatus = computed(() => {
 
     <!-- h5ad viewer overlay (single-cell / spatial AnnData) -->
     <H5adViewer v-if="files.openH5ad" />
+    <!-- Import into memory: opened from the Memory panel or a file's context menu. -->
+    <MemoryImport v-if="memoryStore.importPath !== null" />
   </div>
 </template>
 

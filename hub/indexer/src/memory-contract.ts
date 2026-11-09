@@ -31,6 +31,32 @@ const domain = z.enum(DOMAINS).describe(DOMAIN_HELP);
 const domainFilter = z.enum(DOMAINS).optional().describe("Only memories of this domain.");
 const projectDir = z.string().describe("Encoded project dir (e.g. -home-alice-proj).");
 
+/** What the memory builder sorts imported content into (memory-import.ts). */
+export const IMPORT_CATEGORIES = ["protocol", "inventory", "data_record", "pipeline", "reference"] as const;
+export type ImportCategory = (typeof IMPORT_CATEGORIES)[number];
+export const ORIGIN_KINDS = ["file", "folder", "website"] as const;
+export const BUILD_STATUSES = ["queued", "running", "done", "failed"] as const;
+
+/** One entry the builder parsed from a source, before it becomes a memory. */
+export const ImportEntrySchema = z.object({
+  category:      z.enum(IMPORT_CATEGORIES),
+  name:          z.string().min(1).max(80),
+  description:   z.string().max(200),
+  body:          z.string().min(1).max(1500),
+  facets:        z.record(z.string(), z.array(z.string().max(200)).max(20)).optional(),
+  origin_kind:   z.enum(ORIGIN_KINDS),
+  origin:        z.string().min(1).max(1000).describe("Workspace-relative path, or the URL of a website snapshot."),
+  origin_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+export type ImportEntry = z.infer<typeof ImportEntrySchema>;
+const buildCounts = {
+  files_seen:      z.number().int().min(0).optional(),
+  files_parsed:    z.number().int().min(0).optional(),
+  files_skipped:   z.number().int().min(0).optional(),
+  entries_created: z.number().int().min(0).optional(),
+  duplicates:      z.number().int().min(0).optional(),
+};
+
 // GET operations travel as a querystring, where every value is a string.
 // These accept the typed value from code and the string from a query alike.
 const queryInts = new WeakMap<object, number>();
@@ -94,7 +120,7 @@ export const MEMORY_OPS = {
     project_dir:     z.string().optional(),
     scope:           z.enum(SCOPES).optional(),
     type:            qList.optional(),
-    source:          z.enum(["user", "distilled"]).optional(),
+    source:          z.enum(["user", "distilled", "import"]).optional(),
     dir:             z.string().optional(),
     include_deleted: qBool.default(false),
     sort:            z.enum(["created", "hit"]).optional(),
@@ -164,6 +190,26 @@ export const MEMORY_OPS = {
     status: z.enum(["accepted", "rejected"]).optional(),
     note:   z.string().max(500).optional(),
   })),
+  memory_import: op("POST", "/memory/import", "username", z.object({
+    project_dir:     projectDir.nullable().describe("Encoded project dir for project scope; null for the member's own scope."),
+    builder_version: z.number().int().positive(),
+    entries:         z.array(ImportEntrySchema).min(1).max(200),
+  })),
+  memory_build_job_create: op("POST", "/memory/build-jobs", "username", z.object({
+    project_dir: projectDir.nullable(),
+    origin_kind: z.enum(ORIGIN_KINDS),
+    origin:      z.string().min(1).max(1000),
+  })),
+  memory_build_job_update: op("PUT", "/memory/build-jobs/:job_id", "username", z.object({
+    job_id: z.uuid(),
+    status: z.enum(BUILD_STATUSES).optional(),
+    error:  z.string().max(2000).optional(),
+    report: z.record(z.string(), z.unknown()).optional(),
+    ...buildCounts,
+  })),
+  memory_build_jobs: op("GET", "/memory/build-jobs", "username", z.object({
+    limit: qInt(50).optional(),
+  })),
   memory_forget: op("POST", "/memory/forget", "username", z.object({
     memory_id: z.string().min(1),
   })),
@@ -221,7 +267,7 @@ export { UI_DOMAIN };
 /** Operations the chat UI may call through the adapter. */
 export const UI_OPS = [
   "memory_search", "memory_get", "memory_list", "memory_dirs", "memory_tree", "memory_graph",
-  "memory_update", "memory_forget", "memory_restore", "memory_audit",
+  "memory_update", "memory_forget", "memory_restore", "memory_audit", "memory_build_jobs",
 ] as const satisfies readonly MemoryOp[];
 export type UiOp = (typeof UI_OPS)[number];
 
@@ -264,7 +310,7 @@ export interface SearchHit {
   scope_tier:  Scope;
   // List-row parity: the memory panel renders hits with the list-row component.
   type:        string;
-  source:      "user" | "distilled";
+  source:      "user" | "distilled" | "import";
   created_at:  string;
   updated_at:  string;
   hit_count:   number;
@@ -306,7 +352,7 @@ export interface TimelineEntry {
 export interface ListItem {
   memory_id:   string;
   type:        string;
-  source:      "user" | "distilled";
+  source:      "user" | "distilled" | "import";
   scope_tier:  Scope;
   dir_key:     string;
   name:        string;
@@ -425,6 +471,28 @@ export interface MemoryResults {
   memory_audit:    { rows: AuditRow[] };
   memory_feedback: { updated: number; proposed_for_org: string[] };
   memory_outcome:  { memory_ids: string[]; updated: number; proposed_for_org: string[] };
+  memory_import:   { created: number; duplicates: number; memory_ids: string[] };
+  memory_build_job_create: { job_id: string };
+  memory_build_job_update: { ok: boolean };
+  memory_build_jobs:       BuildJob[];
+}
+
+/** A memory builder job as the Memory panel shows it (migration 0030). */
+export interface BuildJob {
+  job_id:          string;
+  project_dir:     string | null;
+  origin_kind:     (typeof ORIGIN_KINDS)[number];
+  origin:          string;
+  status:          (typeof BUILD_STATUSES)[number];
+  files_seen:      number;
+  files_parsed:    number;
+  files_skipped:   number;
+  entries_created: number;
+  duplicates:      number;
+  report:          Record<string, unknown>;
+  error:           string | null;
+  created_at:      string;
+  finished_at:     string | null;
 }
 
 export type MemoryResult<O extends MemoryOp> = O extends keyof MemoryResults ? MemoryResults[O] : unknown;

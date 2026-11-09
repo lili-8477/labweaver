@@ -200,7 +200,7 @@ export interface ListFilter {
   project_dir:      string | null;                // null = no project filter
   scope?:           'org' | 'user' | 'project';  // optional narrow
   type?:            string[];                     // any-of
-  source?:          'user' | 'distilled';
+  source?:          'user' | 'distilled' | 'import';
   dir?:             string;                       // exact dir_key
   include_deleted?: boolean;                      // default false
   sort?:            'created' | 'hit';            // default 'created'
@@ -338,7 +338,7 @@ LIMIT $8
   type Row = {
     memory_id:   string;
     type:        string;
-    source:      'user' | 'distilled';
+    source:      'user' | 'distilled' | 'import';
     scope_tier:  'org' | 'user' | 'project';
     dir_key:     string;
     name:        string;

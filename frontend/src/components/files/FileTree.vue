@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useFileStore } from '@/stores/files'
 import { useUploadsStore } from '@/stores/uploads'
+import { useMemoryStore } from '@/stores/memory'
 import { queueUpload, cancelUpload, retryUpload, canUploadTo, UPLOAD_ROOT } from '@/services/upload'
 import { getFileIcon, formatFileSize } from '@/utils/format'
 import { basenameOf, isAncestorOrSelf, joinPath, parentOf } from '@/utils/path'
@@ -20,6 +21,7 @@ const emit = defineEmits<{
 
 const files = useFileStore()
 const uploads = useUploadsStore()
+const memory = useMemoryStore()
 
 const INTERNAL_PATH_MIME = 'application/x-bioflow-path'
 
@@ -721,6 +723,7 @@ function onClearUploads() {
       @new-folder="(startNewItemIn(ctxMenu.fe, 'directory'), closeCtxMenu())"
       @delete="(handleDelete(ctxMenu.fe), closeCtxMenu())"
       @share="(openShareModalFor(ctxMenu.fe), closeCtxMenu())"
+      @add-to-memory="(memory.openImport(ctxMenu.fe.path), closeCtxMenu())"
       @close="closeCtxMenu"
     />
 

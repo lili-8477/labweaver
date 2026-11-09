@@ -112,6 +112,7 @@ async function main(): Promise<void> {
     publishRaw: (subject, envelope) => bus.publishRaw(subject, envelope),
     streamSubject: (streamId) => bus.subjectFor(streamId),
     kernelBridgePath: process.env.KERNEL_BRIDGE_PATH ?? "/opt/adapter/kernel-bridge.py",
+    memoryBuilder: ["python3", process.env.MEMORY_BUILDER_PATH ?? "/opt/adapter/memory-builder.py"],
     kernelIdleCullMs: parsePositiveInt(process.env.KERNEL_IDLE_CULL_MS, 0),
     kernelCullCheckIntervalMs: parsePositiveInt(
       process.env.KERNEL_CULL_CHECK_INTERVAL_MS,

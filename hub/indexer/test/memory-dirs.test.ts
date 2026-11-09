@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { DistillationResult } from "../src/distiller-prompts.js";
 import { runMigrations } from "../src/migrate.js";
 import { insertMemoryRow, writeDistillation } from "../src/distiller-repo.js";
+import { importEntries } from "../src/memory-import.js";
 import { contentHash } from "../src/content-hash.js";
 import { InvalidDirError } from "../src/memory-dirs.js";
 import {
@@ -155,6 +156,22 @@ describe("searchMemories candidate selection", () => {
 });
 
 describe("listDirs / getDir", () => {
+  it("lists an import category directory only once it holds entries", async () => {
+    const before = await listDirs({ pool, username: "alice", project_dir: null });
+    expect(before.map((d) => d.dir_key)).not.toContain("user/protocols");
+
+    await importEntries({ pool, username: "alice", project_dir: null, builder_version: 1, entries: [{
+      category: "protocol", name: "RNA extraction SOP", description: "d", body: "1. Lyse cells",
+      origin_kind: "file", origin: "local_projects/p/sop.pdf", origin_sha256: "cd".repeat(32),
+    }] });
+    const after = await listDirs({ pool, username: "alice", project_dir: null });
+    expect(after.find((d) => d.dir_key === "user/protocols")).toMatchObject({ entry_count: 1 });
+    expect(after.map((d) => d.dir_key)).not.toContain("user/inventories");
+    // Another member does not see alice's import directory.
+    const bob = await listDirs({ pool, username: "bob", project_dir: null });
+    expect(bob.map((d) => d.dir_key)).not.toContain("user/protocols");
+  });
+
   it("lists visible directories with counts; project dirs only with a project_dir", async () => {
     await seed([
       { username: "alice", body: "a", type: "feedback" },

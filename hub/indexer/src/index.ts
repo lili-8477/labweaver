@@ -30,6 +30,8 @@ import {
 } from "./memory-repo.js";
 import { memoryGraph } from "./memory-graph.js";
 import { writeDistillation } from "./distiller-repo.js";
+import { importEntries } from "./memory-import.js";
+import { createBuildJob, listBuildJobs, updateBuildJob } from "./memory-build-jobs.js";
 import { proposeExperiences } from "./experience-promotion.js";
 import { linkMemories } from "./lineage-repo.js";
 import { buildBundle } from "./context-bundle.js";
@@ -209,6 +211,10 @@ async function main(): Promise<void> {
       buildBundle,
       consolidate,
       memoryGraph,
+      importEntries,
+      createBuildJob,
+      updateBuildJob,
+      listBuildJobs,
     },
   });
   checkCallers(app, { mapFile: cfg.callerMapFile, warn: (obj, msg) => logger.warn(obj, msg) });

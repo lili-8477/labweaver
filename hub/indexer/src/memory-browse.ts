@@ -115,7 +115,8 @@ export async function listDirs(args: {
         AND m.name <> '${DISTILL_FAILED_NAME}'
         AND (${dirEntrySql("$5")} OR ($3 AND m.scope = 'project' AND ${visibleSql("m", "$1", "$4", "$5")}))
       WHERE ${DIR_VISIBLE_SQL} OR $3
-      GROUP BY d.dir_key, d.scope, d.l0, d.sort
+      GROUP BY d.dir_key, d.scope, d.l0, d.sort, d.hide_empty
+     HAVING NOT d.hide_empty OR COUNT(m.memory_id) > 0
       ORDER BY d.sort`,
     [args.username, args.project_dir, args.all_projects ?? false, args.clearance ?? DEFAULT_CLEARANCE, args.domain ?? null],
   );

@@ -28,7 +28,7 @@ export interface WriteDistillationArgs {
 export interface InsertMemoryRowArgs {
   username:           string;
   project_dir:        string | null;
-  source:             "distilled" | "user";
+  source:             "distilled" | "user" | "import";
   type:               string;
   source_session_id:  string | null;
   name:               string;

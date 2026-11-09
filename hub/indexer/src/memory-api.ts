@@ -26,6 +26,8 @@ import type { writeDistillation } from "./distiller-repo.js";
 import type { linkMemories } from "./lineage-repo.js";
 import type { buildBundle } from "./context-bundle.js";
 import type { consolidate } from "./consolidate.js";
+import type { importEntries } from "./memory-import.js";
+import type { createBuildJob, listBuildJobs, updateBuildJob } from "./memory-build-jobs.js";
 import type { memoryGraph } from "./memory-graph.js";
 import { PROMPT_VERSION } from "./distiller-prompts.js";
 import type { AccessClass } from "./access-classes.js";
@@ -71,6 +73,10 @@ export interface MemoryApiDeps {
     linkMemories:     typeof linkMemories;
     buildBundle:      typeof buildBundle;
     consolidate:      typeof consolidate;
+    importEntries:    typeof importEntries;
+    createBuildJob:   typeof createBuildJob;
+    updateBuildJob:   typeof updateBuildJob;
+    listBuildJobs:    typeof listBuildJobs;
     memoryGraph:      typeof memoryGraph;
   };
 }
@@ -438,6 +444,35 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
   // PUT /memory/:id — edit a user-authored memory's name/description/body.
   // Rejects distilled rows (403) and non-owner edits (403). Registered BEFORE
   // GET /memory/:id to match fastify's route-registration convention in this file.
+  // The memory builder (memory-import.ts): the member's adapter parses and
+  // segments a source, then posts the entries here in batches, and reports
+  // the job's progress through the build-jobs routes.
+  app.post("/memory/import", async (req, reply) => {
+    const parsed = apiSchema("memory_import").safeParse(req.body);
+    if (!parsed.success) { reply.code(400); return { error: "validation failed", issues: parsed.error.issues }; }
+    return result("memory_import", await deps.repo.importEntries({ pool: deps.pool, ...parsed.data }));
+  });
+
+  app.post("/memory/build-jobs", async (req, reply) => {
+    const parsed = apiSchema("memory_build_job_create").safeParse(req.body);
+    if (!parsed.success) { reply.code(400); return { error: "validation failed", issues: parsed.error.issues }; }
+    return result("memory_build_job_create", { job_id: await deps.repo.createBuildJob(deps.pool, parsed.data) });
+  });
+
+  app.put<{ Params: { job_id: string } }>("/memory/build-jobs/:job_id", async (req, reply) => {
+    const parsed = apiSchema("memory_build_job_update").safeParse({ ...(req.body as object), job_id: req.params.job_id });
+    if (!parsed.success) { reply.code(400); return { error: "validation failed", issues: parsed.error.issues }; }
+    const ok = await deps.repo.updateBuildJob(deps.pool, parsed.data);
+    if (!ok) { reply.code(404); return { error: "job not found" }; }
+    return result("memory_build_job_update", { ok });
+  });
+
+  app.get("/memory/build-jobs", async (req, reply) => {
+    const parsed = apiSchema("memory_build_jobs").safeParse(req.query);
+    if (!parsed.success) { reply.code(400); return { error: "validation failed", issues: parsed.error.issues }; }
+    return result("memory_build_jobs", await deps.repo.listBuildJobs(deps.pool, parsed.data));
+  });
+
   app.put<{ Params: { id: string } }>("/memory/:id", async (req, reply) => {
     const parsed = apiSchema("memory_update").safeParse({ ...(req.body as object), memory_id: req.params.id });
     if (!parsed.success) {
