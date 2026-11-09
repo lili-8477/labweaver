@@ -10,53 +10,59 @@ import ExecutionTimeline from '@/components/chat/ExecutionTimeline.vue'
 import HarnessChecklist from '@/components/chat/HarnessChecklist.vue'
 import ModeMenu from '@/components/chat/ModeMenu.vue'
 import { isImage, makeAttachment, uploadAttachment, discardAttachmentFile, type ChatAttachment } from '@/services/chat-attachments'
-import { createProjectWithFiles, composeKickoffMessage, type CreatedProject } from '@/services/project-from-drop'
-import { queueUpload, cancelUpload } from '@/services/upload'
+import { composeUploadNote, pickedFiles, queueProjectUploads } from '@/services/project-upload'
+import { cancelUpload } from '@/services/upload'
 import { useUploadsStore } from '@/stores/uploads'
+import { useFileStore } from '@/stores/files'
 import { formatFileSize } from '@/utils/format'
 import { isSupported as voiceSupported, startVoice, type VoiceSession } from '@/services/voice'
 import SlashMenu from '@/components/chat/SlashMenu.vue'
 import { useChatHints, inputPlaceholder } from '@/composables/useChatHints'
 import { useSelectionStore } from '@/stores/selection'
 import { selectionBlock, splitSelection } from '@/utils/selection'
+import { walkDataTransferItems, type DroppedFile } from '@/utils/dnd'
 
 const chat = useChatStore()
 const selection = useSelectionStore()
 const uploads = useUploadsStore()
+const fileStore = useFileStore()
 const input = ref('')
 const messagesEl = ref<HTMLElement | null>(null)
 
 const attachments = ref<ChatAttachment[]>([])
 const isDragging = ref(false)
 const dragDepth = ref(0)
-const creatingProject = ref(false)
-const projectError = ref<string | null>(null)
-// IDs of upload entries belonging to the in-flight project drop. Used to
-// look up live progress in the uploads store and to cancel the whole batch.
-const creatingProjectIds = ref<string[]>([])
-const projectCanceled = ref(false)
+// Files and folders go into the active chat's project; nothing uploads
+// without one. `uploadIds` are the batch in flight (progress, cancel);
+// `uploaded` waits for Send, which tells the agent what arrived.
+const projectDir = computed(() => chat.activeChat?.project_dir || null)
+const projectName = computed(() => projectDir.value?.split('/').pop() ?? null)
+const uploadIds = ref<string[]>([])
+const uploaded = ref<DroppedFile[]>([])
+const uploadError = ref<string | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
+const dirInput = ref<HTMLInputElement | null>(null)
+const uploadMenuOpen = ref(false)
 
-const activeProjectUpload = computed(() => {
-  for (const id of creatingProjectIds.value) {
+const activeUpload = computed(() => {
+  for (const id of uploadIds.value) {
     const u = uploads.items.find(i => i.id === id)
     if (u && (u.state === 'uploading' || u.state === 'pending')) return u
   }
   return null
 })
-const activeProjectPct = computed(() => {
-  const u = activeProjectUpload.value
+const activeUploadPct = computed(() => {
+  const u = activeUpload.value
   if (!u || u.totalBytes <= 0) return 0
   return Math.min(100, Math.floor((u.bytesSent / u.totalBytes) * 100))
 })
-
+const uploadsLeft = computed(() => uploadIds.value.filter(id => {
+  const u = uploads.items.find(i => i.id === id)
+  return u && (u.state === 'uploading' || u.state === 'pending')
+}).length)
 function cancelProjectUpload() {
-  projectCanceled.value = true
-  for (const id of creatingProjectIds.value) cancelUpload(id)
+  for (const id of uploadIds.value) cancelUpload(id)
 }
-// A drop creates the project + uploads files, but the kickoff message waits
-// here until the user actually hits Send. They can type more context first,
-// or just send for the default "what can you do with this" overview.
-const pendingProject = ref<CreatedProject | null>(null)
 const voiceOn = ref(false)
 const voiceSupportedFlag = voiceSupported()
 let voiceSession: VoiceSession | null = null
@@ -71,7 +77,8 @@ const { messages: chatMessages, nextSteps } = storeToRefs(chat)
 const hints = useChatHints({
   messages:       chatMessages,
   attachments,
-  pendingProject,
+  uploadedCount:  computed(() => uploaded.value.length),
+  hasProject:     computed(() => projectDir.value !== null),
   nextSteps,
 })
 
@@ -81,12 +88,12 @@ function setMode(mode: ChatMode) {
   if (chat.activeChatId) chat.setChatMode(chat.activeChatId, mode)
 }
 
-const anyUploading = computed(() => attachments.value.some(a => a.state === 'uploading'))
+const anyUploading = computed(() => attachments.value.some(a => a.state === 'uploading') || uploadIds.value.length > 0)
 const hasContent = computed(
   () => (
     input.value.trim().length > 0
     || attachments.value.some(a => a.state === 'done')
-    || pendingProject.value !== null
+    || uploaded.value.length > 0
   ) && !anyUploading.value,
 )
 
@@ -135,8 +142,8 @@ function send() {
   const paths = attachments.value
     .filter(a => a.state === 'done' && a.workspacePath)
     .map(a => a.workspacePath)
-  let text = pendingProject.value
-    ? composeKickoffMessage(pendingProject.value, input.value.trim())
+  let text = uploaded.value.length && projectDir.value
+    ? composeUploadNote(projectDir.value, uploaded.value, input.value.trim())
     : input.value.trim()
   // A slash command only runs from the start of the prompt, so it goes
   // without the selection; the chip stays for the next message.
@@ -144,7 +151,7 @@ function send() {
     text = `${selectionBlock(selection.current)}\n\n${text}`
     selection.clear()
   }
-  pendingProject.value = null
+  uploaded.value = []
   chat.sendMessage(text, paths)
   input.value = ''
   clearAttachments()
@@ -345,23 +352,26 @@ function onDrop(e: DragEvent) {
   isDragging.value = false
 
   // A folder/file dragged from the file tree carries its path (text/plain),
-  // not File objects — drop it into the prompt instead of starting a project.
+  // not File objects — drop it into the prompt instead of uploading.
   if (hasPathInDrag(e)) {
     const p = e.dataTransfer.getData('text/plain')
     if (p) insertPathIntoInput(p)
     return
   }
 
-  const fileList = e.dataTransfer.files
-  if (!fileList || fileList.length === 0) return
-  const all = Array.from(fileList)
-  // Images keep attaching to the current chat. Anything else (CSV, FASTQ,
-  // PDF, …) kicks off a brand-new project in local_projects/ and opens a
-  // fresh chat bound to that folder.
-  const images = all.filter(isImage)
-  const others = all.filter(f => !isImage(f))
-  if (images.length > 0) addFiles(images)
-  if (others.length > 0) void startProjectFromFiles(others)
+  // Images attach to the message. Everything else (CSV, FASTQ, PDF, folders…)
+  // uploads into the chat's project. Entries are read now: the drop's item
+  // list is gone once this handler returns.
+  const dt = e.dataTransfer
+  const walking = dt.items?.length && 'webkitGetAsEntry' in dt.items[0]
+    ? walkDataTransferItems(dt.items)
+    : Promise.resolve(pickedFiles(dt.files))
+  void walking.then(all => {
+    const images = all.filter(d => !d.relativePath.includes('/') && isImage(d.file))
+    if (images.length > 0) addFiles(images.map(d => d.file))
+    const others = all.filter(d => !images.includes(d))
+    if (others.length > 0) uploadToProject(others)
+  })
 }
 function hasFilesInDrag(e: DragEvent): boolean {
   const types = e.dataTransfer?.types
@@ -372,47 +382,36 @@ function hasFilesInDrag(e: DragEvent): boolean {
   return false
 }
 
-// ---- Drop-to-project ----
+// ---- Upload to the chat's project ----
 
-async function startProjectFromFiles(files: File[]) {
-  if (creatingProject.value || chat.sending) return
-  creatingProject.value = true
-  creatingProjectIds.value = []
-  projectCanceled.value = false
-  projectError.value = null
-  try {
-    if (pendingProject.value) {
-      // Additional files dropped before the user sent — append them to the
-      // pending project rather than creating a second one.
-      const proj = pendingProject.value
-      for (const f of files) {
-        if (projectCanceled.value) break
-        const { id, promise } = queueUpload(f, proj.projectDir)
-        creatingProjectIds.value.push(id)
-        await promise
-        if (projectCanceled.value) break
-        proj.files.push({ name: f.name, workspacePath: `${proj.workspaceDir}/${f.name}` })
-      }
-    } else {
-      pendingProject.value = await createProjectWithFiles(files, {
-        onUploadQueued: (id) => { creatingProjectIds.value.push(id) },
-        isCanceled: () => projectCanceled.value,
-      })
-    }
-  } catch (err) {
-    // User-initiated cancel surfaces as Error('canceled') — not an error path.
-    if (!projectCanceled.value && (err as Error)?.message !== 'canceled') {
-      projectError.value = (err as Error)?.message || String(err)
-    }
-  } finally {
-    creatingProject.value = false
-    creatingProjectIds.value = []
-    projectCanceled.value = false
+function uploadToProject(files: DroppedFile[]) {
+  uploadError.value = null
+  const dir = projectDir.value
+  if (!dir) {
+    uploadError.value = 'Open a chat in a project first. Create one with + under Projects.'
+    return
   }
+  const { ids, done } = queueProjectUploads(files, dir)
+  uploadIds.value = [...uploadIds.value, ...ids]
+  void done.then(({ ok, failed }) => {
+    uploadIds.value = uploadIds.value.filter(id => !ids.includes(id))
+    // These uploads bypass the Files panel, so tell it to refresh the project.
+    fileStore.requestReveal(dir)
+    // The note is for this chat only; a switch while uploading drops it.
+    if (chat.activeChat?.project_dir === dir) uploaded.value = [...uploaded.value, ...ok]
+    if (failed > 0) uploadError.value = `${failed} of ${files.length} file(s) failed to upload. See Files › uploads for details.`
+  })
 }
 
-function discardPendingProject() {
-  pendingProject.value = null
+function pickUpload(kind: 'file' | 'directory') {
+  uploadMenuOpen.value = false
+  ;(kind === 'file' ? fileInput : dirInput).value?.click()
+}
+
+function onPicked(e: Event) {
+  const el = e.target as HTMLInputElement
+  if (el.files?.length) uploadToProject(pickedFiles(el.files))
+  el.value = ''  // allow picking the same file again
 }
 
 // ---- Voice ----
@@ -522,13 +521,11 @@ onBeforeUnmount(() => {
   clearAttachments()
 })
 
-// If the user navigates to a different chat before sending, the pending
-// kickoff no longer makes sense — drop it. The project folder + files stay
-// on disk; only the unsent kickoff is discarded.
-watch(() => chat.activeChatId, (id) => {
-  if (pendingProject.value && pendingProject.value.chatId !== id) {
-    pendingProject.value = null
-  }
+// The upload note belongs to the chat it was made in; the files stay on disk.
+watch(() => chat.activeChatId, () => {
+  uploaded.value = []
+  uploadError.value = null
+  uploadMenuOpen.value = false
 })
 
 // Auto-scroll
@@ -619,7 +616,7 @@ watch(
           v-for="h in hints"
           :key="h.id"
           class="suggestion-btn"
-          @click="applyHint(h.text)"
+          @click="h.id === 'upload' ? pickUpload('file') : applyHint(h.text)"
         >
           {{ h.text }}
         </button>
@@ -658,51 +655,45 @@ watch(
         </div>
 
         <div v-if="isDragging" class="drop-overlay">
-          <div>Drop file</div>
-          <div class="drop-overlay-sub">images attach &middot; everything else starts a new project</div>
+          <div>Drop files or folders</div>
+          <div class="drop-overlay-sub">
+            <template v-if="projectName">images attach &middot; everything else goes into {{ projectName }}</template>
+            <template v-else>images attach &middot; open a chat in a project to upload data</template>
+          </div>
         </div>
 
-        <div v-if="creatingProject" class="project-status project-status-uploading">
+        <div v-if="uploadIds.length" class="project-status project-status-uploading">
           <div class="upload-progress-row">
             <span class="project-status-spinner"></span>
             <span class="upload-progress-label">
-              <template v-if="activeProjectUpload">
-                Uploading <code>{{ activeProjectUpload.fileName }}</code>
+              <template v-if="activeUpload">
+                Uploading <code>{{ activeUpload.fileName }}</code> to {{ projectName }}
+                <template v-if="uploadsLeft > 1"> &middot; {{ uploadsLeft }} left</template>
               </template>
-              <template v-else>
-                Preparing project…
-              </template>
+              <template v-else>Finishing…</template>
             </span>
-            <span v-if="activeProjectUpload" class="upload-progress-bytes">
-              {{ formatFileSize(activeProjectUpload.bytesSent) }} /
-              {{ formatFileSize(activeProjectUpload.totalBytes) }}
-              · {{ activeProjectPct }}%
+            <span v-if="activeUpload" class="upload-progress-bytes">
+              {{ formatFileSize(activeUpload.bytesSent) }} /
+              {{ formatFileSize(activeUpload.totalBytes) }}
+              · {{ activeUploadPct }}%
             </span>
-            <button
-              class="upload-progress-cancel"
-              @click="cancelProjectUpload"
-              title="Cancel upload"
-            >Cancel</button>
+            <button class="upload-progress-cancel" @click="cancelProjectUpload" title="Cancel upload">Cancel</button>
           </div>
-          <div v-if="activeProjectUpload" class="upload-progress-bar">
-            <div
-              class="upload-progress-bar-fill"
-              :style="{ width: activeProjectPct + '%' }"
-            ></div>
+          <div v-if="activeUpload" class="upload-progress-bar">
+            <div class="upload-progress-bar-fill" :style="{ width: activeUploadPct + '%' }"></div>
           </div>
         </div>
-        <div v-else-if="pendingProject" class="project-status">
+        <div v-else-if="uploaded.length" class="project-status">
           <span class="project-status-icon">&#x1F4C1;</span>
           <span>
-            Project <code>{{ pendingProject.projectName }}</code> ready &middot;
-            {{ pendingProject.files.length }} file{{ pendingProject.files.length === 1 ? '' : 's' }} &middot;
-            add context or hit send
+            {{ uploaded.length }} file{{ uploaded.length === 1 ? '' : 's' }} uploaded to <code>{{ projectName }}</code>
+            &middot; add context or hit send
           </span>
-          <button class="project-status-dismiss" @click="discardPendingProject" title="Discard pending project">&times;</button>
+          <button class="project-status-dismiss" @click="uploaded = []" title="Don't mention the upload (the files stay)">&times;</button>
         </div>
-        <div v-if="projectError" class="project-status project-status-error">
-          <span>Project creation failed: {{ projectError }}</span>
-          <button class="project-status-dismiss" @click="projectError = null" title="Dismiss">&times;</button>
+        <div v-if="uploadError" class="project-status project-status-error">
+          <span>{{ uploadError }}</span>
+          <button class="project-status-dismiss" @click="uploadError = null" title="Dismiss">&times;</button>
         </div>
 
         <SlashMenu
@@ -719,6 +710,24 @@ watch(
             :disabled="!chat.activeChatId || chat.sending"
             @update:model-value="setMode"
           />
+          <div class="upload-menu" @focusout="(e: FocusEvent) => { if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) uploadMenuOpen = false }">
+            <button
+              class="btn-attach"
+              :disabled="!projectDir"
+              :title="projectDir ? `Upload files or a folder to ${projectName}` : 'Open a chat in a project to upload files'"
+              @click="uploadMenuOpen = !uploadMenuOpen"
+            >
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 11.5 12.5 20a5 5 0 0 1-7-7L14 4.5a3.5 3.5 0 0 1 5 5L10.5 18a2 2 0 0 1-3-3L15 7.5" />
+              </svg>
+            </button>
+            <div v-if="uploadMenuOpen" class="upload-menu-list">
+              <button @click="pickUpload('file')">Upload files…</button>
+              <button @click="pickUpload('directory')">Upload folder…</button>
+            </div>
+            <input ref="fileInput" type="file" multiple hidden @change="onPicked" />
+            <input ref="dirInput" type="file" webkitdirectory hidden @change="onPicked" />
+          </div>
           <div class="input-editor">
             <!-- Mirror layer: re-prints the text with the leading /command
                  token colored. Sits behind the transparent textarea. The
@@ -1030,6 +1039,28 @@ watch(
 .btn-mic:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-mic.mic-on { background: var(--danger); color: #fff; border-color: var(--danger); }
 .btn-mic.mic-on .icon { width: 14px; height: 14px; }
+.upload-menu { position: relative; flex: none; }
+.btn-attach {
+  width: 40px; height: 40px; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--bg-primary);
+  color: var(--text-secondary);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.btn-attach .icon { width: 20px; height: 20px; }
+.btn-attach:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.btn-attach:disabled { opacity: 0.5; cursor: not-allowed; }
+.upload-menu-list {
+  position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 20;
+  display: flex; flex-direction: column; min-width: 150px; padding: 4px;
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.upload-menu-list button {
+  padding: 6px 10px; text-align: left; font-size: 0.85em;
+  background: transparent; border: none; border-radius: 4px; color: var(--text-primary);
+}
+.upload-menu-list button:hover { background: var(--bg-tertiary); }
 .mic-rec { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse {
   0%, 100% { opacity: 1; }

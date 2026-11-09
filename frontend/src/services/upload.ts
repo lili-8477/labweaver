@@ -1,6 +1,12 @@
 import { useUploadsStore } from '@/stores/uploads'
+import { isAncestorOrSelf } from '@/utils/path'
 
 const MAX_SIZE = 2 * 1024 * 1024 * 1024  // 2 GiB
+
+/** Files and folders upload only into this subtree (adapter/src/upload-http.ts
+ *  refuses anything else with 403). */
+export const UPLOAD_ROOT = 'local_projects'
+export const canUploadTo = (dir: string) => isAncestorOrSelf(UPLOAD_ROOT, dir)
 
 // XHR objects are kept off the Pinia state — making them reactive would cause
 // Vue to deep-proxy XMLHttpRequest internals and break the upload.

@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useFileStore } from '@/stores/files'
 import { useUploadsStore } from '@/stores/uploads'
-import { queueUpload, cancelUpload, retryUpload } from '@/services/upload'
+import { queueUpload, cancelUpload, retryUpload, canUploadTo, UPLOAD_ROOT } from '@/services/upload'
 import { getFileIcon, formatFileSize } from '@/utils/format'
 import { basenameOf, isAncestorOrSelf, joinPath, parentOf } from '@/utils/path'
 import { walkDataTransferItems } from '@/utils/dnd'
@@ -359,10 +359,9 @@ function refresh() {
 }
 
 /** Workspace-relative directory that this drop target represents.
- *  null path = the empty tree-content pane → default writable subtree.
- *  The upload server only allows writes under `local_projects/`, so
- *  workspace root would 403. Default new drops there too. */
-const DEFAULT_DROP_DIR = 'local_projects'
+ *  null path = the empty tree-content pane → the upload root, since the
+ *  upload server only allows writes under it. */
+const DEFAULT_DROP_DIR = UPLOAD_ROOT
 
 function dropDirFor(path: string | null): string {
   if (path === null) return DEFAULT_DROP_DIR
@@ -406,6 +405,10 @@ watch(() => files.revealRequest, (req) => {
 })
 
 function queueOne(file: File, destDir: string) {
+  if (!canUploadTo(destDir)) {
+    showTreeError(`Uploads go into a project under ${UPLOAD_ROOT}/. Upload from the chat box to add files to the current project.`)
+    return
+  }
   const { id, promise } = queueUpload(file, destDir)
   fileForUpload.set(id, file)
   promise
