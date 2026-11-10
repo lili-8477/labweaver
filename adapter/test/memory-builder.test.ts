@@ -26,12 +26,13 @@ async function fakeHelper(lines: object[], opts: { exit?: number; scan?: object 
   return [process.execPath, file];
 }
 
-function deps(helper: string[], segment: BuilderDeps["segment"] = async () => []) {
+function deps(helper: string[], segment: BuilderDeps["segment"] = async () => [], seen: string[] = []) {
   const calls: Array<{ op: string; params: Record<string, unknown> }> = [];
   const memory = {
     request: vi.fn(async (op: string, params: Record<string, unknown>) => {
       calls.push({ op, params });
       if (op === "memory_build_job_create") return { job_id: "job-1" };
+      if (op === "memory_import_seen") return { seen: (params.origin_sha256s as string[]).filter((h) => seen.includes(h)) };
       if (op === "memory_import") {
         const n = (params.entries as unknown[]).length;
         return { created: n - 1, duplicates: 1, memory_ids: [] };
@@ -74,6 +75,23 @@ describe("MemoryBuilder", () => {
       report: { skipped: [{ path: "local_projects/ngs/raw/a.bam", reason: "not a document or table" }] },
     });
     expect((last.entries_created as number) + (last.duplicates as number)).toBe(3);
+  });
+
+  it("skips a document already imported unchanged, without calling the model", async () => {
+    const helper = await fakeHelper([
+      { type: "document", path: "local_projects/p/sop.md", sha256: SHA, text: "Lyse cells.", truncated: false },
+    ]);
+    const segment = vi.fn(async () => []);
+    const { d, calls } = deps(helper, segment, [SHA]);
+    const builder = new MemoryBuilder(d);
+    await builder.start({ path: "local_projects/p", scope: "project" });
+    await builder.idle();
+    expect(segment).not.toHaveBeenCalled();
+    expect(calls.find((c) => c.op === "memory_import_seen")!.params).toEqual({
+      project_dir: "-workspace-local_projects-p", origin_sha256s: [SHA],
+    });
+    const last = calls.filter((c) => c.op === "memory_build_job_update").at(-1)!.params;
+    expect(last).toMatchObject({ status: "done", files_parsed: 1, files_skipped: 0, report: { unchanged: ["local_projects/p/sop.md"] } });
   });
 
   it("keeps going when the model fails on one document, recording it as skipped", async () => {

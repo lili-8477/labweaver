@@ -11,6 +11,7 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const recent = computed(() => store.jobs.filter((j) => Date.now() - Date.parse(j.created_at) < DAY_MS).slice(0, 5))
 const skippedOf = (report: Record<string, unknown>) =>
   (report.skipped ?? []) as Array<{ path: string; reason: string }>
+const unchangedOf = (report: Record<string, unknown>) => ((report.unchanged ?? []) as string[]).length
 
 onMounted(() => void store.loadJobs())
 </script>
@@ -30,6 +31,9 @@ onMounted(() => void store.loadJobs())
         </span>
         <span class="job-time">{{ relTime(j.finished_at ?? j.created_at) }}</span>
       </summary>
+      <div v-if="unchangedOf(j.report)" class="job-skipped muted">
+        {{ unchangedOf(j.report) }} file{{ unchangedOf(j.report) === 1 ? '' : 's' }} unchanged since the last import, not read again.
+      </div>
       <ul v-if="skippedOf(j.report).length" class="job-skipped">
         <li v-for="s in skippedOf(j.report).slice(0, 20)" :key="s.path"><span>{{ s.path }}</span> — {{ s.reason }}</li>
       </ul>

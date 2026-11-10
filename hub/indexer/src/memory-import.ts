@@ -60,3 +60,21 @@ export async function importEntries(args: {
     return { created: memory_ids.length, duplicates: args.entries.length - memory_ids.length, memory_ids };
   });
 }
+
+/** Which of these source files (by sha256) already have live imported
+ *  memories in the scope, so the builder can skip them unchanged instead of
+ *  segmenting them again (a model splits the same text differently each time). */
+export async function importedFiles(args: {
+  pool: Pool; username: string; project_dir: string | null; sha256s: string[];
+}): Promise<string[]> {
+  if (args.sha256s.length === 0) return [];
+  const r = await args.pool.query<{ value: string }>(
+    `SELECT DISTINCT f.value
+       FROM memory_facets f JOIN memories m USING (memory_id)
+      WHERE f.key = 'origin_sha256' AND f.value = ANY($3::text[])
+        AND m.username = $1 AND m.project_dir IS NOT DISTINCT FROM $2
+        AND m.source = 'import' AND m.deleted_at IS NULL`,
+    [args.username, args.project_dir, args.sha256s],
+  );
+  return r.rows.map((row) => row.value);
+}

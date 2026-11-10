@@ -48,6 +48,7 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
   createBuildJob:   ReturnType<typeof vi.fn>;
   updateBuildJob:   ReturnType<typeof vi.fn>;
   listBuildJobs:    ReturnType<typeof vi.fn>;
+  importedFiles:    ReturnType<typeof vi.fn>;
 } } {
   const repo = {
     searchMemories:   vi.fn(async (): Promise<SearchHit[]>     => []),
@@ -88,6 +89,7 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
     createBuildJob:   vi.fn(async () => "00000000-0000-4000-8000-000000000009"),
     updateBuildJob:   vi.fn(async () => true),
     listBuildJobs:    vi.fn(async () => []),
+    importedFiles:    vi.fn(async () => ["ab".repeat(32)]),
   };
   const deps: MemoryApiDeps = {
     pool: {} as Pool,
@@ -1029,6 +1031,16 @@ describe("memory-api", () => {
         expect(res.statusCode).toBe(400);
       }
       expect(depsBag.repo.importEntries).not.toHaveBeenCalled();
+    });
+
+    it("POST /memory/import/seen reports the source files already imported in the scope", async () => {
+      const res = await app.inject({ method: "POST", url: "/memory/import/seen", payload: {
+        username: "alice", project_dir: null, origin_sha256s: ["ab".repeat(32), "cd".repeat(32)],
+      } });
+      expect(res.json()).toEqual({ seen: ["ab".repeat(32)] });
+      expect(depsBag.repo.importedFiles).toHaveBeenCalledWith({
+        pool: depsBag.deps.pool, username: "alice", project_dir: null, sha256s: ["ab".repeat(32), "cd".repeat(32)],
+      });
     });
 
     it("creates, updates and lists build jobs for the caller", async () => {

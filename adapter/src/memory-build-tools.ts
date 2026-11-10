@@ -31,8 +31,10 @@ export function memoryBuildHandlers(builder: MemoryBuilder) {
       return text(jobs.map((j) => {
         const skipped = ((j.report.skipped ?? []) as Array<{ path: string; reason: string }>)
           .slice(0, 10).map((s) => `  - ${s.path}: ${s.reason}`);
+        const unchanged = ((j.report.unchanged ?? []) as string[]).length;
         return [
-          `${j.job_id} ${j.origin}: ${j.status}. Files ${j.files_parsed}/${j.files_seen} read, ${j.files_skipped} skipped; ` +
+          `${j.job_id} ${j.origin}: ${j.status}. Files ${j.files_parsed}/${j.files_seen} read, ${j.files_skipped} skipped` +
+            `${unchanged ? `, ${unchanged} unchanged since their last import` : ""}; ` +
             `${j.entries_created} new memories, ${j.duplicates} already known.${j.error ? ` Error: ${j.error}` : ""}`,
           ...skipped,
         ].join("\n");

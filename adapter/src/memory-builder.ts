@@ -86,6 +86,9 @@ export class MemoryBuilder {
         console.warn(`[memory-builder] job ${job_id} update failed: ${(e as Error).message}`));
     const parsed = new Set<string>();
     const skipped: Array<{ path: string; reason: string }> = [];
+    // Documents imported before and unchanged since: a model would split them
+    // differently each time, so they are not segmented again.
+    const unchanged: string[] = [];
     let entries_created = 0;
     let duplicates = 0;
     let pending: ImportEntry[] = [];
@@ -102,7 +105,10 @@ export class MemoryBuilder {
       duplicates += r.duplicates;
       await update(counts());
     };
-    const report = () => ({ skipped: skipped.slice(0, MAX_REPORTED_SKIPS), skipped_total: skipped.length });
+    const report = () => ({
+      skipped: skipped.slice(0, MAX_REPORTED_SKIPS), skipped_total: skipped.length,
+      unchanged: unchanged.slice(0, MAX_REPORTED_SKIPS),
+    });
 
     try {
       await update({ status: "running" });
@@ -116,6 +122,12 @@ export class MemoryBuilder {
           parsed.add(entry.origin);
           pending.push({ ...entry, origin_kind });
         } else {
+          const { seen } = await this.deps.memory.request("memory_import_seen", { project_dir, origin_sha256s: [item.sha256] });
+          if (seen.length) {
+            parsed.add(item.path);
+            unchanged.push(item.path);
+            return;
+          }
           try {
             const found = await this.deps.segment({ path: item.path, text: item.text });
             parsed.add(item.path);

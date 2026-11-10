@@ -26,7 +26,7 @@ import type { writeDistillation } from "./distiller-repo.js";
 import type { linkMemories } from "./lineage-repo.js";
 import type { buildBundle } from "./context-bundle.js";
 import type { consolidate } from "./consolidate.js";
-import type { importEntries } from "./memory-import.js";
+import type { importedFiles, importEntries } from "./memory-import.js";
 import type { createBuildJob, listBuildJobs, updateBuildJob } from "./memory-build-jobs.js";
 import type { memoryGraph } from "./memory-graph.js";
 import { PROMPT_VERSION } from "./distiller-prompts.js";
@@ -74,6 +74,7 @@ export interface MemoryApiDeps {
     buildBundle:      typeof buildBundle;
     consolidate:      typeof consolidate;
     importEntries:    typeof importEntries;
+    importedFiles:    typeof importedFiles;
     createBuildJob:   typeof createBuildJob;
     updateBuildJob:   typeof updateBuildJob;
     listBuildJobs:    typeof listBuildJobs;
@@ -451,6 +452,15 @@ export function buildApp(deps: MemoryApiDeps): FastifyInstance {
     const parsed = apiSchema("memory_import").safeParse(req.body);
     if (!parsed.success) { reply.code(400); return { error: "validation failed", issues: parsed.error.issues }; }
     return result("memory_import", await deps.repo.importEntries({ pool: deps.pool, ...parsed.data }));
+  });
+
+  app.post("/memory/import/seen", async (req, reply) => {
+    const parsed = apiSchema("memory_import_seen").safeParse(req.body);
+    if (!parsed.success) { reply.code(400); return { error: "validation failed", issues: parsed.error.issues }; }
+    const { username, project_dir, origin_sha256s } = parsed.data;
+    return result("memory_import_seen", {
+      seen: await deps.repo.importedFiles({ pool: deps.pool, username, project_dir, sha256s: origin_sha256s }),
+    });
   });
 
   app.post("/memory/build-jobs", async (req, reply) => {

@@ -30,7 +30,7 @@ import {
 } from "./memory-repo.js";
 import { memoryGraph } from "./memory-graph.js";
 import { writeDistillation } from "./distiller-repo.js";
-import { importEntries } from "./memory-import.js";
+import { importedFiles, importEntries } from "./memory-import.js";
 import { createBuildJob, listBuildJobs, updateBuildJob } from "./memory-build-jobs.js";
 import { proposeExperiences } from "./experience-promotion.js";
 import { linkMemories } from "./lineage-repo.js";
@@ -212,6 +212,7 @@ async function main(): Promise<void> {
       consolidate,
       memoryGraph,
       importEntries,
+      importedFiles,
       createBuildJob,
       updateBuildJob,
       listBuildJobs,

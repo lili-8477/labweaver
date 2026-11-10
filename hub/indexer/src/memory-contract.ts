@@ -195,6 +195,10 @@ export const MEMORY_OPS = {
     builder_version: z.number().int().positive(),
     entries:         z.array(ImportEntrySchema).min(1).max(200),
   })),
+  memory_import_seen: op("POST", "/memory/import/seen", "username", z.object({
+    project_dir:    projectDir.nullable(),
+    origin_sha256s: z.array(z.string().regex(/^[0-9a-f]{64}$/)).min(1).max(500),
+  })),
   memory_build_job_create: op("POST", "/memory/build-jobs", "username", z.object({
     project_dir: projectDir.nullable(),
     origin_kind: z.enum(ORIGIN_KINDS),
@@ -472,6 +476,7 @@ export interface MemoryResults {
   memory_feedback: { updated: number; proposed_for_org: string[] };
   memory_outcome:  { memory_ids: string[]; updated: number; proposed_for_org: string[] };
   memory_import:   { created: number; duplicates: number; memory_ids: string[] };
+  memory_import_seen:      { seen: string[] };
   memory_build_job_create: { job_id: string };
   memory_build_job_update: { ok: boolean };
   memory_build_jobs:       BuildJob[];

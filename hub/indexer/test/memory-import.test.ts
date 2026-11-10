@@ -3,7 +3,7 @@ import { PostgreSqlContainer, StartedPostgreSqlContainer } from "@testcontainers
 import { Pool } from "pg";
 import { fileURLToPath } from "node:url";
 import { runMigrations } from "../src/migrate.js";
-import { importDir, importEntries, type ImportEntry } from "../src/memory-import.js";
+import { importDir, importEntries, importedFiles, type ImportEntry } from "../src/memory-import.js";
 import { createBuildJob, listBuildJobs, updateBuildJob } from "../src/memory-build-jobs.js";
 import { searchMemories } from "../src/memory-search.js";
 
@@ -91,6 +91,24 @@ describe("importEntries", () => {
         expect(dirs.has(importDir(scope, c)), `${scope}/${c}`).toBe(true);
       }
     }
+  });
+});
+
+describe("importedFiles", () => {
+  it("reports which source checksums already have live imported memories in the scope", async () => {
+    const other = "cd".repeat(32);
+    await importEntries({ pool, username: "alice", project_dir: "-w-p", builder_version: 1, entries: [entry()] });
+    const seen = (args: { username?: string; project_dir?: string | null }) => importedFiles({
+      pool, username: args.username ?? "alice", project_dir: args.project_dir === undefined ? "-w-p" : args.project_dir,
+      sha256s: ["ab".repeat(32), other],
+    });
+    expect(await seen({})).toEqual(["ab".repeat(32)]);
+    // Another scope or member has not imported it.
+    expect(await seen({ project_dir: null })).toEqual([]);
+    expect(await seen({ username: "bob" })).toEqual([]);
+    // Forgotten memories do not count: the file can be imported again.
+    await pool.query(`UPDATE memories SET deleted_at = now()`);
+    expect(await seen({})).toEqual([]);
   });
 });
 
