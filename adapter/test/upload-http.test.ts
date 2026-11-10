@@ -137,3 +137,53 @@ describe("PUT /upload/ path policy", () => {
     await expect(stat(join(wsRoot, ".claude/pwned.txt"))).rejects.toThrow();
   });
 });
+
+describe("GET /archive", () => {
+  let upload: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    const { mkdir, writeFile, symlink } = await import("node:fs/promises");
+    const ws = await mkdtemp(join(tmpdir(), "ws-"));
+    await mkdir(join(ws, "local_projects", "p", "sub"), { recursive: true });
+    await writeFile(join(ws, "local_projects", "p", "a.csv"), "x,y\n1,2\n");
+    await writeFile(join(ws, "local_projects", "p", "sub", "b.txt"), "hello");
+    await writeFile(join(ws, "local_projects", "p", ".env"), "SECRET=1");
+    await symlink("/etc/hostname", join(ws, "local_projects", "p", "link"));
+    await writeFile(join(ws, "notes.md"), "# notes");
+    await writeFile(join(ws, ".env"), "SECRET=1");
+    upload = startUploadServer({ workspaceRoot: ws, port: 0, username: "alice" });
+    await new Promise<void>((r) => upload.once("listening", () => r()));
+    base = `http://127.0.0.1:${(upload.address() as { port: number }).port}`;
+  });
+  afterAll(() => { upload?.close(); });
+
+  /** The zip's entry names, read back with Python's zipfile. */
+  async function entries(body: ArrayBuffer): Promise<string[]> {
+    const { execFileSync } = await import("node:child_process");
+    const out = execFileSync("python3", ["-c", "import io,sys,zipfile; print('\\n'.join(sorted(zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())).namelist())))"],
+      { input: Buffer.from(body) });
+    return out.toString().trim().split("\n");
+  }
+
+  it("zips the selected folders and files, leaving out secrets and links", async () => {
+    const res = await fetch(`${base}/archive?path=local_projects/p&path=notes.md&name=selection`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/zip");
+    expect(res.headers.get("content-disposition")).toBe('attachment; filename="selection.zip"');
+    expect(await entries(await res.arrayBuffer())).toEqual(["notes.md", "p/a.csv", "p/sub/b.txt"]);
+  });
+
+  it("names a single folder's zip after the folder", async () => {
+    const res = await fetch(`${base}/archive?path=local_projects/p/sub`);
+    expect(res.headers.get("content-disposition")).toBe('attachment; filename="sub.zip"');
+    expect(await entries(await res.arrayBuffer())).toEqual(["sub/b.txt"]);
+  });
+
+  it("refuses secrets and paths outside the workspace, and 404s a missing path", async () => {
+    expect((await fetch(`${base}/archive?path=.env`)).status).toBe(403);
+    expect((await fetch(`${base}/archive?path=..%2Fetc`)).status).toBe(403);
+    expect((await fetch(`${base}/archive?path=local_projects/nope`)).status).toBe(404);
+    expect((await fetch(`${base}/archive`)).status).toBe(400);
+  });
+});

@@ -15,6 +15,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { createWriteStream } from "node:fs";
 import { mkdir, realpath, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { handleArchive } from "./archive-http.js";
 
 export interface UploadServerOptions {
   workspaceRoot: string;        // absolute, e.g. "/workspace"
@@ -71,6 +72,11 @@ async function handle(
 
   if (url === "/healthz") {
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if ((url === "/archive" || url.startsWith("/archive?")) && method === "GET") {
+    await handleArchive(req, res, ctx.workspaceRoot);
     return;
   }
 

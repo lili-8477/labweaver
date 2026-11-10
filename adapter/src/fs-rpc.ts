@@ -39,7 +39,7 @@ const HIDDEN_NAMES = new Set([
   ".git",
 ]);
 
-function isHidden(name: string): boolean {
+export function isHidden(name: string): boolean {
   if (HIDDEN_NAMES.has(name)) return true;
   // Any .env.* (e.g. .env.local, .env.production)
   if (name.startsWith(".env.")) return true;

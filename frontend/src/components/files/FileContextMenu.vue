@@ -6,6 +6,8 @@ const props = defineProps<{
   y: number
   type: 'file' | 'directory'
   shareable?: boolean
+  /** Rows selected in the tree; with more than one, only the download applies. */
+  selectedCount?: number
 }>()
 
 const emit = defineEmits<{
@@ -17,6 +19,7 @@ const emit = defineEmits<{
   (e: 'delete'): void
   (e: 'share'): void
   (e: 'add-to-memory'): void
+  (e: 'download'): void
   (e: 'close'): void
 }>()
 
@@ -39,7 +42,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKey)
 })
 
-function pick(action: 'copy-path' | 'rename' | 'move-to' | 'new-file' | 'new-folder' | 'delete' | 'share' | 'add-to-memory') {
+function pick(action: 'copy-path' | 'rename' | 'move-to' | 'new-file' | 'new-folder' | 'delete' | 'share' | 'add-to-memory' | 'download') {
   switch (action) {
     case 'copy-path': emit('copy-path'); break
     case 'rename': emit('rename'); break
@@ -49,6 +52,7 @@ function pick(action: 'copy-path' | 'rename' | 'move-to' | 'new-file' | 'new-fol
     case 'delete': emit('delete'); break
     case 'share': emit('share'); break
     case 'add-to-memory': emit('add-to-memory'); break
+    case 'download': emit('download'); break
   }
   emit('close')
 }
@@ -61,6 +65,14 @@ function pick(action: 'copy-path' | 'rename' | 'move-to' | 'new-file' | 'new-fol
     :style="{ left: x + 'px', top: y + 'px' }"
     role="menu"
   >
+    <template v-if="(selectedCount ?? 1) > 1">
+      <button class="ctx-item" role="menuitem" @click="pick('download')">Download {{ selectedCount }} items (zip)</button>
+    </template>
+    <template v-else>
+    <button class="ctx-item" role="menuitem" @click="pick('download')">
+      {{ props.type === 'directory' ? 'Download as zip' : 'Download' }}
+    </button>
+    <div class="ctx-sep" />
     <button
       v-if="shareable"
       class="ctx-item ctx-item-accent"
@@ -85,6 +97,7 @@ function pick(action: 'copy-path' | 'rename' | 'move-to' | 'new-file' | 'new-fol
     </button>
     <div class="ctx-sep" />
     <button class="ctx-item ctx-danger" role="menuitem" @click="pick('delete')">Delete</button>
+    </template>
   </div>
 </template>
 
