@@ -77,6 +77,16 @@ describe("syncOwner", () => {
     expect(md).toContain("\n---\n\n# RNA extraction SOP\n\n1. Lyse cells in TRIzol.\n");
   });
 
+  it("names a project the same whichever way its folder was encoded", async () => {
+    for (const enc of ["-workspace-local_projects-gaussian-tutorial", "-workspace-local-projects-gaussian-tutorial",
+      "/workspace/local_projects/gaussian-tutorial"]) {
+      await importEntries({ pool, username: "alice", project_dir: enc, builder_version: 2, entries: [entry({ name: `SOP ${enc.length}` })] });
+    }
+    await syncOwner(pool, root, "alice");
+    const projects = await fs.readdir(path.join(root, "users", "alice", "project"));
+    expect(projects).toEqual(["gaussian-tutorial"]);
+  });
+
   it("removes the file of a forgotten memory and rewrites nothing that did not change", async () => {
     const [a, b] = (await importEntries({ pool, username: "alice", project_dir: null, builder_version: 2, entries: [
       entry(), entry({ category: "pipeline", name: "QC", body: "fastqc" }),

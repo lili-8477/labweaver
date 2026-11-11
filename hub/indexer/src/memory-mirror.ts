@@ -43,9 +43,10 @@ function slug(name: string): string {
   return name.toLowerCase().normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "memory";
 }
 
-/** "-workspace-local_projects-ngs" → "ngs"; other encoded dirs lose their leading dash. */
+/** "-workspace-local_projects-ngs", the older "-workspace-local-projects-ngs" and a plain
+ *  "/workspace/local_projects/ngs" all → "ngs"; other dirs lose their leading separators. */
 function projectName(projectDir: string): string {
-  return projectDir.replace(/^-workspace-local_projects-/, "").replace(/^-+/, "") || "project";
+  return projectDir.replace(/^[-/]workspace[-/]local[-_]projects[-/]/, "").replace(/^[-/]+/, "").replace(/\//g, "-") || "project";
 }
 
 function relPath(r: Row): string {
