@@ -41,8 +41,8 @@ describe("migration 0006 — memories", () => {
   it("rejects unknown type via CHECK constraint", async () => {
     await expect(
       pool.query(
-        `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash)
-         VALUES (gen_random_uuid(), 'alice', 'unknown', 'user', 'n', 'd', 'b', '\\x00'::bytea)`,
+        `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash, dir_key)
+         VALUES (gen_random_uuid(), 'alice', 'unknown', 'user', 'n', 'd', 'b', '\\x00'::bytea, 'user/notes')`,
       ),
     ).rejects.toThrow(/check constraint/i);
   });
@@ -50,13 +50,13 @@ describe("migration 0006 — memories", () => {
   it("enforces UNIQUE(username, project_dir, type, content_hash)", async () => {
     const h = "\\xdeadbeef";
     await pool.query(
-      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash)
-       VALUES (gen_random_uuid(), 'alice', '-w-p', 'observation', 'distilled', 'n', 'd', 'b', $1::bytea)`,
+      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash, dir_key)
+       VALUES (gen_random_uuid(), 'alice', '-w-p', 'observation', 'distilled', 'n', 'd', 'b', $1::bytea, 'project/decisions')`,
       [h],
     );
     const dup = await pool.query(
-      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash)
-       VALUES (gen_random_uuid(), 'alice', '-w-p', 'observation', 'distilled', 'n2', 'd2', 'b2', $1::bytea)
+      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash, dir_key)
+       VALUES (gen_random_uuid(), 'alice', '-w-p', 'observation', 'distilled', 'n2', 'd2', 'b2', $1::bytea, 'project/decisions')
        ON CONFLICT (username, project_dir, type, content_hash) DO NOTHING
        RETURNING memory_id`,
       [h],
@@ -67,13 +67,13 @@ describe("migration 0006 — memories", () => {
   it("dedups across NULL project_dir (user-scope memories)", async () => {
     const h = "\\xcafebabe";
     await pool.query(
-      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash)
-       VALUES (gen_random_uuid(), 'bob', NULL, 'user', 'user', 'n', 'd', 'b', $1::bytea)`,
+      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash, dir_key)
+       VALUES (gen_random_uuid(), 'bob', NULL, 'user', 'user', 'n', 'd', 'b', $1::bytea, 'user/preferences')`,
       [h],
     );
     const dup = await pool.query(
-      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash)
-       VALUES (gen_random_uuid(), 'bob', NULL, 'user', 'user', 'n2', 'd2', 'b2', $1::bytea)
+      `INSERT INTO memories (memory_id, username, project_dir, type, source, name, description, body, content_hash, dir_key)
+       VALUES (gen_random_uuid(), 'bob', NULL, 'user', 'user', 'n2', 'd2', 'b2', $1::bytea, 'user/preferences')
        ON CONFLICT (username, project_dir, type, content_hash) DO NOTHING
        RETURNING memory_id`,
       [h],
@@ -111,8 +111,8 @@ describe("migration 0007 — memory_chunks", () => {
 
   it("inserts a chunk and round-trips a 384-dim embedding", async () => {
     const m = await pool.query(
-      `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash)
-       VALUES (gen_random_uuid(), 'alice', 'observation', 'distilled', 'n', 'd', 'b', '\\xab'::bytea)
+      `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash, dir_key)
+       VALUES (gen_random_uuid(), 'alice', 'observation', 'distilled', 'n', 'd', 'b', '\\xab'::bytea, 'user/experience')
        RETURNING memory_id`,
     );
     const mid = m.rows[0].memory_id;
@@ -140,8 +140,8 @@ describe("migration 0007 — memory_chunks", () => {
 
   it("cascades delete from memories to memory_chunks", async () => {
     const m = await pool.query(
-      `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash)
-       VALUES (gen_random_uuid(), 'alice', 'observation', 'distilled', 'n', 'd', 'b', '\\xcc'::bytea)
+      `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash, dir_key)
+       VALUES (gen_random_uuid(), 'alice', 'observation', 'distilled', 'n', 'd', 'b', '\\xcc'::bytea, 'user/experience')
        RETURNING memory_id`,
     );
     const mid = m.rows[0].memory_id;
@@ -192,8 +192,8 @@ describe("migration 0008 — facets, embedder_queue, distill_cursor", () => {
 
   it("cascades embedder_queue delete when memory_chunks row is removed", async () => {
     const m = await pool.query(
-      `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash)
-       VALUES (gen_random_uuid(), 'alice', 'observation', 'distilled', 'n', 'd', 'b', '\\xee'::bytea)
+      `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash, dir_key)
+       VALUES (gen_random_uuid(), 'alice', 'observation', 'distilled', 'n', 'd', 'b', '\\xee'::bytea, 'user/experience')
        RETURNING memory_id`,
     );
     const c = await pool.query(
@@ -208,8 +208,8 @@ describe("migration 0008 — facets, embedder_queue, distill_cursor", () => {
 
   it("cascades memory_facets delete when memories row is removed", async () => {
     const m = await pool.query(
-      `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash)
-       VALUES (gen_random_uuid(), 'alice', 'observation', 'distilled', 'n', 'd', 'b', '\\xff'::bytea)
+      `INSERT INTO memories (memory_id, username, type, source, name, description, body, content_hash, dir_key)
+       VALUES (gen_random_uuid(), 'alice', 'observation', 'distilled', 'n', 'd', 'b', '\\xff'::bytea, 'user/experience')
        RETURNING memory_id`,
     );
     await pool.query(

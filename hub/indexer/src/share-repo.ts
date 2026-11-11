@@ -1,8 +1,5 @@
-import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { insertMemoryRow } from "./distiller-repo.js";
-import { contentHash } from "./content-hash.js";
-import { appendAudit } from "./memory-repo.js";
+import { submitMemoryShareRequest, approveMemoryShareRequest } from "./share-repo-memory.js";
 import {
   submitSkillShareRequest,
   approveSkillShareRequest,
@@ -31,6 +28,8 @@ export interface ShareRequest {
   created_at:       string; // ISO
   decided_at:       string | null;
 }
+
+export { submitMemoryShareRequest };
 
 // ─── row type returned directly from PG ────────────────────────────────────
 
@@ -112,69 +111,7 @@ export async function submitShareRequest(args: SubmitArgs): Promise<SubmitResult
   if (args.kind !== "memory") {
     return { ok: false, reason: "not_implemented" };
   }
-
-  // Single-query ownership check + snapshot fetch. Folding these into one
-  // round-trip both shrinks the race window between checking ownership and
-  // freezing the body, AND turns "not owned / soft-deleted" into "no rows"
-  // — same code path as the source not existing, so we don't leak which.
-  const snap = await args.pool.query<{
-    name:        string;
-    description: string;
-    body:        string;
-    type:        string;
-    source:      string;
-    hit_count:   number;
-    last_hit_at: Date | null;
-    facets:      Record<string, string[]>;
-  }>(
-    `SELECT m.name, m.description, m.body, m.type, m.source,
-            m.hit_count, m.last_hit_at,
-            COALESCE((SELECT jsonb_object_agg(key, vals)
-                        FROM (
-                          SELECT key,
-                                 jsonb_agg(value ORDER BY value COLLATE "C") AS vals
-                            FROM memory_facets
-                           WHERE memory_id = m.memory_id
-                           GROUP BY key
-                        ) g), '{}'::jsonb) AS facets
-       FROM memories m
-      WHERE m.memory_id = $1
-        AND m.username  = $2
-        AND m.deleted_at IS NULL`,
-    [args.ref, args.requester],
-  );
-  if ((snap.rowCount ?? 0) === 0) {
-    return { ok: false, reason: "forbidden" };
-  }
-  const s = snap.rows[0]!;
-  const snapshot_meta: Record<string, unknown> = {
-    name:        s.name,
-    description: s.description,
-    body:        s.body,
-    type:        s.type,
-    source:      s.source,
-    hit_count:   s.hit_count,
-    last_hit_at: s.last_hit_at ? s.last_hit_at.toISOString() : null,
-    facets:      s.facets,
-  };
-
-  const share_id = randomUUID();
-  await args.pool.query(
-    `INSERT INTO share_requests
-       (share_id, artifact_kind, artifact_ref, snapshot_meta,
-        requester, reviewer, requester_note)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [
-      share_id,
-      args.kind,
-      args.ref,
-      snapshot_meta,
-      args.requester,
-      args.managers[0],
-      args.note ?? null,
-    ],
-  );
-  return { ok: true, share_id };
+  return await submitMemoryShareRequest(args);
 }
 
 // ─── 2. listShareRequests ───────────────────────────────────────────────────
@@ -420,86 +357,20 @@ export async function decideShareRequest(args: DecideArgs): Promise<DecideResult
       };
     }
 
-    // Validate snapshot shape before trusting the cast. Older rows or
-    // future externally-written snapshots could land here malformed; we'd
-    // rather emit promotion_failed (auditable, recoverable) than crash
-    // deep inside insertMemoryRow against a NOT NULL constraint.
-    const rawSnap = row.snapshot_meta as Record<string, unknown>;
-    if (
-      typeof rawSnap.name        !== "string" ||
-      typeof rawSnap.description !== "string" ||
-      typeof rawSnap.body        !== "string" ||
-      typeof rawSnap.type        !== "string" ||
-      typeof rawSnap.facets      !== "object" || rawSnap.facets === null
-    ) {
+    const result = await approveMemoryShareRequest(client, row, args.shareId);
+    if (!result.ok) {
       await client.query("ROLLBACK");
-      return {
-        ok:     false,
-        reason: "promotion_failed",
-        detail: "snapshot_meta is missing required string fields (name/description/body/type/facets)",
-      };
+      return result;
     }
-    const snap = rawSnap as {
-      name:        string;
-      description: string;
-      body:        string;
-      type:        string;
-      facets:      Record<string, string[] | undefined>;
-    };
-
-    const hash = contentHash({ body: `${snap.name}\n${snap.body}`, promptVersion: 0 });
-
-    const promotedId = await insertMemoryRow(client, {
-      username:          "__org__",
-      project_dir:       null,
-      source:            "user",
-      type:              snap.type,
-      source_session_id: null,
-      name:              snap.name,
-      description:       snap.description,
-      body:              snap.body,
-      facets:            snap.facets,
-      content_hash:      hash,
-    });
-
-    let promotion_result: Record<string, unknown>;
-
-    if (promotedId !== null) {
-      await appendAudit(client, {
-        memory_id: promotedId,
-        actor:     "__org__",
-        action:    "write",
-        before:    null,
-        after:     {
-          via:            "share_promotion",
-          share_id:       args.shareId,
-          promoted_from:  row.artifact_ref,
-        },
-      });
-      promotion_result = { promoted_memory_id: promotedId, deduped: false };
-    } else {
-      // Dedup hit: look up the existing org row with same content_hash.
-      const existing = await client.query<{ memory_id: string }>(
-        `SELECT memory_id FROM memories
-          WHERE username = '__org__' AND project_dir IS NULL
-            AND type = $1 AND content_hash = $2`,
-        [snap.type, hash],
-      );
-      const existing_memory_id = (existing.rowCount ?? 0) > 0
-        ? existing.rows[0]!.memory_id
-        : null;
-      promotion_result = { deduped: true, existing_memory_id, promoted_memory_id: null };
-    }
-
     await client.query(
       `UPDATE share_requests
           SET status = 'approved', decided_at = now(),
               review_comment = $1, promotion_result = $2
         WHERE share_id = $3`,
-      [args.comment ?? null, promotion_result, args.shareId],
+      [args.comment ?? null, result.promotion_result, args.shareId],
     );
     await client.query("COMMIT");
-    return { ok: true, status: "approved", promotion_result };
+    return { ok: true, status: "approved", promotion_result: result.promotion_result };
   } catch (e) {
     await client.query("ROLLBACK");
     throw e;

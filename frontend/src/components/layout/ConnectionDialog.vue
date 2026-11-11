@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useConnectionStore } from '@/stores/connection'
+import BrandLogo from '@/components/layout/BrandLogo.vue'
 
 const conn = useConnectionStore()
 
@@ -10,7 +11,8 @@ function handleConnect() {
 
 <template>
   <div class="dialog-overlay">
-    <div class="dialog">
+    <div class="dialog glass">
+      <BrandLogo variant="stacked" class="dialog-logo" />
       <div class="dialog-header">
         <h2>Connect to LabWeaver</h2>
         <p class="subtitle">Enter your NATS WebSocket endpoint and service ID</p>
@@ -62,11 +64,15 @@ function handleConnect() {
 <style scoped>
 .dialog-overlay {
   display: flex; align-items: center; justify-content: center;
-  height: 100%; background: var(--bg-primary);
+  height: 100%;
 }
 .dialog {
-  background: var(--bg-secondary); border: 1px solid var(--border);
-  border-radius: var(--radius-lg); padding: 32px; width: 440px; max-width: 90vw;
+  border-radius: 20px; padding: 32px; width: 440px; max-width: 90vw;
+  box-shadow: var(--shadow-lg);
+}
+.dialog-logo {
+  display: block; width: 220px; margin: -8px auto 20px;
+  color: var(--text-primary);
 }
 .dialog-header { margin-bottom: 24px; }
 .dialog-header h2 {
@@ -99,7 +105,7 @@ function handleConnect() {
   font-size: 0.85em; margin-bottom: 16px;
 }
 .btn-primary {
-  width: 100%; padding: 10px; background: var(--accent); color: #fff;
+  width: 100%; padding: 10px; background: var(--accent); color: var(--on-accent);
   border: none; border-radius: var(--radius); font-weight: 600;
   font-size: 0.95em; transition: background 0.15s;
 }

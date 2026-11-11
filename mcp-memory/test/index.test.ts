@@ -1,413 +1,118 @@
-import { describe, expect, it, vi } from "vitest";
-import {
-  callMemorySearch,
-  callMemoryGet,
-  callMemoryTimeline,
-  callMemoryWrite,
-  callMemoryForget,
-  callMemoryDistillSession,
-  toolDefinitions,
-} from "../src/index.js";
+import { describe, expect, it } from "vitest";
+import { callTool, toolDefinitions, type ToolDeps } from "../src/index.js";
 
-// Test approach: handler-export. Each tool exposes a thin function that takes
-// a `deps` bag (fetch + baseUrl + username) and returns an MCP tool result.
-// We never spin up a real HTTP server or stdio transport — the handlers are
-// the only logic worth testing; the SDK plumbing in main() is config.
+// Tools run against a stub fetch that records each request and answers with
+// the scripted Response (or throws, for network errors). The SDK plumbing in
+// main() is config; callTool is the logic.
 
-type FetchArgs = { url: string; init: RequestInit };
+type Sent = { url: URL; method: string; authorization?: string; body: unknown };
 
-// Stub fetch helper: records the call, returns whatever Response the test
-// scripts. We use `Response` (Node 20+ native) so the JSON / status-code
-// behaviour matches production.
-function makeFetchStub(response: Response | Error) {
-  const calls: FetchArgs[] = [];
-  const stub = vi.fn(async (url: string | URL, init?: RequestInit) => {
-    calls.push({ url: String(url), init: init ?? {} });
+function deps(response: Response | Error = Response.json({ ok: true })): ToolDeps & { sent: Sent[] } {
+  const sent: Sent[] = [];
+  const fetchStub = (async (url: string | URL, init?: RequestInit) => {
+    sent.push({
+      url: new URL(String(url)),
+      method: init?.method ?? "GET",
+      authorization: (init?.headers as Record<string, string> | undefined)?.authorization,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
     if (response instanceof Error) throw response;
-    // Each test gets one response; clone so the handler can read the body
-    // even if a future test reuses the same Response object.
     return response.clone();
-  });
-  return { stub: stub as unknown as typeof fetch, calls };
+  }) as typeof fetch;
+  return { fetch: fetchStub, baseUrl: "http://stub:8400", username: "alice", sent };
 }
 
-const baseDeps = (stub: typeof fetch) => ({
-  fetch: stub,
-  baseUrl: "http://stub:8400",
-  username: "alice",
-});
+const payload = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0]!.text);
 
 describe("toolDefinitions", () => {
-  it("exposes exactly the six memory tools", () => {
-    const names = toolDefinitions.map((t) => t.name).sort();
-    expect(names).toEqual([
-      "memory_distill_session",
-      "memory_forget",
-      "memory_get",
-      "memory_search",
-      "memory_timeline",
-      "memory_write",
+  it("exposes the twelve memory tools with object schemas from the contract", () => {
+    expect(toolDefinitions.map((t) => t.name).sort()).toEqual([
+      "memory_context", "memory_dir", "memory_distill_session", "memory_feedback", "memory_forget",
+      "memory_get", "memory_link", "memory_merge", "memory_search", "memory_timeline", "memory_tree", "memory_write",
     ]);
+    for (const t of toolDefinitions) expect(t.inputSchema.type).toBe("object");
   });
 
-  it("each tool has an inputSchema with type=object", () => {
-    for (const t of toolDefinitions) {
-      expect(t.inputSchema.type).toBe("object");
-      expect(t.description).toBeTruthy();
-    }
-  });
-});
-
-describe("callMemorySearch", () => {
-  it("POSTs /memory/search with username from deps and args from caller", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response(JSON.stringify([{ memory_id: "m1", score: 0.9 }]), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    const result = await callMemorySearch(
-      { query: "phylo tree", limit: 5, types: ["user", "project"] },
-      baseDeps(stub),
-    );
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe("http://stub:8400/memory/search");
-    expect(calls[0]!.init.method).toBe("POST");
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body).toEqual({
-      username: "alice",
-      query: "phylo tree",
-      limit: 5,
-      types: ["user", "project"],
-    });
-    expect(result.isError).toBeFalsy();
-    expect(result.content[0]?.type).toBe("text");
-    // The agent reads `content[0].text` — must be JSON-stringified payload.
-    expect(JSON.parse(result.content[0]!.text)).toEqual([
-      { memory_id: "m1", score: 0.9 },
-    ]);
+  it("keeps the agent's view of writes to user and project scope", () => {
+    const write = toolDefinitions.find((t) => t.name === "memory_write")!.inputSchema as { properties: Record<string, { enum?: string[] }> };
+    expect(write.properties.scope!.enum).toEqual(["user", "project"]);
   });
 
-  it("forwards project_dir and since when supplied", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response("[]", { status: 200, headers: { "content-type": "application/json" } }),
-    );
-    await callMemorySearch(
-      { query: "x", project_dir: "-home-alice-proj", since: "2026-01-01T00:00:00Z" },
-      baseDeps(stub),
-    );
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body.project_dir).toBe("-home-alice-proj");
-    expect(body.since).toBe("2026-01-01T00:00:00Z");
-  });
-
-  it("returns isError=true when memory-api responds 400", async () => {
-    const { stub } = makeFetchStub(
-      new Response(
-        JSON.stringify({ error: "validation failed", issues: [{ path: ["query"] }] }),
-        { status: 400, headers: { "content-type": "application/json" } },
-      ),
-    );
-    const result = await callMemorySearch({ query: "" }, baseDeps(stub));
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toContain("validation failed");
-    expect(result.content[0]!.text).toContain("400");
-  });
-
-  it("returns isError=true when fetch throws (network error)", async () => {
-    const { stub } = makeFetchStub(new Error("ECONNREFUSED"));
-    const result = await callMemorySearch({ query: "x" }, baseDeps(stub));
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toContain("ECONNREFUSED");
+  it("presents querystring integers and dates plainly", () => {
+    const tl = toolDefinitions.find((t) => t.name === "memory_timeline")!.inputSchema as { properties: Record<string, object> };
+    expect(tl.properties.limit).toEqual({ type: "integer", minimum: 1, maximum: 500 });
+    expect(tl.properties.since).toEqual({ type: "string", format: "date-time" });
   });
 });
 
-describe("callMemoryGet", () => {
-  it("GETs /memory/:id with the id path-encoded", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response(JSON.stringify({ memory_id: "abc-123", body: "..." }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    const result = await callMemoryGet({ id: "abc-123" }, baseDeps(stub));
-    expect(calls[0]!.url).toBe("http://stub:8400/memory/abc-123");
-    expect(calls[0]!.init.method ?? "GET").toBe("GET");
-    expect(result.isError).toBeFalsy();
-    expect(JSON.parse(result.content[0]!.text).memory_id).toBe("abc-123");
+describe("callTool", () => {
+  it("sends the env user, never one the agent supplies", async () => {
+    const d = deps(Response.json([]));
+    await callTool("memory_search", { query: "qc", username: "mallory", conditions: { cell_line: ["HeLa"] } }, d);
+    expect(d.sent[0]).toMatchObject({ method: "POST", body: { query: "qc", username: "alice", conditions: { cell_line: ["HeLa"] } } });
   });
 
-  it("encodes ids with slashes/spaces so the URL is well-formed", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
-    );
-    await callMemoryGet({ id: "weird id/with slash" }, baseDeps(stub));
-    expect(calls[0]!.url).toBe(
-      "http://stub:8400/memory/" + encodeURIComponent("weird id/with slash"),
-    );
+  it("maps the prompts' argument spellings onto the operation", async () => {
+    const d = deps(Response.json({}));
+    await callTool("memory_get", { id: "a b/c" }, d);
+    expect(d.sent[0]!.url.pathname).toBe("/memory/a%20b%2Fc");
+    expect(d.sent[0]!.url.searchParams.get("username")).toBe("alice");
+    expect(d.sent[0]!.url.searchParams.get("use")).toBe("true");
+
+    await callTool("memory_dir", { project_dir: "-w" }, d);
+    expect(d.sent[1]!.url.pathname).toBe("/memory/dirs");
+    await callTool("memory_dir", { dir: "project/decisions", limit: 5 }, d);
+    expect(d.sent[2]!.url.pathname).toBe("/memory/dirs/project%2Fdecisions");
+    expect(d.sent[2]!.url.searchParams.get("limit")).toBe("5");
+    expect(d.sent[2]!.url.searchParams.get("username")).toBe("alice");
   });
 
-  it("surfaces 404 from memory-api as an MCP error", async () => {
-    const { stub } = makeFetchStub(
-      new Response(JSON.stringify({ error: "memory not found" }), {
-        status: 404,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    const result = await callMemoryGet({ id: "missing" }, baseDeps(stub));
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toContain("memory not found");
-  });
-});
-
-describe("callMemoryTimeline", () => {
-  it("GETs /memory/timeline with username always set in querystring", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response("[]", { status: 200, headers: { "content-type": "application/json" } }),
-    );
-    await callMemoryTimeline(
-      {
-        project_dir: "-home-alice-proj",
-        since: "2026-01-01T00:00:00Z",
-        until: "2026-02-01T00:00:00Z",
-        limit: 25,
-      },
-      baseDeps(stub),
-    );
-    const url = new URL(calls[0]!.url);
-    expect(url.pathname).toBe("/memory/timeline");
-    expect(url.searchParams.get("username")).toBe("alice");
-    expect(url.searchParams.get("project_dir")).toBe("-home-alice-proj");
-    expect(url.searchParams.get("since")).toBe("2026-01-01T00:00:00Z");
-    expect(url.searchParams.get("until")).toBe("2026-02-01T00:00:00Z");
-    expect(url.searchParams.get("limit")).toBe("25");
+  it("merges by PUTting the new text as the env user with merge=true", async () => {
+    const d = deps();
+    await callTool("memory_merge", { memory_id: "m1", name: "n", description: "d", body: "b" }, d);
+    expect(d.sent[0]).toMatchObject({ method: "PUT", body: { actor: "alice", name: "n", body: "b", merge: true } });
+    expect(d.sent[0]!.url.pathname).toBe("/memory/m1");
   });
 
-  it("omits unset optional params from the querystring", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response("[]", { status: 200, headers: { "content-type": "application/json" } }),
-    );
-    await callMemoryTimeline({}, baseDeps(stub));
-    const url = new URL(calls[0]!.url);
-    expect(url.searchParams.get("username")).toBe("alice");
-    expect(url.searchParams.has("project_dir")).toBe(false);
-    expect(url.searchParams.has("since")).toBe(false);
-    expect(url.searchParams.has("until")).toBe(false);
-    expect(url.searchParams.has("limit")).toBe(false);
+  it("refuses org writes and invalid arguments without a request", async () => {
+    const d = deps();
+    const org = await callTool("memory_write", { scope: "org", type: "user", name: "n", description: "", body: "" }, d);
+    expect(org.isError).toBe(true);
+    const noRun = await callTool("memory_distill_session", { claims: [] }, d);
+    expect(noRun).toMatchObject({ isError: true });
+    expect(noRun.content[0]!.text).toMatch(/invalid arguments[\s\S]*run/);
+    expect((await callTool("memory_forget", {}, d)).isError).toBe(true);
+    expect(d.sent).toEqual([]);
+  });
+
+  it("turns API and network failures into tool errors", async () => {
+    const api = await callTool("memory_get", { id: "x" }, deps(Response.json({ error: "memory not found" }, { status: 404 })));
+    expect(api).toMatchObject({ isError: true });
+    expect(api.content[0]!.text).toMatch(/memory_get failed: HTTP 404 — .*memory not found/);
+    const net = await callTool("memory_link", { src_id: crypto.randomUUID(), dst_id: crypto.randomUUID(), rel: "SUPPORTS" }, deps(new Error("ECONNREFUSED")));
+    expect(net.content[0]!.text).toBe("memory_link network error: ECONNREFUSED");
+  });
+
+  it("gives the agent the tree's counts and topics without the memory leaves", async () => {
+    const tree = { dirs: [{ dir_key: "user/notes" }], memories: [{}, {}], topics: [{ topic: "tool:x" }], thresholds: { memories: 3, successes: 2 } };
+    const r = await callTool("memory_tree", {}, deps(Response.json(tree)));
+    expect(payload(r)).toEqual({ memories_total: 2, dirs: tree.dirs, topics: tree.topics, thresholds: tree.thresholds });
+  });
+
+  it("forwards the scientific tools to their routes", async () => {
+    const d = deps();
+    await callTool("memory_context", { query: "qc for HeLa" }, d);
+    await callTool("memory_distill_session", { run: { subject: "s", statement: "t" } }, d);
+    expect(d.sent.map((s) => s.url.pathname)).toEqual(["/memory/bundle", "/memory/distill"]);
+    expect(d.sent[1]!.body).toMatchObject({ username: "alice", run: { subject: "s" }, claims: [], experiences: [] });
   });
 });
 
-describe("callMemoryWrite", () => {
-  it("POSTs /memory/write with scope=user", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response(JSON.stringify({ memory_id: "m-new" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    const result = await callMemoryWrite(
-      {
-        scope: "user",
-        type: "user",
-        name: "favourite tools",
-        description: "alice prefers seqkit",
-        body: "Alice prefers seqkit over samtools subcommands.",
-        facets: { topic: ["bioinformatics"] },
-      },
-      baseDeps(stub),
-    );
-    expect(calls[0]!.url).toBe("http://stub:8400/memory/write");
-    expect(calls[0]!.init.method).toBe("POST");
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body).toEqual({
-      username: "alice",
-      scope: "user",
-      type: "user",
-      name: "favourite tools",
-      description: "alice prefers seqkit",
-      body: "Alice prefers seqkit over samtools subcommands.",
-      facets: { topic: ["bioinformatics"] },
-    });
-    expect(JSON.parse(result.content[0]!.text)).toEqual({ memory_id: "m-new" });
-  });
-
-  it("POSTs scope=project with project_dir", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response(JSON.stringify({ memory_id: "p-new" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    await callMemoryWrite(
-      {
-        scope: "project",
-        project_dir: "-home-alice-proj",
-        type: "project",
-        name: "bam→fastq pipeline",
-        description: "...",
-        body: "...",
-      },
-      baseDeps(stub),
-    );
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body.scope).toBe("project");
-    expect(body.project_dir).toBe("-home-alice-proj");
-  });
-
-  it("rejects scope=org WITHOUT making an HTTP call", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
-    );
-    const result = await callMemoryWrite(
-      {
-        scope: "org",
-        type: "reference",
-        name: "x",
-        description: "x",
-        body: "x",
-      },
-      baseDeps(stub),
-    );
-    expect(calls).toHaveLength(0);
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toMatch(/org-scope writes are admin-only/);
-  });
-
-  it("surfaces 400 validation errors from memory-api", async () => {
-    const { stub } = makeFetchStub(
-      new Response(
-        JSON.stringify({ error: "validation failed", issues: [{ path: ["body"] }] }),
-        { status: 400, headers: { "content-type": "application/json" } },
-      ),
-    );
-    const result = await callMemoryWrite(
-      { scope: "user", type: "user", name: "x", description: "x", body: "" },
-      baseDeps(stub),
-    );
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toContain("validation failed");
-  });
-});
-
-describe("callMemoryDistillSession", () => {
-  const validSummary = { name: "n", description: "d", body: "b" };
-  const validObs = [{
-    type: "decision", name: "n", description: "d", body: "b", facets: { tool: ["seqkit"] },
-  }];
-
-  it("POSTs /memory/distill with username from deps and payload from caller", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response(JSON.stringify({ ok: true, written: 2 }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    const result = await callMemoryDistillSession(
-      {
-        project_dir: "-home-alice-proj",
-        source_session_id: "abc-123",
-        summary: validSummary,
-        observations: validObs,
-      },
-      baseDeps(stub),
-    );
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe("http://stub:8400/memory/distill");
-    expect(calls[0]!.init.method).toBe("POST");
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body).toEqual({
-      username: "alice",
-      project_dir: "-home-alice-proj",
-      source_session_id: "abc-123",
-      summary: validSummary,
-      observations: validObs,
-    });
-    expect(result.isError).toBeFalsy();
-    expect(JSON.parse(result.content[0]!.text)).toEqual({ ok: true, written: 2 });
-  });
-
-  it("omits project_dir/source_session_id when not supplied", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
-    );
-    await callMemoryDistillSession(
-      { summary: validSummary, observations: [] },
-      baseDeps(stub),
-    );
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body.username).toBe("alice");
-    expect(body.observations).toEqual([]);
-    expect("project_dir" in body).toBe(false);
-    expect("source_session_id" in body).toBe(false);
-  });
-
-  it("rejects missing summary WITHOUT making an HTTP call", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
-    );
-    const result = await callMemoryDistillSession(
-      { observations: [] },
-      baseDeps(stub),
-    );
-    expect(calls).toHaveLength(0);
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toMatch(/'summary' object is required/);
-  });
-
-  it("rejects non-array observations WITHOUT making an HTTP call", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
-    );
-    const result = await callMemoryDistillSession(
-      { summary: validSummary, observations: "nope" },
-      baseDeps(stub),
-    );
-    expect(calls).toHaveLength(0);
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toMatch(/'observations' array is required/);
-  });
-
-  it("surfaces 400 validation errors from memory-api", async () => {
-    const { stub } = makeFetchStub(
-      new Response(
-        JSON.stringify({ error: "validation failed", issues: [{ path: ["summary", "body"] }] }),
-        { status: 400, headers: { "content-type": "application/json" } },
-      ),
-    );
-    const result = await callMemoryDistillSession(
-      { summary: validSummary, observations: [] },
-      baseDeps(stub),
-    );
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toContain("validation failed");
-  });
-});
-
-describe("callMemoryForget", () => {
-  it("POSTs /memory/forget with username from deps and memory_id from caller", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    const result = await callMemoryForget({ memory_id: "abc-123" }, baseDeps(stub));
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe("http://stub:8400/memory/forget");
-    expect(calls[0]!.init.method).toBe("POST");
-    const body = JSON.parse(calls[0]!.init.body as string);
-    expect(body).toEqual({ username: "alice", memory_id: "abc-123" });
-    expect(result.isError).toBeFalsy();
-    expect(JSON.parse(result.content[0]!.text)).toEqual({ ok: true });
-  });
-
-  it("returns isError without calling fetch when memory_id is missing", async () => {
-    const { stub, calls } = makeFetchStub(
-      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
-    );
-    const result = await callMemoryForget({}, baseDeps(stub));
-    expect(calls).toHaveLength(0);
-    expect(result.isError).toBe(true);
-    expect(result.content[0]!.text).toContain("'memory_id' is required");
+describe("caller token", () => {
+  it("sends the container's SERVICE_ID as a Bearer header when it has one", async () => {
+    const d = deps(Response.json([]));
+    await callTool("memory_search", { query: "qc" }, { ...d, token: "sid-alice" });
+    await callTool("memory_search", { query: "qc" }, d);
+    expect(d.sent.map((r) => r.authorization)).toEqual(["Bearer sid-alice", undefined]);
   });
 });

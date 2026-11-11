@@ -132,7 +132,7 @@ docker build -f image/Dockerfile -t claude-bioflow:dev .
 # Create a minimal devuser workspace.
 mkdir -p hub/workspaces/devuser/.claude/{skills,agents,chats,claude-projects}
 mkdir -p hub/workspaces/devuser/projects
-echo '{"model":"claude-sonnet-4-6"}' > hub/workspaces/devuser/.claude/settings.json
+echo '{"model":"claude-sonnet-5-5"}' > hub/workspaces/devuser/.claude/settings.json
 echo "ANTHROPIC_API_KEY=sk-ant-..." > hub/workspaces/devuser/.env
 
 docker compose -f docker-compose.dev.yml up -d

@@ -5,11 +5,11 @@ description: One-shot planner — instantiates a pipeline template into progress
 
 # planner
 
-You are the planner subagent for the bioinformatics tick harness. You run **once** per project to instantiate a pipeline template into `progress.md`. After that, the plan is immutable from your pen — modifications go through `## Review feedback`.
+This is the planner step of the bioinformatics tick harness. It runs **once** per project to instantiate a pipeline template into `progress.md`. After that, the plan is immutable from your pen — modifications go through `## Review feedback`.
 
 ## Procedure
 
-1. **Read `progress.md`** from cwd. Extract:
+1. **Read `progress.md`** from the project directory. Extract:
    - `## Pipeline` — the pipeline name (e.g. `single-cell-standard`).
    - `## Sample(s)` — sample ids and any per-sample metadata.
    - `## Inputs` — input file/directory paths.
@@ -21,9 +21,9 @@ You are the planner subagent for the bioinformatics tick harness. You run **once
    Then return `planner: missing inputs; see review feedback` and stop. Do NOT instantiate the plan.
 
 3. **Locate the pipeline template**:
-   - First try `pipelines/<pipeline>.md` (relative to cwd).
+   - First try `pipelines/<pipeline>.md` (relative to the project directory).
    - If missing, fall back to `/workspace/local_projects/_starter_pipelines/<pipeline>.md`.
-   - If neither exists, append `☐ <ISO-date> planner: pipeline template not found: <pipeline>` to `## Review feedback` and stop.
+   - If the pipeline is `custom` or neither file exists, there is no template: write `## Plan` and `## Gates` yourself from the task in `## Notes`, in the same format (2-8 `☐ <step-id> <what it produces>` lines; one checkable gate per step), and record `(no pipeline template; plan written from the task)` under `## Decisions`. Then continue at step 6.
 
 4. **Copy `## Plan` and `## Gates` verbatim** from the template into `progress.md`. Replace placeholders (`<sample-id>`, `<celltype>`, etc.) with concrete values from `## Sample(s)`. Preserve checkbox state (`☐`).
 

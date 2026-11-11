@@ -10,7 +10,7 @@ import type {
 } from '@/types/chpc-bridge'
 
 export const useChpcBridgeStore = defineStore('chpcBridge', () => {
-  const status = ref<BridgeStatus>({ kind: 'down' })
+  const status = ref<BridgeStatus>({ kind: 'down', user: '' })
   const phase = ref<OpenPhase>('idle')
   const error = ref<string | null>(null)
   const pendingRequestId = ref<string | null>(null)
@@ -29,7 +29,7 @@ export const useChpcBridgeStore = defineStore('chpcBridge', () => {
     } catch (e) {
       // Treat RPC failure as "not connected" rather than blocking the UI.
       console.warn('[chpc] status failed:', e)
-      status.value = { kind: 'down' }
+      status.value = { kind: 'down', user: '' }
     }
   }
 
@@ -60,7 +60,7 @@ export const useChpcBridgeStore = defineStore('chpcBridge', () => {
     }
   }
 
-  async function open(password: string, duo: DuoChoice): Promise<void> {
+  async function open(user: string, password: string, duo: DuoChoice): Promise<void> {
     const requestId = crypto.randomUUID()
     pendingRequestId.value = requestId
     phase.value = 'spawned'
@@ -68,7 +68,7 @@ export const useChpcBridgeStore = defineStore('chpcBridge', () => {
     submitting.value = true
     subscribeIfNeeded()
     try {
-      await chpcBridgeService.open({ password, duo, requestId })
+      await chpcBridgeService.open({ user, password, duo, requestId })
     } catch (e) {
       error.value = (e as Error).message
       phase.value = 'error'
@@ -89,6 +89,8 @@ export const useChpcBridgeStore = defineStore('chpcBridge', () => {
   const isUp = computed(() => status.value.kind === 'up')
   const isDown = computed(() => status.value.kind === 'down')
   const isUnprovisioned = computed(() => status.value.kind === 'unprovisioned')
+  /** No ssh client in the container: nothing the user can fix from the UI. */
+  const noSsh = computed(() => status.value.kind === 'unprovisioned' && status.value.reason === 'no-ssh')
   const inFlight = computed(() => pendingRequestId.value !== null)
 
   return {
@@ -101,6 +103,7 @@ export const useChpcBridgeStore = defineStore('chpcBridge', () => {
     isUp,
     isDown,
     isUnprovisioned,
+    noSsh,
     inFlight,
     // actions
     refresh,

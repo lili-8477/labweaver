@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 import { extractTextContent } from '@/utils/content'
+import { splitSelection } from '@/utils/selection'
 import type { ChatMessage } from '@/types'
 
 const props = defineProps<{
@@ -13,6 +14,8 @@ const isUser = computed(() => props.message.role === 'user')
 const isTool = computed(() => props.message.role === 'tool')
 
 const textContent = computed(() => extractTextContent(props.message.content))
+// A user message can carry text selected in an artifact (utils/selection.ts).
+const userParts = computed(() => splitSelection(textContent.value))
 
 const renderedContent = computed(() => {
   const text = textContent.value
@@ -34,10 +37,9 @@ const toolName = computed(() => {
 
 <template>
   <div class="chat-message" :class="{ user: isUser, assistant: !isUser && !isTool, tool: isTool }">
-    <div class="avatar">
+    <div v-if="isUser || isTool" class="avatar">
       <span v-if="isUser">U</span>
-      <span v-else-if="isTool">T</span>
-      <span v-else>A</span>
+      <span v-else>T</span>
     </div>
     <div class="bubble">
       <!-- Tool message -->
@@ -47,7 +49,13 @@ const toolName = computed(() => {
       </template>
       <!-- User message -->
       <template v-else-if="isUser">
-        <div class="content user-text">{{ textContent }}</div>
+        <div class="content user-text">
+          <div v-if="userParts.selection" class="selection-quote" :title="userParts.selection.text">
+            <div class="selection-quote-where">
+              {{ userParts.selection.source }}<template v-if="userParts.selection.where"> · {{ userParts.selection.where }}</template>
+            </div>
+            <div class="selection-quote-text">{{ userParts.selection.text }}</div>
+          </div>{{ userParts.rest }}</div>
       </template>
       <!-- Assistant message -->
       <template v-else>
@@ -63,7 +71,8 @@ const toolName = computed(() => {
   display: flex; gap: 10px; margin-bottom: 16px; max-width: 85%;
 }
 .chat-message.user { margin-left: auto; flex-direction: row-reverse; }
-.chat-message.assistant { margin-right: auto; }
+/* Agent answers read as plain text across the panel (no bubble), as in v2. */
+.chat-message.assistant { max-width: 100%; margin-bottom: 6px; }
 .chat-message.tool { margin-right: auto; max-width: 70%; }
 
 .avatar {
@@ -71,8 +80,7 @@ const toolName = computed(() => {
   display: flex; align-items: center; justify-content: center;
   font-size: 0.8em; font-weight: 600;
 }
-.user .avatar { background: var(--accent); color: #fff; }
-.assistant .avatar { background: var(--bg-tertiary); color: var(--text-secondary); }
+.user .avatar { background: var(--accent); color: var(--on-accent); }
 .tool .avatar { background: var(--bg-tertiary); color: var(--text-muted); font-size: 0.7em; }
 
 .bubble {
@@ -80,19 +88,28 @@ const toolName = computed(() => {
   line-height: 1.5; min-width: 0;
 }
 .user .bubble {
-  background: var(--accent); color: #fff;
+  background: var(--accent); color: var(--on-accent);
   border-bottom-right-radius: 4px;
 }
-.assistant .bubble {
-  background: var(--bg-secondary); border: 1px solid var(--border);
-  border-bottom-left-radius: 4px;
-}
+.assistant .bubble { padding: 0; border-radius: 0; line-height: 1.6; }
+.assistant .markdown-body > :deep(:first-child) { margin-top: 0; }
+.assistant .markdown-body > :deep(:last-child) { margin-bottom: 0; }
 .tool .bubble {
   background: var(--bg-tertiary); border: 1px solid var(--border);
   border-bottom-left-radius: 4px; font-size: 0.85em;
 }
 
 .user-text { white-space: pre-wrap; word-break: break-word; }
+.selection-quote {
+  margin-bottom: 6px; padding: 4px 8px;
+  border-left: 2px solid currentColor; border-radius: 4px;
+  background: rgba(0, 0, 0, 0.18); font-size: 0.85em;
+}
+.selection-quote-where { opacity: 0.8; margin-bottom: 2px; }
+.selection-quote-text {
+  font-family: var(--font-mono); white-space: pre-wrap;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
 
 .tool-label {
   font-size: 0.75em; color: var(--text-muted); font-family: var(--font-mono);

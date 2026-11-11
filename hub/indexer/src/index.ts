@@ -21,8 +21,23 @@ import {
   listMemories,
   getAuditTrail,
   getMetrics,
+  listDirs,
+  getDir,
+  memoryTree,
+  recordFeedback,
+  recordUse,
+  usedSince,
 } from "./memory-repo.js";
+import { memoryGraph } from "./memory-graph.js";
 import { writeDistillation } from "./distiller-repo.js";
+import { importedFiles, importEntries } from "./memory-import.js";
+import { startMirror } from "./memory-mirror.js";
+import { createBuildJob, listBuildJobs, updateBuildJob } from "./memory-build-jobs.js";
+import { proposeExperiences } from "./experience-promotion.js";
+import { linkMemories } from "./lineage-repo.js";
+import { buildBundle } from "./context-bundle.js";
+import { consolidate } from "./consolidate.js";
+import { checkCallers } from "./caller-check.js";
 import { shareRoutesPlugin } from "./share-api.js";
 import { glassesRoutesPlugin } from "./glasses-api.js";
 import { execRunner, runMuxOnce } from "./glasses-mux.js";
@@ -56,6 +71,8 @@ async function main(): Promise<void> {
     lockKey: cfg.migrationLockKey,
   });
   logger.info({ workspacesRoot: cfg.workspacesRoot }, "migrations applied — starting watcher");
+
+  if (!cfg.callerMapFile) throw new Error("CALLER_MAP_FILE is required (hub/service-map.conf, mounted read-only)");
 
   const handle = startWatcher({
     pool,
@@ -92,6 +109,14 @@ async function main(): Promise<void> {
   };
 
   startEmbedderLoop();
+
+  // The read-only markdown copy of memory, mounted into each user container.
+  if (cfg.memoryMirrorRoot) {
+    startMirror({
+      pool, root: cfg.memoryMirrorRoot,
+      log: (msg, err) => (err ? logger.warn({ err }, msg) : logger.info(msg)),
+    });
+  }
 
   const startCleanupLoop = (): void => {
     const intervalMs = cfg.shareCleanupIntervalHours * 60 * 60 * 1000;
@@ -162,8 +187,15 @@ async function main(): Promise<void> {
   const app = buildApp({
     pool,
     embedderClient: {
-      embedTexts: (texts) => embedTexts({ baseUrl: cfg.embedderUrl, texts }),
+      // Request-path embeds (search, similarity check) must finish inside the
+      // adapter's 5 s memory RPC timeout; on failure both fall back (FTS /
+      // write without the check) instead of hanging.
+      embedTexts: (texts, kind) => embedTexts({ baseUrl: cfg.embedderUrl, texts, kind, timeoutMs: 3_000 }),
     },
+    mergeSimilarity: cfg.memoryMergeSimilarity,
+    managers:        cfg.memoryOrgManagers,
+    clearance:       cfg.memoryClearance,
+    workspacesRoot:  cfg.workspacesRoot,
     repo: {
       searchMemories,
       getMemory,
@@ -176,9 +208,26 @@ async function main(): Promise<void> {
       listMemories,
       getAuditTrail,
       getMetrics,
+      listDirs,
+      getDir,
+      memoryTree,
+      recordFeedback,
+      recordUse,
+      usedSince,
+      proposeExperiences,
       writeDistillation,
+      linkMemories,
+      buildBundle,
+      consolidate,
+      memoryGraph,
+      importEntries,
+      importedFiles,
+      createBuildJob,
+      updateBuildJob,
+      listBuildJobs,
     },
   });
+  checkCallers(app, { mapFile: cfg.callerMapFile, warn: (obj, msg) => logger.warn(obj, msg) });
   await app.register(shareRoutesPlugin({
     pool,
     managers:            cfg.memoryOrgManagers,

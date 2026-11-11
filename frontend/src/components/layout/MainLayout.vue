@@ -7,6 +7,7 @@ import ChatSidebar from '@/components/chat/ChatSidebar.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 import ChpcBridgePill from '@/components/layout/ChpcBridgePill.vue'
 import ModelSelect from '@/components/layout/ModelSelect.vue'
+import BrandLogo from '@/components/layout/BrandLogo.vue'
 import FileTree from '@/components/files/FileTree.vue'
 import FileViewer from '@/components/files/FileViewer.vue'
 import H5adViewer from '@/components/files/H5adViewer.vue'
@@ -15,18 +16,32 @@ import AgentPanel from '@/components/agents/AgentPanel.vue'
 import MemoryPanel from '@/components/memory/MemoryPanel.vue'
 import SharePanel from '@/components/share/SharePanel.vue'
 import SkillsPanel from '@/components/skills/SkillsPanel.vue'
+import ManagerPanel from '@/components/manager/ManagerPanel.vue'
+import { fleetService } from '@/services/fleet'
 import { useNotebookStore } from '@/stores/notebook'
 import { useShareStore } from '@/stores/share'
 import { useSkillsStore } from '@/stores/skills'
+import { useMemoryStore } from '@/stores/memory'
+import MemoryImport from '@/components/memory/MemoryImport.vue'
+import { applyTheme, loadTheme, type Theme } from '@/utils/theme'
+import { useSelectionStore } from '@/stores/selection'
+import { watchDomSelections } from '@/utils/selection'
 
 const conn = useConnectionStore()
+
+const theme = ref<Theme>(loadTheme())
+function toggleTheme() {
+  theme.value = theme.value === 'dark' ? 'colorful' : 'dark'
+  applyTheme(theme.value)
+}
 const chat = useChatStore()
 const files = useFileStore()
 const nb = useNotebookStore()
 const shareStore = useShareStore()
 const skillsStore = useSkillsStore()
+const memoryStore = useMemoryStore()
 
-type RightPanel = 'none' | 'files' | 'notebook' | 'agents' | 'memory' | 'share' | 'skills'
+type RightPanel = 'none' | 'files' | 'notebook' | 'agents' | 'memory' | 'share' | 'skills' | 'manager'
 
 const STORAGE_KEY = 'bioflow-layout'
 interface LayoutState {
@@ -52,6 +67,8 @@ const layout = ref<LayoutState>(
   })(),
 )
 const rightPanel = ref<RightPanel>('none')
+// Button visibility only — the adapter refuses fleet_status unless it is the manager.
+const isManager = ref(false)
 
 function persist() {
   try {
@@ -61,8 +78,10 @@ function persist() {
 
 onMounted(async () => {
   await chat.loadChats()
+  chat.loadProjects()
   files.loadTree()
   shareStore.loadCapabilities()
+  fleetService.isManager().then(v => { isManager.value = v })
 })
 
 function togglePanel(panel: RightPanel) {
@@ -124,13 +143,18 @@ function onMouseUp() {
   }
 }
 
+const selection = useSelectionStore()
+let stopSelectionWatch: (() => void) | null = null
+
 onMounted(() => {
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
+  stopSelectionWatch = watchDomSelections(selection.set)
 })
 onUnmounted(() => {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
+  stopSelectionWatch?.()
 })
 
 const connStatus = computed(() => {
@@ -143,7 +167,7 @@ const connStatus = computed(() => {
 <template>
   <div class="main-layout">
     <!-- Top bar -->
-    <header class="topbar">
+    <header class="topbar glass">
       <div class="topbar-left">
         <button
           class="sidebar-toggle"
@@ -153,8 +177,7 @@ const connStatus = computed(() => {
         >
           <span class="hamburger">☰</span>
         </button>
-        <img class="logo-mark" src="/labweaver-mark.svg" alt="" />
-        <span class="logo">LabWeaver</span>
+        <span class="logo"><BrandLogo class="logo-mark" /><span><b>LAB</b>WEAVER</span></span>
         <span class="conn-badge" :class="connStatus.cls">
           <span class="status-dot"></span>
           {{ connStatus.label }}
@@ -203,7 +226,19 @@ const connStatus = computed(() => {
           @click="togglePanel('notebook')"
           title="Notebook"
         >Notebook</button>
+        <button
+          v-if="isManager"
+          class="tb-btn"
+          :class="{ active: rightPanel === 'manager' }"
+          @click="togglePanel('manager')"
+          title="Manager: all user containers"
+        >Manager</button>
         <span class="divider" />
+        <button
+          class="tb-btn theme-btn"
+          :title="theme === 'dark' ? 'Switch to the colorful theme' : 'Switch to the dark theme'"
+          @click="toggleTheme"
+        >{{ theme === 'dark' ? '◐ Dark' : '◑ Colorful' }}</button>
         <button class="tb-btn disconnect" @click="conn.disconnect()" title="Disconnect">
           Disconnect
         </button>
@@ -215,7 +250,7 @@ const connStatus = computed(() => {
       <!-- Left sidebar (collapsible) -->
       <aside
         v-if="!layout.sidebarCollapsed"
-        class="sidebar"
+        class="sidebar glass"
         :style="{ width: layout.sidebarWidth + 'px' }"
       >
         <ChatSidebar />
@@ -227,7 +262,7 @@ const connStatus = computed(() => {
         title="Drag to resize"
       />
 
-      <main class="chat-main">
+      <main class="chat-main glass">
         <ChatPanel />
       </main>
 
@@ -242,13 +277,14 @@ const connStatus = computed(() => {
             :aria-label="`Hide ${rightPanel} panel`"
           >›</button>
         </div>
-        <aside class="right-panel" :style="{ width: layout.rightPanelWidth + 'px' }">
+        <aside class="right-panel glass" :style="{ width: layout.rightPanelWidth + 'px' }">
           <FileTree v-if="rightPanel === 'files'" @open-file="handleFileOpen" />
           <NotebookEditor v-else-if="rightPanel === 'notebook'" />
           <AgentPanel v-else-if="rightPanel === 'agents'" />
           <MemoryPanel v-else-if="rightPanel === 'memory'" />
           <SharePanel v-else-if="rightPanel === 'share'" />
           <SkillsPanel v-else-if="rightPanel === 'skills'" />
+          <ManagerPanel v-else-if="rightPanel === 'manager'" />
         </aside>
       </template>
     </div>
@@ -258,20 +294,27 @@ const connStatus = computed(() => {
 
     <!-- h5ad viewer overlay (single-cell / spatial AnnData) -->
     <H5adViewer v-if="files.openH5ad" />
+    <!-- Import into memory: opened from the Memory panel or a file's context menu. -->
+    <MemoryImport v-if="memoryStore.importPath !== null" />
   </div>
 </template>
 
 <style scoped>
-.main-layout { display: flex; flex-direction: column; height: 100%; }
+.main-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 100%;
+  padding: var(--space-2);
+}
 
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 44px;
-  padding: 0 14px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
+  height: 48px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
   flex-shrink: 0;
 }
 .topbar-left { display: flex; align-items: center; gap: 10px; }
@@ -296,28 +339,25 @@ const connStatus = computed(() => {
 }
 .hamburger { font-size: 14px; }
 
-.logo-mark {
-  height: 22px;
-  width: auto;
-  flex: none;
-}
 .logo {
-  font-family: var(--font-display);
-  font-weight: var(--fw-semi);
-  font-size: var(--text-lg);
-  letter-spacing: -0.015em;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'Poppins', var(--font-sans);
+  font-weight: 300;
+  font-size: var(--text-md);
+  letter-spacing: 0.08em;
   color: var(--text-primary);
 }
-.logo::first-letter {
-  color: var(--accent);
-}
+.logo b { font-weight: 700; margin-right: 0.08em; }
+.logo-mark { width: 22px; height: 24px; }
 
 .conn-badge {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 2px 8px;
-  border-radius: 10px;
+  border-radius: var(--radius-pill);
   font-size: 0.72em;
   background: var(--bg-tertiary);
   color: var(--text-muted);
@@ -343,7 +383,7 @@ const connStatus = computed(() => {
   padding: 4px 12px;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: var(--radius);
+  border-radius: var(--radius-pill);
   color: var(--text-secondary);
   font-size: 0.82em;
   transition: all 0.12s;
@@ -367,29 +407,42 @@ const connStatus = computed(() => {
 
 .sidebar {
   flex-shrink: 0;
-  background: var(--bg-secondary);
-  overflow-y: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
-.chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-
-.right-panel {
-  flex-shrink: 0;
-  background: var(--bg-secondary);
+.chat-main {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
+.right-panel {
+  flex-shrink: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The gap between panes is the drag handle; a hairline lights up on hover. */
 .resizer {
   position: relative;
-  width: 4px;
-  background: var(--border);
+  width: var(--space-2);
   cursor: col-resize;
   flex-shrink: 0;
-  transition: background 0.1s;
 }
-.resizer:hover,
-.resizer:active {
+.resizer::after {
+  content: '';
+  position: absolute;
+  inset: 20% 3px;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  transition: background 0.12s;
+}
+.resizer:hover::after,
+.resizer:active::after {
   background: var(--accent);
 }
 
@@ -397,13 +450,13 @@ const connStatus = computed(() => {
 .resizer-right .fold-handle {
   position: absolute;
   top: 44px;
-  left: -11px;
+  left: -7px;
   width: 18px;
   height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-tertiary);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-right: none;
   border-radius: 10px 0 0 10px;
@@ -429,7 +482,7 @@ const connStatus = computed(() => {
 .panel-tab-badge {
   margin-left: 4px;
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
   border-radius: var(--radius-pill);
   padding: 0 6px;
   font-size: var(--text-2xs);

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Pinned to the top of the chat panel while the session has a self-driving
-// plan, OR while harness mode is currently on. Three visual states:
+// plan, OR while an auto-mode turn is running. Three visual states:
 //
 //   - running  (active=true): pulsing accent dot, "Self-driving mode" title,
 //                            "routed via /tick" hint, live progress polled.
@@ -19,7 +19,7 @@ import { computed, ref, watch, onMounted } from 'vue'
 import type { HarnessProgress, HarnessStep } from '@/types'
 
 const props = defineProps<{
-  active: boolean                       // harness mode marker file present
+  active: boolean                       // an auto-mode turn is running
   progress: HarnessProgress | null      // parsed progress.md for THIS chat
   projectName: string | null            // matched project dir
   chatId: string | null                 // for per-chat fold persistence
@@ -134,12 +134,12 @@ watch(() => props.chatId, (id) => loadCollapsed(id))
           <span class="step-name">{{ s.name }}</span>
           <span v-if="s.description" class="step-desc">{{ s.description }}</span>
           <span v-if="s.reviewed" class="step-badge reviewed-badge">reviewed</span>
-          <span v-else-if="active && i === progress.nextStepIndex" class="step-badge next-badge">next</span>
+          <span v-else-if="active && i === progress.nextStepIndex" class="step-badge next-badge">{{ progress.nextAgent === 'tick-reviewer' ? 'checking' : 'next' }}</span>
         </li>
       </ol>
 
       <div v-if="progress && progress.pendingFeedback > 0 && active" class="feedback-note">
-        ⚠ {{ progress.pendingFeedback }} unaddressed review note{{ progress.pendingFeedback === 1 ? '' : 's' }} — executor will handle on the next tick.
+        ⚠ {{ progress.pendingFeedback }} unaddressed review note{{ progress.pendingFeedback === 1 ? '' : 's' }} — the agent addresses these first.
       </div>
       <div v-else-if="progress && progress.pendingFeedback > 0" class="feedback-note feedback-stopped">
         ⚠ {{ progress.pendingFeedback }} unaddressed review note{{ progress.pendingFeedback === 1 ? '' : 's' }} pending — resume self-driving to address.
@@ -297,7 +297,7 @@ watch(() => props.chatId, (id) => loadCollapsed(id))
   color: var(--success);
 }
 .next-badge {
-  background: var(--accent); color: #fff;
+  background: var(--accent); color: var(--on-accent);
 }
 
 .feedback-note {

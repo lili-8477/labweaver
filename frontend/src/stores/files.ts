@@ -5,6 +5,11 @@ import type { FileEntry } from '@/types'
 
 export const useFileStore = defineStore('files', () => {
   const tree = ref<FileEntry[]>([])
+  // FileTree view state, kept here so it survives the panel unmounting
+  // (switching or closing the right panel).
+  const expandedDirs = ref<Set<string>>(new Set())
+  const dirChildren = ref<Map<string, FileEntry[]>>(new Map())
+  const treeScrollTop = ref(0)
   const loading = ref(false)
   const openFile = ref<{
     path: string
@@ -31,30 +36,33 @@ export const useFileStore = defineStore('files', () => {
     revealRequest.value = { path, nonce: ++revealNonce }
   }
 
+  /** One folder's entries, folders first, then by name. */
+  async function listDir(subDir: string): Promise<FileEntry[] | null> {
+    const result = await natsService.proxyToolset('list_files', {
+      sub_dir: subDir || null,
+      recursive: false,
+    }, 'file_manager') as { success: boolean; files: Array<{ name: string; type: string; size?: number }> }
+    if (!result?.success || !Array.isArray(result.files)) return null
+    return result.files
+      .filter(f => f.name !== '.executor')
+      .map(f => ({
+        name: f.name,
+        path: subDir ? `${subDir}/${f.name}` : f.name,
+        type: (f.type === 'directory' ? 'directory' : 'file') as 'file' | 'directory',
+        size: f.size,
+      }))
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
+  }
+
   async function loadTree(subDir?: string) {
     loading.value = true
     try {
-      const result = await natsService.proxyToolset('list_files', {
-        sub_dir: subDir || null,
-        recursive: false,
-      }, 'file_manager') as { success: boolean; files: Array<{ name: string; type: string; size?: number }> }
-
-      if (result?.success && Array.isArray(result.files)) {
-        const entries: FileEntry[] = result.files
-          .filter(f => f.name !== '.executor')
-          .map(f => ({
-            name: f.name,
-            path: subDir ? `${subDir}/${f.name}` : f.name,
-            type: (f.type === 'directory' ? 'directory' : 'file') as 'file' | 'directory',
-            size: f.size,
-          }))
-          .sort((a, b) => {
-            if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
-            return a.name.localeCompare(b.name)
-          })
-        if (!subDir) {
-          tree.value = entries
-        }
+      const entries = await listDir(subDir ?? '')
+      if (entries) {
+        if (!subDir) tree.value = entries
         return entries
       }
     } catch (e) {
@@ -63,6 +71,21 @@ export const useFileStore = defineStore('files', () => {
       loading.value = false
     }
     return []
+  }
+
+  /** Re-list the root and every open folder, replacing only what changed,
+   *  so files the agent or an upload adds appear without a refresh button. */
+  async function refreshOpen() {
+    const same = (a: FileEntry[] | undefined, b: FileEntry[]) => JSON.stringify(a) === JSON.stringify(b)
+    const open = [...expandedDirs.value].filter((d) => dirChildren.value.has(d))
+    const [root, ...dirs] = await Promise.all(['', ...open].map((d) => listDir(d).catch(() => null)))
+    if (root && !same(tree.value, root)) tree.value = root
+    let changed = false
+    const next = new Map(dirChildren.value)
+    dirs.forEach((entries, i) => {
+      if (entries && !same(next.get(open[i]!), entries)) { next.set(open[i]!, entries); changed = true }
+    })
+    if (changed) dirChildren.value = next
   }
 
   async function readFile(filePath: string) {
@@ -156,7 +179,8 @@ export const useFileStore = defineStore('files', () => {
 
   return {
     tree, loading, openFile, openH5ad, revealRequest,
-    loadTree, requestReveal, readFile, writeFile, createFile,
+    expandedDirs, dirChildren, treeScrollTop,
+    loadTree, listDir, refreshOpen, requestReveal, readFile, writeFile, createFile,
     createDirectory, deletePath, movePath,
     closeFile, openH5adFile, closeH5ad,
   }

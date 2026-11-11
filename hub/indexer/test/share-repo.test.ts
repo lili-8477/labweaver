@@ -74,6 +74,7 @@ async function seedMemory(args: {
       body,
       facets:            args.facets ?? {},
       content_hash:      hash,
+      domain: "lab",
     });
     if (!memId) throw new Error("seed dedup collision");
     if (args.deleted) {
@@ -403,6 +404,7 @@ describe("decideShareRequest", () => {
         body:              snapBody,
         facets:            {},
         content_hash:      hash,
+        domain: "lab",
       });
       await client.query("COMMIT");
       if (!existingId) throw new Error("unexpected dedup on pre-insert");

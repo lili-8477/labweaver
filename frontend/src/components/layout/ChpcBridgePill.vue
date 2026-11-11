@@ -7,6 +7,7 @@ const bridge = useChpcBridgeStore()
 const conn = useConnectionStore()
 
 const showModal = ref(false)
+const unid = ref('')
 const password = ref('')
 const duoMode = ref<'push' | 'passcode'>('push')
 const passcode = ref('')
@@ -27,7 +28,7 @@ const label = computed(() => {
   switch (bridge.status.kind) {
     case 'up':            return `CHPC · ${bridge.status.user}`
     case 'down':          return 'CHPC · open'
-    case 'unprovisioned': return 'CHPC · setup'
+    case 'unprovisioned': return bridge.noSsh ? 'CHPC · unavailable' : 'CHPC · connect'
   }
   return 'CHPC'
 })
@@ -39,9 +40,9 @@ const tooltip = computed(() => {
       : `Master pid=${bridge.status.pid}, opened ${bridge.status.openedAt}. Click once to arm disconnect.`
   }
   if (bridge.status.kind === 'unprovisioned') {
-    return bridge.status.reason === 'no-ssh'
+    return bridge.noSsh
       ? 'openssh-client not installed in this container'
-      : '~/.ssh/config missing the chpc-login Host stanza'
+      : 'Connect to CHPC with your UNID, password and Duo'
   }
   return 'Open the CHPC SSH bridge (requires password + Duo)'
 })
@@ -60,10 +61,7 @@ const phaseLabel = computed(() => {
 })
 
 function onClick() {
-  if (bridge.isUnprovisioned) {
-    // Nothing the user can do from here — config is missing on disk.
-    return
-  }
+  if (bridge.noSsh) return
   if (bridge.isUp) {
     if (!armedToClose.value) {
       armedToClose.value = true
@@ -74,17 +72,20 @@ function onClick() {
     void bridge.close()
     return
   }
-  // Down → open the auth modal.
+  // Down → open the auth modal, with the UNID already in the config.
+  unid.value = bridge.status.kind === 'down' ? bridge.status.user : ''
   showModal.value = true
 }
 
+const unidValid = computed(() => /^u\d{7}$/.test(unid.value.trim().toLowerCase()))
+
 async function submit() {
-  if (!password.value) return
+  if (!password.value || !unidValid.value) return
   const duo = duoMode.value === 'push'
     ? { kind: 'push' as const }
     : { kind: 'passcode' as const, code: passcode.value.trim() }
   try {
-    await bridge.open(password.value, duo)
+    await bridge.open(unid.value.trim().toLowerCase(), password.value, duo)
   } finally {
     // Clear local refs immediately; in-flight phases still arrive via the store.
     password.value = ''
@@ -129,9 +130,9 @@ watch(() => bridge.status.kind, () => disarm())
 <template>
   <button
     class="chpc-pill"
-    :class="{ up: bridge.isUp, down: bridge.isDown, unprov: bridge.isUnprovisioned, armed: armedToClose }"
+    :class="{ up: bridge.isUp, down: bridge.isDown, unprov: bridge.noSsh, armed: armedToClose }"
     :title="tooltip"
-    :disabled="bridge.isUnprovisioned"
+    :disabled="bridge.noSsh"
     @click="onClick"
     @blur="disarm"
   >
@@ -148,9 +149,22 @@ watch(() => bridge.status.kind, () => disarm())
       </header>
 
       <p class="hint">
-        One-time auth per session. Once open, the agent reuses the master
-        until <code>ControlPersist</code> expires (8 h).
+        Sign in with your CHPC account, then approve Duo. The agent reuses
+        the connection for 8 h, with no further prompts.
       </p>
+
+      <label class="field">
+        <span>CHPC ID (UNID)</span>
+        <input
+          v-model="unid"
+          placeholder="u1234567"
+          autocomplete="username"
+          spellcheck="false"
+          :autofocus="!unid"
+          :disabled="bridge.submitting || bridge.inFlight"
+          @keydown.enter="submit"
+        />
+      </label>
 
       <label class="field">
         <span>CHPC password</span>
@@ -158,7 +172,7 @@ watch(() => bridge.status.kind, () => disarm())
           v-model="password"
           type="password"
           autocomplete="off"
-          autofocus
+          :autofocus="!!unid"
           :disabled="bridge.submitting || bridge.inFlight"
           @keydown.enter="submit"
         />
@@ -194,7 +208,7 @@ watch(() => bridge.status.kind, () => disarm())
         <button
           class="primary"
           @click="submit"
-          :disabled="!password || bridge.submitting || bridge.inFlight"
+          :disabled="!password || !unidValid || bridge.submitting || bridge.inFlight"
         >
           {{ bridge.inFlight ? 'Working…' : 'Open' }}
         </button>
@@ -244,13 +258,15 @@ watch(() => bridge.status.kind, () => disarm())
 
 /* Modal */
 .chpc-modal-backdrop {
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   position: fixed; inset: 0;
   background: rgba(0,0,0,0.45);
   display: flex; align-items: center; justify-content: center;
   z-index: 1000;
 }
 .chpc-modal {
-  background: var(--bg-secondary);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   width: min(440px, 92vw);
@@ -353,7 +369,7 @@ button.ghost { background: transparent; color: var(--text-secondary); }
 button.ghost:hover:not(:disabled) { background: var(--bg-tertiary); color: var(--text-primary); }
 button.primary {
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
   border-color: var(--accent);
 }
 button.primary:disabled { opacity: 0.55; cursor: not-allowed; }

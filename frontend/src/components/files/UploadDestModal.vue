@@ -2,6 +2,8 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { natsService } from '@/services/nats'
 import { joinPath } from '@/utils/path'
+import { useChatStore } from '@/stores/chat'
+import { canUploadTo, UPLOAD_ROOT } from '@/services/upload'
 
 const emit = defineEmits<{
   (e: 'pick', dir: string, kind: 'file' | 'directory'): void
@@ -17,7 +19,8 @@ interface DirNode {
 
 const root = ref<DirNode[]>([])
 const expanded = ref<Set<string>>(new Set())
-const selected = ref<string>('')
+// Start in the open chat's project: that is where its files belong.
+const selected = ref<string>(useChatStore().activeChat?.project_dir || UPLOAD_ROOT)
 
 async function loadDir(parentPath: string): Promise<DirNode[]> {
   try {
@@ -93,6 +96,7 @@ const visible = computed(() => {
 })
 
 const selectedLabel = computed(() => selected.value === '' ? '/ (workspace root)' : selected.value)
+const allowed = computed(() => canUploadTo(selected.value))
 </script>
 
 <template>
@@ -126,10 +130,14 @@ const selectedLabel = computed(() => selected.value === '' ? '/ (workspace root)
         </div>
       </div>
       <div class="modal-footer">
-        <span class="dest-label">Destination: <strong>{{ selectedLabel }}</strong></span>
+        <span class="dest-label">
+          Destination: <strong>{{ selectedLabel }}</strong>
+          <span v-if="!allowed" class="dest-error">Uploads go into {{ UPLOAD_ROOT }}/ or a project inside it.</span>
+          <span class="dest-tip">Tip: the 📎 button in the chat uploads straight into the chat's project.</span>
+        </span>
         <button class="btn" @click="emit('close')">Cancel</button>
-        <button class="btn" @click="confirmFile()" title="Pick files to upload">Upload files…</button>
-        <button class="btn btn-primary" @click="confirmFolder()" title="Pick a folder to upload (preserves subdir structure)">Upload folder…</button>
+        <button class="btn" :disabled="!allowed" @click="confirmFile()" title="Pick files to upload">Upload files…</button>
+        <button class="btn btn-primary" :disabled="!allowed" @click="confirmFolder()" title="Pick a folder to upload (preserves subdir structure)">Upload folder…</button>
       </div>
     </div>
   </div>
@@ -137,12 +145,14 @@ const selectedLabel = computed(() => selected.value === '' ? '/ (workspace root)
 
 <style scoped>
 .modal-backdrop {
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   position: fixed; inset: 0; background: rgba(0,0,0,0.5);
   display: flex; align-items: center; justify-content: center;
   z-index: 2000;
 }
 .modal {
-  background: var(--bg-secondary);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 8px;
   width: 480px;
@@ -171,11 +181,14 @@ const selectedLabel = computed(() => selected.value === '' ? '/ (workspace root)
   padding: 10px 16px; border-top: 1px solid var(--border);
 }
 .dest-label {
-  flex: 1;
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
   font-size: 0.85em;
   color: var(--text-secondary);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.dest-error { font-size: 0.85em; color: var(--danger); overflow: hidden; text-overflow: ellipsis; }
+.dest-tip { font-size: 0.85em; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
 .btn {
   background: var(--bg-tertiary); border: 1px solid var(--border);
   color: var(--text-primary); border-radius: 4px;
@@ -183,7 +196,7 @@ const selectedLabel = computed(() => selected.value === '' ? '/ (workspace root)
 }
 .btn:hover:not(:disabled) { background: var(--bg-hover); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: white; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .spinner {
   display: inline-block; width: 8px; height: 8px;
   border: 1.5px solid var(--border); border-top-color: var(--accent);

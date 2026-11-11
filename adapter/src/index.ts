@@ -14,12 +14,15 @@
 //   KERNEL_IDLE_CULL_MS           default 0 (disabled); when >0, cull a kernel
 //                                 idle for this many ms (no in-flight executes)
 //   KERNEL_CULL_CHECK_INTERVAL_MS default 60000; how often to check
+//   LABWEAVER_ROLE    "manager" collects every container's status for the
+//                     Manager panel (fleet_status RPC); default unset
 
 import { createHash } from "node:crypto";
 import { Pool } from "pg";
 import { ChatsRepo } from "./chats-repo.js";
 import { loadDbConfig } from "./db-config.js";
-import { MemoryRpcClient } from "./memory-rpc.js";
+import { FleetMonitor, StatusReporter, type Publish, type Subscribe } from "./fleet-status.js";
+import { MemoryForwarder } from "./memory-rpc.js";
 import { NatsBus } from "./nats-bus.js";
 import { ShareRpcClient } from "./share-rpc.js";
 import { RpcRouter, type RpcDeps } from "./rpc.js";
@@ -33,6 +36,9 @@ function computeServiceId(idHash: string): string {
 async function main(): Promise<void> {
   const idHash = requireEnv("ID_HASH");
   const serviceId = computeServiceId(idHash);
+  // The agent and its hooks and MCP servers inherit this process's env: the
+  // memory hooks and mcp-memory send it to the hub as a Bearer token (caller-check.ts).
+  process.env.SERVICE_ID = serviceId;
   const servers = process.env.NATS_SERVERS ?? "nats://localhost:4222";
   const workspaceRoot = process.env.WORKSPACE_ROOT ?? "/workspace";
   const defaultProjectCwd = process.env.DEFAULT_PROJECT ?? workspaceRoot;
@@ -65,14 +71,14 @@ async function main(): Promise<void> {
 
   const memoryApiUrl = process.env.MEMORY_API_URL;
   const memoryClient = memoryApiUrl
-    ? new MemoryRpcClient(memoryApiUrl, dbCfg.username)
+    ? new MemoryForwarder({ baseUrl: memoryApiUrl, user: dbCfg.username, token: serviceId })
     : null;
   if (!memoryClient) {
     console.warn("[adapter] MEMORY_API_URL not set — memory_* RPCs will be unavailable");
   }
 
   const shareClient = memoryApiUrl
-    ? new ShareRpcClient(memoryApiUrl, dbCfg.username)
+    ? new ShareRpcClient(memoryApiUrl, dbCfg.username, serviceId)
     : null;
   if (!shareClient) {
     console.warn("[adapter] MEMORY_API_URL not set — share_* RPCs will be unavailable");
@@ -80,6 +86,21 @@ async function main(): Promise<void> {
 
   await bus.connect();
   console.log(`[adapter] connected to NATS ${servers}, service_id=${serviceId.slice(0, 12)}...`);
+
+  const publish: Publish = (subject, body) => bus.publishRaw(bus.qualify(subject), body);
+  const subscribe: Subscribe = (subject, onMessage) => bus.subscribeJson(bus.qualify(subject), onMessage);
+  // Everyone with chats is expected to have a container, so a silent one
+  // still shows up (as offline) after the manager restarts.
+  const fleet = process.env.LABWEAVER_ROLE === "manager"
+    ? new FleetMonitor({
+        publish,
+        subscribe,
+        roster: async () =>
+          (await pool.query<{ username: string }>("SELECT DISTINCT username FROM chats")).rows.map((r) => r.username),
+      })
+    : null;
+  fleet?.start();
+  if (fleet) console.log("[adapter] manager container: collecting fleet status");
 
   const router = new RpcRouter({
     serviceId,
@@ -91,6 +112,7 @@ async function main(): Promise<void> {
     publishRaw: (subject, envelope) => bus.publishRaw(subject, envelope),
     streamSubject: (streamId) => bus.subjectFor(streamId),
     kernelBridgePath: process.env.KERNEL_BRIDGE_PATH ?? "/opt/adapter/kernel-bridge.py",
+    memoryBuilder: ["python3", process.env.MEMORY_BUILDER_PATH ?? "/opt/adapter/memory-builder.py"],
     kernelIdleCullMs: parsePositiveInt(process.env.KERNEL_IDLE_CULL_MS, 0),
     kernelCullCheckIntervalMs: parsePositiveInt(
       process.env.KERNEL_CULL_CHECK_INTERVAL_MS,
@@ -98,7 +120,15 @@ async function main(): Promise<void> {
     ),
     memory: memoryClient,
     share: shareClient,
+    fleet,
   });
+
+  new StatusReporter({
+    username: dbCfg.username,
+    publish,
+    subscribe,
+    activity: () => router.activity(),
+  }).start();
 
   await bus.serve((method, params) => router.dispatch(method, params));
   console.log("[adapter] serving RPCs");
@@ -114,6 +144,7 @@ async function main(): Promise<void> {
       port:         uploadPort,
       username:     dbCfg.username,
       memoryApiUrl,
+      serviceId,
     });
   } catch (err) {
     console.warn(`[upload] failed to start on :${uploadPort}:`, err);

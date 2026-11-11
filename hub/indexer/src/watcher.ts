@@ -16,6 +16,8 @@ export interface StartWatcherOptions {
 }
 
 export interface WatcherHandle {
+  /** Resolves once the initial scan is done; files created after it are seen as new. */
+  ready: Promise<void>;
   close(): Promise<void>;
   waitIdle(): Promise<void>;
 }
@@ -79,8 +81,10 @@ export function startWatcher(opts: StartWatcherOptions): WatcherHandle {
   watcher.on("add", (p) => enqueue(p));
   watcher.on("change", (p) => enqueue(p));
   watcher.on("error", (err) => logger.error({ err }, "watcher error"));
+  const ready = new Promise<void>((resolve) => watcher.once("ready", () => resolve()));
 
   return {
+    ready,
     async close() {
       await watcher.close();
       await Promise.allSettled([...inflight]);

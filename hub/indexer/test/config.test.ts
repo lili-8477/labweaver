@@ -31,6 +31,11 @@ describe("loadConfig", () => {
     expect(cfg.pgStartupMaxWaitSec).toBe(10);
   });
 
+  it("turns the markdown copy of memory on only when MEMORY_MIRROR_ROOT is set", () => {
+    expect(loadConfig({ PG_URL: "postgres://x" }).memoryMirrorRoot).toBeNull();
+    expect(loadConfig({ PG_URL: "postgres://x", MEMORY_MIRROR_ROOT: "/memory-mirror" }).memoryMirrorRoot).toBe("/memory-mirror");
+  });
+
   it("throws without PG_URL", () => {
     expect(() => loadConfig({})).toThrow(/PG_URL/);
   });
@@ -117,5 +122,27 @@ describe("loadConfig", () => {
   it('shareAutoCloseIntervalHours reads SHARE_AUTO_CLOSE_INTERVAL_HOURS env override', () => {
     const cfg = loadConfig({ PG_URL: 'postgres://x', SHARE_AUTO_CLOSE_INTERVAL_HOURS: '6' });
     expect(cfg.shareAutoCloseIntervalHours).toBe(6);
+  });
+
+  it('memory knobs default to 0.9 and no clearances, and read env overrides', () => {
+    expect(loadConfig({ PG_URL: 'x' })).toMatchObject({
+      memoryMergeSimilarity: 0.9, memoryClearance: {}, callerMapFile: '',
+    });
+    expect(loadConfig({
+      PG_URL: 'x', MEMORY_MERGE_SIMILARITY: '0.85', MEMORY_CLEARANCE: 'alice=irb, bob=restricted',
+      CALLER_MAP_FILE: '/run/service-map.conf',
+    })).toMatchObject({
+      memoryMergeSimilarity: 0.85, memoryClearance: { alice: 'irb', bob: 'restricted' },
+      callerMapFile: '/run/service-map.conf',
+    });
+  });
+
+  it('rejects a MEMORY_CLEARANCE entry with an unknown level', () => {
+    expect(() => loadConfig({ PG_URL: 'x', MEMORY_CLEARANCE: 'alice=secret' })).toThrow(/MEMORY_CLEARANCE/);
+  });
+
+  it('rejects MEMORY_MERGE_SIMILARITY outside (0, 1]', () => {
+    expect(() => loadConfig({ PG_URL: 'x', MEMORY_MERGE_SIMILARITY: '1.5' })).toThrow(/MEMORY_MERGE_SIMILARITY/);
+    expect(() => loadConfig({ PG_URL: 'x', MEMORY_MERGE_SIMILARITY: '0' })).toThrow(/MEMORY_MERGE_SIMILARITY/);
   });
 });

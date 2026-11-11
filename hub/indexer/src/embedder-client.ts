@@ -2,9 +2,24 @@ export class EmbedderError extends Error {
   constructor(message: string, public cause?: unknown) { super(message); }
 }
 
+/** An embedding as a pgvector literal, for a $n::vector parameter. */
+export function vectorLiteral(v: number[]): string {
+  return "[" + v.join(",") + "]";
+}
+
+/** A search query or stored text. v1's bge-small embedder ignores it; multilingual-e5 (v2) embeds the two differently. */
+export type EmbedKind = "query" | "passage";
+
+/** What memory search, merge and context bundles need from the embedder. */
+export interface EmbedderClient {
+  /** Stored texts by default; pass "query" for a search query. */
+  embedTexts: (texts: string[], kind?: EmbedKind) => Promise<number[][]>;
+}
+
 export interface EmbedTextsArgs {
   baseUrl:    string;
   texts:      string[];
+  kind?:      EmbedKind;
   timeoutMs?: number;
 }
 
@@ -16,7 +31,7 @@ export async function embedTexts(args: EmbedTextsArgs): Promise<number[][]> {
     res = await fetch(`${args.baseUrl}/embed`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ texts: args.texts }),
+      body: JSON.stringify({ texts: args.texts, kind: args.kind ?? "passage" }),
       signal: ctrl.signal,
     });
   } catch (e) {

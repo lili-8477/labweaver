@@ -130,7 +130,10 @@ TTY for a Duo push or passcode entry.
 
 **Primary path (preferred):** the bioFlow UI has a **CHPC pill** in the top
 bar (right of the connection badge). The user clicks it, enters their CHPC
-password, picks Duo push or paste a passcode, and approves on their phone.
+ID (UNID, e.g. `u1234567`) and password, picks Duo push or paste a passcode,
+and approves on their phone. The UNID is written into the `chpc-login`
+stanza of `~/.ssh/config` for them, so §3b is not needed when they use the
+pill.
 Pill flips to green `CHPC · <UNID>` once the master is up. **Do not suggest
 the docker exec command below as a primary path — the UI is the supported
 flow.**
@@ -362,7 +365,7 @@ provisioning was wiped — re-run §3 and ask the user to re-open the master.
 | Every command re-prompts for Duo / password | Master not running | Ask user to click the CHPC pill in the UI (§4). |
 | `Control socket connect(...): No such file or directory` | Stale `ControlPath` from a killed master | Ask user to click the CHPC pill — the auth flow opens a fresh master. Headless fallback: `docker exec claude-bioflow-<ws> ssh -O exit chpc-login 2>/dev/null; docker exec -it claude-bioflow-<ws> ssh -NMf chpc-login`. |
 | `mux_client_request_session: read from master failed: Broken pipe` | Master died mid-session | Same as above. |
-| `Permission denied (publickey,password)` on master open | Wrong UNID in config, or expired CHPC password | Verify UNID in `~/.ssh/config`; user logs into chpc.utah.edu portal to reset password if needed. |
+| `Permission denied (publickey,password)` on master open | Wrong UNID in config, or expired CHPC password | User re-enters their UNID in the CHPC pill (it rewrites `~/.ssh/config`); user logs into chpc.utah.edu portal to reset password if needed. |
 | `bash: $VAR: unbound variable` on remote | Forgot to escape; local shell ate the variable | Single-quote the remote payload, or use `\$VAR` in double quotes. |
 | Heredoc loses `$()` output unexpectedly | Quoted `'EOF'` vs unquoted `EOF` mismatch with intent | Quoted → no local expansion; unquoted → local expansion. Pick deliberately. |
 | `sbatch: error: Invalid account` | Wrong `--account` for this user | `ssh chpc-login 'sacctmgr show assoc user=$USER format=Account,Partition'` to list valid pairs. |

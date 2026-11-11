@@ -39,6 +39,11 @@ export class ChatMutexRegistry {
 export class AbortRegistry {
   private controllers = new Map<string, AbortController>();
 
+  /** Turns currently running (registered and not yet cleared). */
+  get count(): number {
+    return this.controllers.size;
+  }
+
   register(chatId: string): AbortController {
     const ac = new AbortController();
     this.controllers.set(chatId, ac);

@@ -46,13 +46,50 @@ async function loadPtySpawn(): Promise<PtySpawn> {
 const execAsync = promisify(exec);
 
 export const HOST_ALIAS = "chpc-login";
+const CHPC_HOST = "notchpeak.chpc.utah.edu";
+/** A University of Utah UNID: "u" and seven digits. */
+const UNID = /^u\d{7}$/;
+
+/** The stanza add-user.sh writes, with the user's UNID filled in. */
+const stanza = (user: string) => `Host ${HOST_ALIAS}
+    HostName ${CHPC_HOST}
+    User ${user}
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 8h
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile ~/.ssh/known_hosts
+`;
+
+/** An ssh config with the chpc-login stanza pointed at `user`: its User line
+ *  changed, or the stanza added when there is none (the provisioned template
+ *  is commented out). */
+export function withUser(raw: string, user: string): string {
+  const lines = raw.split("\n");
+  let inStanza = false;
+  let replaced = false;
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^\s*Host\s+(.+?)\s*$/i.exec(lines[i]!);
+    if (m) { inStanza = (m[1] ?? "").split(/\s+/).includes(HOST_ALIAS); continue; }
+    if (inStanza && /^\s*User\s+\S+/i.test(lines[i]!)) {
+      lines[i] = lines[i]!.replace(/(User\s+)\S+/i, `$1${user}`);
+      replaced = true;
+    }
+  }
+  if (replaced) return lines.join("\n");
+  return raw.trim() ? raw.replace(/\n*$/, "\n\n") + stanza(user) : stanza(user);
+}
 
 export type BridgeStatus =
   | { kind: "up"; pid: number; openedAt: string; user: string }
-  | { kind: "down" }
+  | { kind: "down"; user: string }
   | { kind: "unprovisioned"; reason: "no-ssh" | "no-config" };
 
 export interface OpenRequest {
+  /** The CHPC UNID; written into the chpc-login stanza when it differs. */
+  user?: string;
   password: string;
   duo: { kind: "push" } | { kind: "passcode"; code: string };
   requestId: string;
@@ -104,7 +141,7 @@ export class ChpcBridge {
       });
       const out = stdout + stderr;
       const m = out.match(/pid=(\d+)/);
-      if (!m || !m[1]) return { kind: "down" };
+      if (!m || !m[1]) return { kind: "down", user: cfg.user };
       return {
         kind: "up",
         pid: Number(m[1]),
@@ -112,7 +149,7 @@ export class ChpcBridge {
         user: cfg.user,
       };
     } catch {
-      return { kind: "down" };
+      return { kind: "down", user: cfg.user };
     }
   }
 
@@ -120,9 +157,18 @@ export class ChpcBridge {
     if (this.currentRequestId) {
       throw new Error("open already in progress");
     }
-    const cfg = await this.readConfig();
+    if (req.user !== undefined && !UNID.test(req.user)) {
+      throw new Error("CHPC ID must be your UNID, like u1234567");
+    }
+    let cfg = await this.readConfig();
+    if (req.user && req.user !== cfg.user) {
+      // A live master belongs to the old user; it has to go first.
+      if (cfg.user) await this.close();
+      await this.writeUser(req.user);
+      cfg = await this.readConfig();
+    }
     if (!cfg.host || !cfg.user) {
-      throw new Error("ssh config missing — provision ~/.ssh/config first");
+      throw new Error("Enter your CHPC ID (UNID) to connect");
     }
     // Already up? Surface immediately as a synthetic "up" frame so the
     // frontend doesn't get stuck waiting for a phase that won't fire.
@@ -294,6 +340,15 @@ export class ChpcBridge {
         console.warn(`[chpc-bridge] could not unlink stale socket ${socket}: ${(e as Error).message}`);
       }
     }
+  }
+
+  private async writeUser(user: string): Promise<void> {
+    const dir = path.join(this.home, ".ssh");
+    const cfgPath = path.join(dir, "config");
+    const raw = await fs.readFile(cfgPath, "utf8").catch(() => "");
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    await fs.writeFile(`${cfgPath}.tmp`, withUser(raw, user), { mode: 0o600 });
+    await fs.rename(`${cfgPath}.tmp`, cfgPath);
   }
 
   private async readConfig(): Promise<ConfigInfo> {

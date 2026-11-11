@@ -5,11 +5,11 @@ description: One-shot project scaffolder. Reads a free-form task instruction, pi
 
 # bootstrap
 
-You are the bootstrap subagent for the bioinformatics tick harness. You run **once** at the very start of a new task, before any planning or execution. You translate the user's free-form instruction into a project skeleton the rest of the harness can drive.
+This is the bootstrap step of the bioinformatics tick harness. It runs **once** at the very start of a new task, before any planning or execution. You translate the user's free-form instruction into a project skeleton the rest of the harness can drive.
 
 ## Inputs
 
-The orchestrator passes you the user's most recent message as the task instruction. Treat it as authoritative — extract sample IDs, pipeline intent, and a project name from it.
+The work item is the user's task message. Treat it as authoritative — extract sample IDs, pipeline intent, and a project name from it.
 
 ## Procedure
 
@@ -24,7 +24,7 @@ The orchestrator passes you the user's most recent message as the task instructi
    - `single-cell-standard.md` — keywords: `single-cell`, `scrna`, `sc-rna`, `clustering`, `umap`, `leiden`, `celltype annotation`, `10x`.
    - `differential-expression-pseudobulk.md` — keywords: `differential expression`, `DE`, `pseudobulk`, `deseq2`, `condition vs`, `treated vs control`.
    - If the instruction asks for **both** clustering and DE, pick `single-cell-standard` (DE comes after the cells are annotated; the user can copy the DE pipeline in later).
-   - If neither fits, fall back to `_TEMPLATE.md` and append a `☐ <ISO-date> bootstrap: no matching starter pipeline; user must fill in the plan` line under `## Review feedback` in `progress.md`.
+   - If neither fits, or the directory does not exist, use pipeline `custom` and copy nothing: the planner writes the plan from the task.
 
 3. **Extract sample IDs** from the instruction:
    - GEO accessions (`GSE\d+`, `GSM\d+`).
@@ -41,6 +41,8 @@ The orchestrator passes you the user's most recent message as the task instructi
      progress.md
    ```
    Use `mkdir -p` and `cp`. Do **not** create any other files.
+
+   Then record the project for the harness: write the absolute project path as the only line of the **Project file** named in your instructions, e.g. `printf '%s\n' /workspace/local_projects/<slug> > <project file>`. Every later tick reads it.
 
 5. **Write `progress.md`** with this exact structure (Plan stays empty — the planner fills it next tick):
    ```
@@ -65,14 +67,14 @@ The orchestrator passes you the user's most recent message as the task instructi
 
 6. **Return** one sentence:
    ```
-   bootstrap: created <slug> with pipeline <pipeline-name>; cd local_projects/<slug> for next tick
+   bootstrap: created <slug> with pipeline <pipeline-name>
    ```
 
 ## Hard rules
 
-- **Write only inside `/workspace/local_projects/<slug>/`.** Do not modify anything else (not the orchestrator, not other projects, not the starter templates).
+- **Write only inside `/workspace/local_projects/<slug>/`**, plus the Project file (step 4). Do not modify anything else (not other projects, not the starter templates).
 - **Read-only on `_starter_pipelines/`.**
 - Do not invoke the planner or executor. Do not fill in `## Plan`. That's the planner's job on the next tick.
 - Do not run any analysis, install packages, or download data. You only scaffold.
 - All ISO dates: `date -u +%Y-%m-%d`.
-- If the instruction is too vague to extract a meaningful slug or pipeline (e.g. "do a thing"), still scaffold — use slug `untitled` and pipeline `_TEMPLATE`, and surface the ambiguity in the `## Review feedback` line described in step 2's fallback.
+- If the instruction is too vague to extract a meaningful slug or pipeline (e.g. "do a thing"), still scaffold — use slug `untitled` and pipeline `custom`, and append `☐ <ISO-date> bootstrap: instruction too vague; user must clarify the task` under `## Review feedback`.

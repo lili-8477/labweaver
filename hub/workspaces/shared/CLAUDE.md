@@ -94,6 +94,22 @@ Rules:
   `nvidia-container-toolkit` and the container was started with `--gpus all`.
   Don't hard-require it — check and fall back to CPU gracefully.
 
+### Running notebook code
+
+Use `mcp__notebook__run_cells` and `mcp__notebook__run_code`. They run in the
+notebook's live kernel, the one the user's Notebook panel uses, so objects
+computed earlier (a Seurat object, a loaded AnnData) are still in memory, and
+the user watches outputs appear in the panel.
+
+- After editing a cell, run that cell and the cells that depend on it, not the
+  whole notebook. Re-running everything recomputes minutes of work to check a
+  one-line change.
+- Inspect state with `run_code` (`dim(pbmc)`, `adata.obs.head()`) instead of
+  starting a fresh `Rscript` / `python` that reloads the data.
+- Use `jupyter nbconvert --execute` only to rebuild a notebook from scratch, or
+  when the user asks for a clean top-to-bottom run. Don't wait with fixed
+  `sleep`s; let the command return.
+
 ## After submitting a SLURM job (sbatch on CHPC)
 
 Once `sbatch` returns a jobid, **end the turn cleanly**. The `posttool_jobid.sh` hook auto-spawns a background `chpc_job_watcher.sh` for that jobid; it polls `sacct` via the SSH bridge every 10 minutes and, on terminal state (COMPLETED/FAILED/TIMEOUT/OOM/etc.), writes one NDJSON record to `~/.claude/.chpc_pending`. The `userprompt_route.sh` hook drains that inbox at the top of the next user prompt, so the agent sees the result as additional context the next time the user types anything.

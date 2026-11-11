@@ -15,6 +15,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { createWriteStream } from "node:fs";
 import { mkdir, realpath, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { handleArchive } from "./archive-http.js";
 
 export interface UploadServerOptions {
   workspaceRoot: string;        // absolute, e.g. "/workspace"
@@ -24,6 +25,7 @@ export interface UploadServerOptions {
   // Phase 2: needed for /share-snapshot/<id>/file proxy.
   username?:       string;       // omitted → /share-snapshot/ returns 503
   memoryApiUrl?:   string;       // omitted → /share-snapshot/ returns 503
+  serviceId?:      string;       // sent to the hub as a Bearer token
 }
 
 const DENY_NAMES = new Set([".env", ".claude", "CLAUDE.md", ".bioflow"]);
@@ -41,7 +43,7 @@ export function startUploadServer(opts: UploadServerOptions): Server {
 
   const server = createServer(async (req, res) => {
     try {
-      await handle(req, res, { workspaceRoot, allowedPrefix, username, memoryApiUrl });
+      await handle(req, res, { workspaceRoot, allowedPrefix, username, memoryApiUrl, serviceId: opts.serviceId });
     } catch (err) {
       console.error("[upload] handler crashed:", err);
       if (!res.headersSent) sendJson(res, 500, { error: "internal" });
@@ -63,13 +65,18 @@ export function startUploadServer(opts: UploadServerOptions): Server {
 async function handle(
   req: IncomingMessage,
   res: ServerResponse,
-  ctx: { workspaceRoot: string; allowedPrefix: string; username: string | null; memoryApiUrl: string | null },
+  ctx: { workspaceRoot: string; allowedPrefix: string; username: string | null; memoryApiUrl: string | null; serviceId?: string },
 ): Promise<void> {
   const method = req.method ?? "GET";
   const url = req.url ?? "/";
 
   if (url === "/healthz") {
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if ((url === "/archive" || url.startsWith("/archive?")) && method === "GET") {
+    await handleArchive(req, res, ctx.workspaceRoot);
     return;
   }
 
@@ -211,7 +218,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 async function handleShareSnapshot(
   req: IncomingMessage,
   res: ServerResponse,
-  ctx: { username: string | null; memoryApiUrl: string | null },
+  ctx: { username: string | null; memoryApiUrl: string | null; serviceId?: string },
 ): Promise<void> {
   if (!ctx.username || !ctx.memoryApiUrl) {
     sendJson(res, 503, { error: "share-snapshot disabled — adapter not configured" });
@@ -238,7 +245,9 @@ async function handleShareSnapshot(
 
   let upstreamRes: Response;
   try {
-    upstreamRes = await fetch(upstream.toString());
+    upstreamRes = await fetch(upstream.toString(), {
+      headers: ctx.serviceId ? { authorization: `Bearer ${ctx.serviceId}` } : {},
+    });
   } catch (err) {
     sendJson(res, 502, { error: "upstream_failed", message: (err as Error).message });
     return;

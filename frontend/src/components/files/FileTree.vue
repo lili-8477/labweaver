@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useFileStore } from '@/stores/files'
 import { useUploadsStore } from '@/stores/uploads'
-import { queueUpload, cancelUpload, retryUpload } from '@/services/upload'
+import { useMemoryStore } from '@/stores/memory'
+import { queueUpload, cancelUpload, retryUpload, canUploadTo, UPLOAD_ROOT } from '@/services/upload'
 import { getFileIcon, formatFileSize } from '@/utils/format'
 import { basenameOf, isAncestorOrSelf, joinPath, parentOf } from '@/utils/path'
 import { walkDataTransferItems } from '@/utils/dnd'
-import { natsService } from '@/services/nats'
 import type { FileEntry } from '@/types'
 import FileContextMenu from './FileContextMenu.vue'
 import MoveToModal from './MoveToModal.vue'
@@ -19,6 +20,7 @@ const emit = defineEmits<{
 
 const files = useFileStore()
 const uploads = useUploadsStore()
+const memory = useMemoryStore()
 
 const INTERNAL_PATH_MIME = 'application/x-bioflow-path'
 
@@ -34,15 +36,17 @@ const PROTECTED_MOUNT_POINTS = new Set<string>([
   'CLAUDE.md',
   'local_projects',
   'shared',
+  'memory',
 ])
 
 function isProtectedMountPoint(path: string): boolean {
   return PROTECTED_MOUNT_POINTS.has(path)
 }
 
-// State: which dirs are expanded, their loaded children, loading status
-const expandedDirs = ref<Set<string>>(new Set())
-const dirChildren = ref<Map<string, FileEntry[]>>(new Map())
+// State: which dirs are expanded and their loaded children live in the store,
+// so the tree reopens where it was left; loading status is local.
+const { expandedDirs, dirChildren, treeScrollTop } = storeToRefs(files)
+const treeContent = ref<HTMLDivElement | null>(null)
 const loadingDirs = ref<Set<string>>(new Set())
 
 // Retry support: keep the original File handle off the Pinia store (Vue's
@@ -73,10 +77,47 @@ interface FlatEntry {
 
 const ctxMenu = ref<{ x: number; y: number; fe: FlatEntry } | null>(null)
 
+// Selection: click selects one row, Ctrl/Cmd-click toggles a row, Shift-click
+// selects the range from the last clicked row. Right-click acts on the
+// selection when the row is part of it, else on that row alone.
+const selected = ref<Set<string>>(new Set())
+let anchor: string | null = null
+
+function selectOnly(path: string) {
+  selected.value = new Set([path])
+  anchor = path
+}
+function clearSelection() {
+  selected.value = new Set()
+  anchor = null
+}
+
 function openCtxMenuAt(ev: MouseEvent, fe: FlatEntry) {
   ev.preventDefault()
   ev.stopPropagation()
+  if (!selected.value.has(fe.path)) selectOnly(fe.path)
   ctxMenu.value = { x: ev.clientX, y: ev.clientY, fe }
+}
+
+/** One file downloads as itself; a folder or several items as one zip. */
+function download(paths: string[]) {
+  const one = paths.length === 1 ? visibleEntries.value.find((fe) => fe.path === paths[0]) : null
+  const a = document.createElement('a')
+  if (one?.entry.type === 'file') {
+    a.href = downloadUrl(one.path)
+    a.download = one.entry.name
+  } else {
+    a.href = `/archive?${paths.map((p) => `path=${encodeURIComponent(p)}`).join('&')}`
+  }
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+function downloadSelection() {
+  // Keep tree order, and drop items already inside a selected folder.
+  const picked = visibleEntries.value.map((fe) => fe.path).filter((p) => selected.value.has(p))
+  download(picked.filter((p) => !picked.some((q) => q !== p && isAncestorOrSelf(q, p))))
 }
 function closeCtxMenu() {
   ctxMenu.value = null
@@ -158,7 +199,7 @@ async function commitRename(fe: FlatEntry) {
       return
     }
     cancelRename()
-    await reloadTreeFromRoot()
+    await reloadTreeFromRoot({ from: fe.path, to: targetPath })
   } finally {
     renameInFlight = false
   }
@@ -188,11 +229,20 @@ function showTreeError(msg: string) {
 }
 
 onMounted(() => {
+  refreshTimer = setInterval(refreshIfVisible, AUTO_REFRESH_MS)
+  document.addEventListener('visibilitychange', refreshIfVisible)
   if (files.tree.length === 0) files.loadTree()
+  else nextTick(() => { if (treeContent.value) treeContent.value.scrollTop = treeScrollTop.value })
   if (dirInput.value) {
     dirInput.value.setAttribute('webkitdirectory', '')
     dirInput.value.setAttribute('directory', '')
   }
+})
+
+onBeforeUnmount(() => {
+  if (refreshTimer !== null) clearInterval(refreshTimer)
+  document.removeEventListener('visibilitychange', refreshIfVisible)
+  treeScrollTop.value = treeContent.value?.scrollTop ?? 0
 })
 
 const visibleEntries = computed<FlatEntry[]>(() => {
@@ -230,29 +280,11 @@ async function toggleDir(path: string) {
     loadingDirs.value.add(path)
     loadingDirs.value = new Set(loadingDirs.value)
     try {
-      const result = await natsService.proxyToolset('list_files', {
-        sub_dir: path,
-        recursive: false,
-      }, 'file_manager') as { success: boolean; files: Array<{ name: string; type: string; size?: number }> }
-
-      if (result?.success && Array.isArray(result.files)) {
-        const children: FileEntry[] = result.files
-          .filter(f => f.name !== '.executor')
-          .map(f => ({
-            name: f.name,
-            path: `${path}/${f.name}`,
-            type: (f.type === 'directory' ? 'directory' : 'file') as 'file' | 'directory',
-            size: f.size,
-          }))
-          .sort((a, b) => {
-            if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
-            return a.name.localeCompare(b.name)
-          })
+      const children = await files.listDir(path).catch(() => null)
+      if (children) {
         dirChildren.value.set(path, children)
         dirChildren.value = new Map(dirChildren.value)
       }
-    } catch (e) {
-      console.error('Failed to list directory:', path, e)
     } finally {
       loadingDirs.value.delete(path)
       loadingDirs.value = new Set(loadingDirs.value)
@@ -260,7 +292,23 @@ async function toggleDir(path: string) {
   }
 }
 
-function handleClick(fe: FlatEntry) {
+function handleClick(fe: FlatEntry, ev: MouseEvent) {
+  if (ev.metaKey || ev.ctrlKey) {
+    const next = new Set(selected.value)
+    if (!next.delete(fe.path)) next.add(fe.path)
+    selected.value = next
+    anchor = fe.path
+    return
+  }
+  if (ev.shiftKey && anchor) {
+    const paths = visibleEntries.value.map((e) => e.path)
+    const [a, b] = [paths.indexOf(anchor), paths.indexOf(fe.path)].sort((x, y) => x - y)
+    if (a >= 0) {
+      selected.value = new Set(paths.slice(a, b + 1))
+      return
+    }
+  }
+  selectOnly(fe.path)
   if (fe.entry.type === 'directory') {
     toggleDir(fe.path)
   } else {
@@ -325,21 +373,32 @@ function downloadUrl(filePath: string): string {
   return `/download/${segs.join('/')}`
 }
 
-async function reloadTreeFromRoot() {
-  dirChildren.value.clear()
-  expandedDirs.value.clear()
-  await files.loadTree()
+/** Re-list the root and every open folder without folding the tree. A moved
+ *  or renamed folder stays open under its new path; folders that no longer
+ *  list (deleted) are dropped. */
+async function reloadTreeFromRoot(moved?: { from: string; to: string }) {
+  const open = [...expandedDirs.value].map(p =>
+    moved && (p === moved.from || p.startsWith(`${moved.from}/`)) ? moved.to + p.slice(moved.from.length) : p,
+  )
+  const [, lists] = await Promise.all([files.loadTree(), Promise.all(open.map((p) => files.listDir(p).catch(() => null)))])
+  const children = new Map<string, FileEntry[]>()
+  open.forEach((p, i) => { if (lists[i]) children.set(p, lists[i]) })
+  dirChildren.value = children
+  expandedDirs.value = new Set(children.keys())
 }
 
-function refresh() {
-  void reloadTreeFromRoot()
+// The tree refreshes itself: open folders are re-listed every few seconds
+// while the page is visible, and as soon as it becomes visible again.
+const AUTO_REFRESH_MS = 5000
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+function refreshIfVisible() {
+  if (document.visibilityState === 'visible') void files.refreshOpen()
 }
 
 /** Workspace-relative directory that this drop target represents.
- *  null path = the empty tree-content pane → default writable subtree.
- *  The upload server only allows writes under `local_projects/`, so
- *  workspace root would 403. Default new drops there too. */
-const DEFAULT_DROP_DIR = 'local_projects'
+ *  null path = the empty tree-content pane → the upload root, since the
+ *  upload server only allows writes under it. */
+const DEFAULT_DROP_DIR = UPLOAD_ROOT
 
 function dropDirFor(path: string | null): string {
   if (path === null) return DEFAULT_DROP_DIR
@@ -383,6 +442,10 @@ watch(() => files.revealRequest, (req) => {
 })
 
 function queueOne(file: File, destDir: string) {
+  if (!canUploadTo(destDir)) {
+    showTreeError(`Uploads go into a project under ${UPLOAD_ROOT}/. Upload from the chat box to add files to the current project.`)
+    return
+  }
   const { id, promise } = queueUpload(file, destDir)
   fileForUpload.set(id, file)
   promise
@@ -560,7 +623,7 @@ async function doMove(from: string, to: string) {
     showTreeError(`Move failed: ${result.error}`)
     return
   }
-  await reloadTreeFromRoot()
+  await reloadTreeFromRoot({ from, to })
 }
 
 function onCancelUpload(id: string) {
@@ -583,7 +646,6 @@ function onClearUploads() {
     <div class="tree-header">
       <span class="title">Files</span>
       <div class="tree-actions">
-        <button class="icon-btn" @click="refresh()" title="Refresh">&#8635;</button>
         <button class="icon-btn" @click="openFilePicker()" title="Upload (max 2 GB)">&#x2B06;</button>
         <button class="icon-btn" @click="startNewItemAtDefault('file')" title="New File">+</button>
         <button class="icon-btn" @click="startNewItemAtDefault('directory')" title="New Folder">&#128193;</button>
@@ -618,24 +680,26 @@ function onClearUploads() {
       <button class="icon-btn sm" @click="showNewInput = false">&times;</button>
     </div>
 
-    <div v-if="files.loading" class="loading">Loading...</div>
+    <div v-if="files.loading && files.tree.length === 0" class="loading">Loading...</div>
 
     <div
+      ref="treeContent"
       class="tree-content"
       :class="{ 'drag-over-pane': dragOverPath === null && isDraggingFiles }"
       @dragover="onDragOver($event, null)"
       @dragleave="onDragLeave($event, null)"
       @drop="onDrop($event, null)"
+      @click.self="clearSelection"
     >
       <div
         v-for="fe in visibleEntries"
         :key="fe.path"
         class="entry-row"
-        :class="{ 'drag-over': dragOverPath === fe.path }"
+        :class="{ 'drag-over': dragOverPath === fe.path, selected: selected.has(fe.path) }"
         :style="{ paddingLeft: (12 + fe.depth * 16) + 'px' }"
         draggable="true"
         @dragstart="onRowDragStart($event, fe)"
-        @click="handleClick(fe)"
+        @click="handleClick(fe, $event)"
         @contextmenu="openCtxMenuAt($event, fe)"
         @dragover.stop="onDragOver($event, fe.path)"
         @dragleave.stop="onDragLeave($event, fe.path)"
@@ -694,6 +758,9 @@ function onClearUploads() {
       @new-folder="(startNewItemIn(ctxMenu.fe, 'directory'), closeCtxMenu())"
       @delete="(handleDelete(ctxMenu.fe), closeCtxMenu())"
       @share="(openShareModalFor(ctxMenu.fe), closeCtxMenu())"
+      @add-to-memory="(memory.openImport(ctxMenu.fe.path), closeCtxMenu())"
+      @download="(downloadSelection(), closeCtxMenu())"
+      :selected-count="selected.size"
       @close="closeCtxMenu"
     />
 
@@ -804,6 +871,7 @@ function onClearUploads() {
   cursor: pointer; font-size: 0.9em; transition: background 0.1s;
 }
 .entry-row:hover { background: var(--bg-tertiary); }
+.entry-row.selected { background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .expand-icon { width: 14px; font-size: 0.7em; color: var(--text-muted); flex-shrink: 0; }
 .icon { flex-shrink: 0; font-size: 0.9em; }
 .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

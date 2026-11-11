@@ -3,12 +3,14 @@
 
 export type BridgeStatus =
   | { kind: 'up'; pid: number; openedAt: string; user: string }
-  | { kind: 'down' }
+  | { kind: 'down'; user: string }
   | { kind: 'unprovisioned'; reason: 'no-ssh' | 'no-config' }
 
 export type DuoChoice = { kind: 'push' } | { kind: 'passcode'; code: string }
 
 export interface OpenRequest {
+  /** CHPC UNID; the adapter writes it into ~/.ssh/config when it differs. */
+  user: string
   password: string
   duo: DuoChoice
   requestId: string

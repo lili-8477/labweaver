@@ -17,6 +17,9 @@ export interface RunTurnArgs {
   /** Optional image attachments to send as native content blocks. */
   images?: ImageRef[];
   cwd: string;
+  /** Where project settings, hooks, .mcp.json and .claude/ are read from
+   *  when it differs from cwd. Also becomes CLAUDE_PROJECT_DIR. */
+  projectConfigRoot: string;
   /** Model id from settings.json. Undefined falls back to the SDK default. */
   model?: string;
   /** Prior SDK session UUID to resume; undefined for a new session. */
@@ -25,10 +28,18 @@ export interface RunTurnArgs {
   onEvent: (ev: StreamEvent) => void;
   /** Called once the first session_id is observed in SDK output. */
   onSessionId: (sessionId: string) => void;
+  /** In-process MCP servers added to the ones .mcp.json declares. */
+  mcpServers?: Options["mcpServers"];
+  /** Callback hooks, run alongside the ones in settings.json. */
+  hooks?: Options["hooks"];
+  /** Appended to the claude_code system prompt. */
+  appendSystemPrompt?: string;
+  /** Extra environment for the CLI, e.g. a feature flag for this turn. */
+  env?: Record<string, string>;
 }
 
 export async function runTurn(args: RunTurnArgs): Promise<void> {
-  const { chatId, prompt, images = [], cwd, model, resumeSessionId, signal, onEvent, onSessionId } = args;
+  const { chatId, prompt, images = [], cwd, projectConfigRoot, model, resumeSessionId, signal, onEvent, onSessionId, mcpServers, hooks, appendSystemPrompt, env } = args;
   const translator = new EventTranslator();
 
   // Point the SDK at the global CLI binary we installed in the image.
@@ -39,6 +50,7 @@ export async function runTurn(args: RunTurnArgs): Promise<void> {
 
   const options: Options = {
     cwd,
+    projectConfigRoot,
     // Without this the SDK picks its own default and settings.json is inert.
     ...(model ? { model } : {}),
     permissionMode: "bypassPermissions",
@@ -49,7 +61,10 @@ export async function runTurn(args: RunTurnArgs): Promise<void> {
     // in isolation mode and ignores both, so per-workspace instructions and
     // skills never reach the model.
     settingSources: ["project"],
-    systemPrompt: { type: "preset", preset: "claude_code" },
+    systemPrompt: { type: "preset", preset: "claude_code", ...(appendSystemPrompt ? { append: appendSystemPrompt } : {}) },
+    ...(mcpServers ? { mcpServers } : {}),
+    ...(hooks ? { hooks } : {}),
+    ...(env ? { env: { ...process.env, ...env } } : {}),
     // SDK generates its own session UUID for new sessions; we capture it via
     // onSessionId and stash it against the chat_id so get_chat_messages works.
     ...(resumeSessionId ? { resume: resumeSessionId } : {}),
@@ -166,7 +181,13 @@ function handleSdkMessage(
   const type = anyMsg.type as string;
 
   if (type === "stream_event") {
-    const ev = anyMsg.event as { type: string; delta?: { type: string; text?: string } } | undefined;
+    const ev = anyMsg.event as
+      | { type: string; delta?: { type: string; text?: string }; content_block?: { type: string } }
+      | undefined;
+    if (ev?.type === "content_block_start" && ev.content_block?.type === "text") {
+      const brk = t.textBlockStart(chatId);
+      if (brk) emit(brk);
+    }
     if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
       emit(t.textDelta(ev.delta.text, chatId));
     }

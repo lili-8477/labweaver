@@ -42,22 +42,43 @@ export interface HarnessProgress {
   pendingFeedback: number
   /** Index of the next ☐ step; null when nothing is pending. */
   nextStepIndex: number | null
+  /** The agent that runs next: tick-executor, tick-reviewer, …; null when complete. */
+  nextAgent: string | null
 }
 
 // ============================================================
 // Chat
 // ============================================================
 
+/** How a chat runs its next message. The adapter turns auto into /tick and
+ *  team into /team; plain chat sends the text as is. */
+export type ChatMode = 'chat' | 'auto' | 'team'
+
 export interface ChatInfo {
   id: string
   name: string
   last_activity_date?: string
   running?: boolean
+  /** The running turn was sent in auto mode. */
+  auto_running?: boolean
   project_name?: string
   /** Workspace-relative project directory bound to this chat (e.g.
-   *  "local_projects/foo-1a2b"). When set, the agent cd's here and harness
-   *  progress is read from <project_dir>/progress.md. Null = unbound. */
+   *  "local_projects/foo-1a2b"). When set, the chat runs with this dir as cwd
+   *  and harness progress is read from <project_dir>/progress.md. Null = unbound. */
   project_dir?: string | null
+}
+
+/** A folder under local_projects/ (adapter list_projects). */
+export interface ProjectInfo {
+  /** Workspace-relative, e.g. "local_projects/pbmc-qc". */
+  dir: string
+  name: string
+  modified_at: string
+}
+
+/** A project and the notebooks in it (adapter list_project_notebooks). */
+export interface ProjectNotebooks extends ProjectInfo {
+  notebooks: { path: string; modified_at: string }[]
 }
 
 export interface ChatMessage {
@@ -177,24 +198,68 @@ export interface StreamMessage {
 }
 
 // ============================================================
-// Agents / Teams
+// Agents panel (get_chat_stats)
 // ============================================================
 
-export interface AgentInfo {
-  name: string
-  instructions: string
-  tools: string[]
-  toolsets: string[]
-  icon: string
-  not_loaded_toolsets: string[]
-  model: string | null
-  models: string[]
+export interface TokenTotals {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
 }
 
-export interface TemplateFile {
-  path: string
+export interface SubagentRun {
+  sessionId: string
+  description: string | null
+  /** "stopped": no result and the chat's turn is no longer running. */
+  status: 'running' | 'done' | 'failed' | 'stopped'
+  model: string | null
+  startedAt: string
+  endedAt: string
+  tokens: TokenTotals
+  toolCalls: number
+  /** First line of the run's last reply. */
+  result: string | null
+}
+
+/** Token use read from the chat's transcripts. */
+export interface TranscriptStats {
+  /** The chat's own turns, every session in its continuation chain. */
+  main: TokenTotals
+  turns: number
+  lastTurn: TokenTotals | null
+  subagents: SubagentRun[]
+}
+
+export interface ChatStats extends TranscriptStats {
+  /** The chat's Agent Team; null until the lead creates a teammate or task. */
+  team: TeamBoard | null
+}
+
+export interface TeamMember {
+  /** Session id; a teammate's is its subagent session. */
+  id: string
   name: string
-  type: string
+  role: 'lead' | 'teammate'
+  status: 'running' | 'inactive' | 'provisioning' | 'failed'
+  description?: string
+  model?: string
+}
+
+export interface TeamTask {
+  id: string
+  subject: string
+  description?: string
+  status: 'pending' | 'in_progress' | 'completed'
+  ownerName?: string
+  blockedBy: string[]
+  ready: boolean
+}
+
+export interface TeamBoard {
+  members: TeamMember[]
+  tasks: TeamTask[]
+  updatedAt: number
 }
 
 // ============================================================
@@ -245,6 +310,8 @@ export interface Notebook {
 export interface NotebookInfo {
   file_path: string
   version: number
+  /** File mtime (ms) as the adapter last read or wrote it. */
+  mtime?: number
   cell_count: number
   notebook: Notebook
 }

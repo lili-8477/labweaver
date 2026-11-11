@@ -6,6 +6,12 @@
  *   - Calls store.loadFirstPage() on mount (MemoryList.vue does NOT do this).
  *   - Does NOT reset state on unmount so filter+selection survive a Files/Notebook detour.
  *
+ * View: 'overview' (MemoryOverview: stats + knowledge graph, the default), 'list' (filterable
+ * MemoryList) or 'context' (MemoryContextGraph: memories with the skills and
+ * resources they name). Scope/source/directory filters apply to the list only;
+ * typing a search switches to the list, except in the context view, where it
+ * filters the graph.
+ *
  * Search mode:
  *   When searchActive is true, store.items is overwritten with search hits coerced
  *   to MemoryListItem shape. The store is otherwise oblivious to search mode — this
@@ -26,8 +32,40 @@ import { memoryService } from '@/services/memory'
 import type { MemoryListItem, MemorySource, ScopeTier } from '@/types'
 import MemoryList from './MemoryList.vue'
 import MemoryDetail from './MemoryDetail.vue'
+import MemoryOverview from './MemoryOverview.vue'
+import MemoryContextGraph from './MemoryContextGraph.vue'
+import MemoryBuildJobs from './MemoryBuildJobs.vue'
+import { useChatStore } from '@/stores/chat'
 
 const store = useMemoryStore()
+const chat = useChatStore()
+
+// Import starts in the open chat's project, else the projects folder.
+function openImport() {
+  store.openImport(chat.activeChat?.project_dir || 'local_projects')
+}
+
+// ── View: tree overview or filterable list ────────────────────────────────────
+
+type View = 'overview' | 'list' | 'context'
+const VIEWS: Array<{ value: View; label: string }> = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'list', label: 'List' },
+  { value: 'context', label: 'Context' },
+]
+const VIEW_KEY = 'bioflow-memory-view'
+const view = ref<View>(
+  (() => {
+    try {
+      const v = localStorage.getItem(VIEW_KEY)
+      return v === 'list' ? 'list' : v === 'context' || v === 'graph' ? 'context' : 'overview'
+    } catch { return 'overview' }
+  })()
+)
+function setView(v: View) {
+  view.value = v
+  try { localStorage.setItem(VIEW_KEY, v) } catch { /* ignore */ }
+}
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
@@ -57,6 +95,8 @@ function scheduleSearch(val: string) {
 }
 
 function onSearchInput() {
+  if (view.value === 'context') return   // the graph filters itself by the input
+  if (searchInput.value.trim()) view.value = 'list'
   scheduleSearch(searchInput.value)
 }
 
@@ -86,18 +126,29 @@ const scopeTabs: { label: string; value: ScopeTab }[] = [
 const activeScope = computed(() => store.filters.scope)
 
 function setScope(value: ScopeTab) {
-  store.setFilter({ scope: value })
+  store.setFilter({ scope: value, dir: undefined })
+}
+
+// ── Directories (second level of the scope → directory tree) ──────────────────
+
+const scopeDirs = computed(() =>
+  activeScope.value ? store.dirs.filter((d) => d.scope === activeScope.value) : [],
+)
+
+function toggleDir(dirKey: string) {
+  store.setFilter({ dir: store.filters.dir === dirKey ? undefined : dirKey })
 }
 
 // ── Source chip ───────────────────────────────────────────────────────────────
 
-// Cycles: undefined → 'user' → 'distilled' → undefined
-const sourceOrder: (MemorySource | undefined)[] = [undefined, 'user', 'distilled']
+// Cycles: undefined → 'user' → 'distilled' → 'import' → undefined
+const sourceOrder: (MemorySource | undefined)[] = [undefined, 'user', 'distilled', 'import']
 
 const sourceLabel = computed(() => {
   const s = store.filters.source
   if (s === 'user') return 'Source: manual'
   if (s === 'distilled') return 'Source: distilled'
+  if (s === 'import') return 'Source: imported'
   return 'Source: any'
 })
 
@@ -110,7 +161,7 @@ function cycleSource() {
 
 // ── Split pane (vertical) ─────────────────────────────────────────────────────
 
-const SPLIT_KEY = 'bioflow-memory-split'
+const SPLIT_KEY = 'labweaver-memory-split'
 const splitPercent = ref<number>(
   (() => {
     try {
@@ -127,7 +178,7 @@ const splitPercent = ref<number>(
 let splitDragging = false
 let splitStartY = 0
 let splitStartPct = 0
-let panelEl: HTMLElement | null = null
+const panelEl = ref<HTMLElement | null>(null)
 
 function onSplitMousedown(e: MouseEvent) {
   splitDragging = true
@@ -138,8 +189,8 @@ function onSplitMousedown(e: MouseEvent) {
 }
 
 function onSplitMousemove(e: MouseEvent) {
-  if (!splitDragging || !panelEl) return
-  const totalH = panelEl.getBoundingClientRect().height
+  if (!splitDragging || !panelEl.value) return
+  const totalH = panelEl.value.getBoundingClientRect().height
   if (totalH === 0) return
   const dy = e.clientY - splitStartY
   const newPct = splitStartPct + (dy / totalH) * 100
@@ -196,7 +247,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="memory-panel" ref="panelEl">
+  <div class="memory-panel">
     <!-- ── Header ─────────────────────────────────────────────────── -->
     <div class="panel-header">
       <!-- Search bar -->
@@ -207,17 +258,30 @@ onUnmounted(() => {
             v-model="searchInput"
             class="search-input"
             type="search"
-            placeholder="Search memories…"
+            :placeholder="view === 'context' ? 'Filter graph…' : 'Search memories…'"
             aria-label="Search memories"
             @input="onSearchInput"
             @keydown="onSearchKeydown"
           />
           <button v-if="searchInput" class="search-clear" @click="clearSearch" aria-label="Clear search">×</button>
         </div>
+        <div class="view-toggle" role="tablist" aria-label="View">
+          <button
+            v-for="v in VIEWS"
+            :key="v.value"
+            class="scope-tab"
+            :class="{ active: view === v.value }"
+            role="tab"
+            :aria-selected="view === v.value"
+            @click="setView(v.value)"
+          >{{ v.label }}</button>
+        </div>
+        <button class="scope-tab import-btn" title="Build memory from files and folders" @click="openImport">Import</button>
       </div>
+      <MemoryBuildJobs />
 
       <!-- Scope tabs -->
-      <div class="filter-row" role="tablist" aria-label="Scope">
+      <div v-if="view === 'list'" class="filter-row" role="tablist" aria-label="Scope">
         <button
           v-for="tab in scopeTabs"
           :key="String(tab.value)"
@@ -249,6 +313,20 @@ onUnmounted(() => {
           Deleted
         </label>
       </div>
+
+      <!-- Directories of the selected scope -->
+      <div v-if="view === 'list' && scopeDirs.length" class="filter-row dir-row" role="tablist" aria-label="Directory">
+        <button
+          v-for="d in scopeDirs"
+          :key="d.dir_key"
+          class="scope-tab"
+          :class="{ active: store.filters.dir === d.dir_key }"
+          role="tab"
+          :aria-selected="store.filters.dir === d.dir_key"
+          :title="d.l0"
+          @click="toggleDir(d.dir_key)"
+        >{{ d.dir_key.split('/')[1] }} <span class="dir-count">{{ d.entry_count }}</span></button>
+      </div>
     </div>
 
     <!-- ── Narrow viewport: single-pane ──────────────────────────── -->
@@ -258,7 +336,11 @@ onUnmounted(() => {
         <div v-if="narrowView === 'detail'" class="narrow-back-row">
           <button class="btn-back" @click="narrowView = 'list'">‹ Back</button>
         </div>
-        <MemoryList v-if="narrowView === 'list'" class="pane-fill" />
+        <template v-if="narrowView === 'list'">
+          <MemoryOverview v-if="view === 'overview'" class="pane-fill" />
+          <MemoryContextGraph v-else-if="view === 'context'" :filter="searchInput" class="pane-fill" />
+          <MemoryList v-else class="pane-fill" />
+        </template>
         <MemoryDetail v-else class="pane-fill" />
       </div>
     </template>
@@ -274,7 +356,9 @@ onUnmounted(() => {
           class="split-pane pane-list"
           :style="{ height: splitPercent + '%' }"
         >
-          <MemoryList class="pane-fill" />
+          <MemoryOverview v-if="view === 'overview'" class="pane-fill" />
+          <MemoryContextGraph v-else-if="view === 'context'" :filter="searchInput" class="pane-fill" />
+          <MemoryList v-else class="pane-fill" />
         </div>
 
         <!-- Drag handle -->
@@ -306,8 +390,13 @@ onUnmounted(() => {
 }
 
 .search-row {
-  padding: var(--space-2) var(--space-3) 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
 }
+.search-row .search-wrap { flex: 1; min-width: 0; }
+.view-toggle { display: flex; gap: 2px; flex-shrink: 0; }
 
 .search-wrap {
   position: relative;
@@ -361,10 +450,11 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
+  padding: 0 var(--space-3) var(--space-2);
   flex-wrap: wrap;
 }
 
+.import-btn { flex: none; border-color: var(--border); }
 .scope-tab {
   padding: 2px 10px;
   border-radius: var(--radius-pill);
@@ -388,6 +478,9 @@ onUnmounted(() => {
 }
 
 .filter-spacer { flex: 1; }
+
+.dir-row { padding-top: 0; }
+.dir-count { color: var(--text-tertiary, var(--text-secondary)); font-variant-numeric: tabular-nums; margin-left: 2px; }
 
 .source-chip {
   padding: 2px 8px;

@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { Pool } from "pg";
 import { buildApp, type MemoryApiDeps } from "../src/memory-api.js";
+import { InvalidDirError } from "../src/memory-dirs.js";
+import type { MemoryGraph } from "../src/memory-contract.js";
+import type { Changed } from "../src/memory-access.js";
 import type {
   SearchHit,
   MemoryDetail,
@@ -8,6 +11,12 @@ import type {
   MemoryContext,
   ListItem,
 } from "../src/memory-repo.js";
+
+const EMPTY_OUTCOME = {
+  run_id: "r-1" as string | null, claim_ids: [] as Array<string | null>, experience_ids: [] as Array<string | null>,
+  duplicates: [] as never[], superseded: [] as never[], qualified: [] as never[], related: [] as never[],
+  similar: [] as Array<{ name: string; matches: never[] }>,
+};
 
 // Tiny test-double factory: every repo function is a vi.fn() with a sensible
 // default return. Tests override on a per-case basis with mockResolvedValueOnce.
@@ -23,7 +32,23 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
   listMemories:     ReturnType<typeof vi.fn>;
   getAuditTrail:    ReturnType<typeof vi.fn>;
   getMetrics:       ReturnType<typeof vi.fn>;
+  listDirs:         ReturnType<typeof vi.fn>;
+  getDir:           ReturnType<typeof vi.fn>;
+  memoryTree:       ReturnType<typeof vi.fn>;
+  recordFeedback:   ReturnType<typeof vi.fn>;
+  recordUse:        ReturnType<typeof vi.fn>;
+  usedSince:        ReturnType<typeof vi.fn>;
+  proposeExperiences: ReturnType<typeof vi.fn>;
   writeDistillation: ReturnType<typeof vi.fn>;
+  linkMemories:     ReturnType<typeof vi.fn>;
+  buildBundle:      ReturnType<typeof vi.fn>;
+  consolidate:      ReturnType<typeof vi.fn>;
+  memoryGraph:      ReturnType<typeof vi.fn>;
+  importEntries:    ReturnType<typeof vi.fn>;
+  createBuildJob:   ReturnType<typeof vi.fn>;
+  updateBuildJob:   ReturnType<typeof vi.fn>;
+  listBuildJobs:    ReturnType<typeof vi.fn>;
+  importedFiles:    ReturnType<typeof vi.fn>;
 } } {
   const repo = {
     searchMemories:   vi.fn(async (): Promise<SearchHit[]>     => []),
@@ -32,8 +57,8 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
     writeUserMemory:  vi.fn(async (): Promise<{ memory_id: string | null }> => ({ memory_id: "m-1" })),
     forgetMemory:     vi.fn(async (): Promise<{ ok: boolean }> => ({ ok: true })),
     getContext:       vi.fn(async (): Promise<MemoryContext>   => ({ system_prompt: "", memory_ids: [] })),
-    updateMemory:     vi.fn(async (): Promise<{ ok: boolean; reason?: 'not_found' | 'forbidden' | 'distilled' }> => ({ ok: true })),
-    restoreMemory:    vi.fn(async (): Promise<{ ok: boolean; reason?: 'not_found' | 'forbidden' | 'not_deleted' }> => ({ ok: true })),
+    updateMemory:     vi.fn(async (): Promise<Changed<'not_found' | 'forbidden' | 'distilled' | 'immutable'>> => ({ ok: true })),
+    restoreMemory:    vi.fn(async (): Promise<Changed<'not_found' | 'forbidden' | 'not_deleted'>> => ({ ok: true })),
     listMemories:     vi.fn(async (): Promise<{ items: ListItem[]; next_cursor: string | null }> => ({ items: [], next_cursor: null })),
     getAuditTrail:    vi.fn(async (): Promise<{ rows: never[] } | { error: 'not_found' | 'forbidden' }> => ({ rows: [] })),
     getMetrics:       vi.fn(async (): Promise<{ memories_total: number; memories_by_type: Record<string, number>; memories_by_source: { user: number; distilled: number }; memories_soft_deleted: number; embedder_queue_depth: number; embedder_queue_oldest: string | null; distill_cursor_lag_seconds_max: number; audit_log_size: number }> => ({
@@ -46,11 +71,32 @@ function makeDeps(): { deps: MemoryApiDeps; repo: {
       distill_cursor_lag_seconds_max: 0,
       audit_log_size: 0,
     })),
-    writeDistillation: vi.fn(async (): Promise<void> => {}),
+    listDirs:         vi.fn(async () => []),
+    getDir:           vi.fn(async () => null),
+    memoryTree:       vi.fn(async () => ({ dirs: [], memories: [], topics: [], thresholds: { memories: 3, successes: 3 } })),
+    recordFeedback:   vi.fn(async () => ({ updated: 0 })),
+    recordUse:        vi.fn(async () => undefined),
+    usedSince:        vi.fn(async () => [] as string[]),
+    proposeExperiences: vi.fn(async () => ({ proposed: [] as string[] })),
+    writeDistillation: vi.fn(async () => ({ ...EMPTY_OUTCOME })),
+    linkMemories:     vi.fn(async (): Promise<{ ok: boolean; reason?: "not_found" | "forbidden" | "self" }> => ({ ok: true })),
+    buildBundle:      vi.fn(async () => ({
+      query: "q", filters: {}, current_versions: [], facts: [], experiences: [], warnings: [], text: "",
+    })),
+    consolidate:      vi.fn(async () => ({ proposed_supports: [], unlabeled_pairs: [], stale_experiences: [], similar_understandings: [] })),
+    memoryGraph:      vi.fn(async (): Promise<MemoryGraph> => ({ nodes: [], edges: [], dropped: { memory: 0, skill: 0, resource: 0, topic: 0 } })),
+    importEntries:    vi.fn(async () => ({ created: 1, duplicates: 0, memory_ids: ["m-1"] })),
+    createBuildJob:   vi.fn(async () => "00000000-0000-4000-8000-000000000009"),
+    updateBuildJob:   vi.fn(async () => true),
+    listBuildJobs:    vi.fn(async () => []),
+    importedFiles:    vi.fn(async () => ["ab".repeat(32)]),
   };
   const deps: MemoryApiDeps = {
     pool: {} as Pool,
     embedderClient: { embedTexts: vi.fn(async () => []) },
+    mergeSimilarity: 0.9,
+    managers:        ["pi"],
+    workspacesRoot:  "/ws",
     repo,
   };
   return { deps, repo };
@@ -77,7 +123,12 @@ describe("memory-api", () => {
   describe("POST /memory/search", () => {
     it("happy path: forwards to searchMemories and returns hits", async () => {
       const hits: SearchHit[] = [
-        { memory_id: "a", name: "n", description: "d", snippet: "s", score: 0.9, scope_tier: "user" },
+        {
+          memory_id: "a", name: "n", description: "d", dir_key: "user/notes", snippet: "s", score: 0.9,
+          scope_tier: "user", type: "user", source: "user",
+          created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z",
+          hit_count: 0, last_hit_at: null, deleted_at: null, exact: false,
+        },
       ];
       depsBag.repo.searchMemories.mockResolvedValueOnce(hits);
 
@@ -143,6 +194,8 @@ describe("memory-api", () => {
         project_dir:       null,
         type:              "user",
         source:            "user",
+        scope_tier:        "user",
+        dir_key:           "user/notes",
         name:              "test",
         description:       "desc",
         body:              "body",
@@ -150,22 +203,31 @@ describe("memory-api", () => {
         facets:            {},
         hit_count:         0,
         last_hit_at:       null,
-        created_at:        new Date("2026-01-01T00:00:00Z"),
-        updated_at:        new Date("2026-01-01T00:00:00Z"),
+        created_at:        "2026-01-01T00:00:00.000Z",
+        updated_at:        "2026-01-01T00:00:00.000Z",
+        deleted_at:        null,
       };
       depsBag.repo.getMemory.mockResolvedValueOnce(detail);
 
-      const res = await app.inject({ method: "GET", url: "/memory/abc" });
+      const res = await app.inject({ method: "GET", url: "/memory/abc?username=alice" });
       expect(res.statusCode).toBe(200);
       const json = res.json();
       expect(json.memory_id).toBe("abc");
       expect(json.username).toBe("alice");
-      expect(depsBag.repo.getMemory).toHaveBeenCalledWith(depsBag.deps.pool, "abc");
+      expect(depsBag.repo.getMemory).toHaveBeenCalledWith({
+        pool: depsBag.deps.pool, memoryId: "abc", username: "alice", clearance: "internal",
+      });
+    });
+
+    it("needs the caller: there is no anonymous lookup by id", async () => {
+      const res = await app.inject({ method: "GET", url: "/memory/abc" });
+      expect(res.statusCode).toBe(400);
+      expect(depsBag.repo.getMemory).not.toHaveBeenCalled();
     });
 
     it("returns 404 when getMemory returns null", async () => {
       depsBag.repo.getMemory.mockResolvedValueOnce(null);
-      const res = await app.inject({ method: "GET", url: "/memory/missing" });
+      const res = await app.inject({ method: "GET", url: "/memory/missing?username=alice" });
       expect(res.statusCode).toBe(404);
     });
   });
@@ -175,7 +237,7 @@ describe("memory-api", () => {
   describe("GET /memory/timeline", () => {
     it("happy path: forwards query params and converts since/until to Date", async () => {
       const entries: TimelineEntry[] = [
-        { memory_id: "x", name: "n", type: "user", created_at: new Date("2026-01-01T00:00:00Z") },
+        { memory_id: "x", name: "n", type: "user", dir_key: "user/notes", created_at: "2026-01-01T00:00:00.000Z" },
       ];
       depsBag.repo.timelineMemories.mockResolvedValueOnce(entries);
 
@@ -221,6 +283,7 @@ describe("memory-api", () => {
           name:        "n",
           description: "d",
           body:        "b",
+          domain:      "technical",
           facets:      { tag: ["x"] },
         },
       });
@@ -230,6 +293,7 @@ describe("memory-api", () => {
       expect(arg.scope).toBe("user");
       expect(arg.project_dir).toBeNull();
       expect(arg.facets).toEqual({ tag: ["x"] });
+      expect(arg.domain).toBe("technical");
       expect(arg.pool).toBe(depsBag.deps.pool);
     });
 
@@ -245,6 +309,7 @@ describe("memory-api", () => {
           name:        "n",
           description: "d",
           body:        "b",
+          domain:      "lab",
         },
       });
       expect(res.statusCode).toBe(200);
@@ -296,7 +361,7 @@ describe("memory-api", () => {
   // ────────────────────────────── /memory/context ─────────────────────────────
 
   describe("GET /memory/context", () => {
-    it("happy path: applies default budget_tokens=2000 when omitted", async () => {
+    it("happy path: applies default budget_tokens=800 when omitted", async () => {
       const ctx: MemoryContext = { system_prompt: "hi", memory_ids: ["a"] };
       depsBag.repo.getContext.mockResolvedValueOnce(ctx);
 
@@ -309,7 +374,7 @@ describe("memory-api", () => {
       const arg = depsBag.repo.getContext.mock.calls[0]![0];
       expect(arg.username).toBe("alice");
       expect(arg.project_path).toBe("/workspace/foo");
-      expect(arg.budget_tokens).toBe(2000);
+      expect(arg.budget_tokens).toBe(800);
     });
 
     it("happy path: honours explicit budget_tokens", async () => {
@@ -493,6 +558,7 @@ describe("memory-api", () => {
       type:        "observation",
       source:      "user",
       scope_tier:  "user",
+      dir_key:     "user/notes",
       name:        "test memory",
       description: "desc",
       created_at:  "2026-01-01T00:00:00.000Z",
@@ -631,83 +697,242 @@ describe("memory-api", () => {
     const validBody = {
       username:    "alice",
       project_dir: "-home-alice-proj",
-      summary: { name: "n", description: "d", body: "b" },
-      observations: [
-        { type: "decision", name: "n", description: "d", body: "b", facets: { tool: ["seqkit"] } },
-      ],
+      run: { subject: "PBMC3k QC", statement: "filtered to 2638 cells", conditions: { dataset: ["pbmc3k"] } },
+      claims: [{ claim_kind: "result", subject: "clusters", statement: "9 clusters at res 0.8" }],
     };
 
-    it("happy path: forwards summary+observations to writeDistillation, returns attempted count", async () => {
+    it("happy path: forwards the parsed v2 payload and returns the outcome", async () => {
       const res = await app.inject({ method: "POST", url: "/memory/distill", payload: validBody });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ ok: true, attempted: 2 });
-      expect(depsBag.repo.writeDistillation).toHaveBeenCalledTimes(1);
+      expect(res.json()).toEqual({ ok: true, ...EMPTY_OUTCOME });
       const arg = depsBag.repo.writeDistillation.mock.calls[0]![1];
-      expect(arg.sessionMeta.username).toBe("alice");
-      expect(arg.sessionMeta.project_dir).toBe("-home-alice-proj");
-      expect(arg.sessionMeta.source_session_id).toBeNull();
-      expect(arg.result.summary).toEqual(validBody.summary);
-      expect(arg.result.observations).toEqual(validBody.observations);
+      expect(arg.sessionMeta).toEqual({ username: "alice", project_dir: "-home-alice-proj", source_session_id: null });
+      expect(arg.promptVersion).toBe(2);
+      // zod defaults are applied before the repo sees the payload.
+      expect(arg.result.run).toMatchObject({ subject: "PBMC3k QC", inputs: [], evidence: [] });
+      expect(arg.result.claims[0]).toMatchObject({ claim_kind: "result", conditions: {} });
+      expect(arg.result.experiences).toEqual([]);
     });
 
-    it("empty observations array is valid; attempted=1", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/memory/distill",
-        payload: { ...validBody, observations: [] },
-      });
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ ok: true, attempted: 1 });
+    it("source_session_id must be a UUID", async () => {
+      const bad = await app.inject({ method: "POST", url: "/memory/distill", payload: { ...validBody, source_session_id: "abc" } });
+      expect(bad.statusCode).toBe(400);
+      const sid = "00000000-0000-4000-8000-000000000001";
+      const ok = await app.inject({ method: "POST", url: "/memory/distill", payload: { ...validBody, source_session_id: sid } });
+      expect(ok.statusCode).toBe(200);
+      expect(depsBag.repo.writeDistillation.mock.calls[0]![1].sessionMeta.source_session_id).toBe(sid);
     });
 
-    it("source_session_id is forwarded when provided", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/memory/distill",
-        payload: { ...validBody, source_session_id: "abc-123" },
-      });
-      expect(res.statusCode).toBe(200);
-      const arg = depsBag.repo.writeDistillation.mock.calls[0]![1];
-      expect(arg.sessionMeta.source_session_id).toBe("abc-123");
-    });
-
-    it("rejects payload missing summary with 400", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/memory/distill",
-        payload: { username: "alice", observations: [] },
-      });
+    it("rejects a payload without a run claim", async () => {
+      const res = await app.inject({ method: "POST", url: "/memory/distill", payload: { username: "alice", claims: [] } });
       expect(res.statusCode).toBe(400);
       expect(depsBag.repo.writeDistillation).not.toHaveBeenCalled();
     });
 
-    it("rejects observation with invalid type with 400", async () => {
-      const res = await app.inject({
-        method: "POST",
-        url: "/memory/distill",
-        payload: {
-          ...validBody,
-          observations: [{ type: "speculation", name: "n", description: "d", body: "b", facets: {} }],
-        },
-      });
-      expect(res.statusCode).toBe(400);
-      expect(depsBag.repo.writeDistillation).not.toHaveBeenCalled();
+    it("rejects unknown condition keys and bad evidence URIs", async () => {
+      for (const run of [
+        { ...validBody.run, conditions: { favourite_colour: ["blue"] } },
+        { ...validBody.run, evidence: [{ uri: "results/umap.png" }] },
+      ]) {
+        const res = await app.inject({ method: "POST", url: "/memory/distill", payload: { ...validBody, run } });
+        expect(res.statusCode).toBe(400);
+      }
     });
 
-    it("rejects more than 8 observations with 400", async () => {
-      const obs = Array.from({ length: 9 }, () => ({
-        type: "finding", name: "n", description: "d", body: "b", facets: {},
-      }));
+    it("rejects an experience below the value bar", async () => {
+      const exp = { task: "t", solution: "s", domain: "lab", applicability: ["always"] };
       const res = await app.inject({
-        method: "POST",
-        url: "/memory/distill",
-        payload: { ...validBody, observations: obs },
+        method: "POST", url: "/memory/distill", payload: { ...validBody, experiences: [exp] },
       });
+      expect(res.statusCode).toBe(400);
+      const res2 = await app.inject({
+        method: "POST", url: "/memory/distill",
+        payload: { ...validBody, experiences: [{ ...exp, failure_modes: ["fails on 10x v2"], source: 5 }] },
+      });
+      expect(res2.statusCode).toBe(400); // source index out of range
+    });
+
+    it("rejects more than 5 claims or 3 experiences", async () => {
+      const claims = Array.from({ length: 6 }, () => validBody.claims[0]);
+      const res = await app.inject({ method: "POST", url: "/memory/distill", payload: { ...validBody, claims } });
       expect(res.statusCode).toBe(400);
     });
   });
 
+  describe("scientific routes", () => {
+    const A = "00000000-0000-4000-8000-00000000000a";
+    const B = "00000000-0000-4000-8000-00000000000b";
+
+    it("POST /memory/search forwards conditions and the caller's clearance", async () => {
+      app = buildApp({ ...depsBag.deps, clearance: { alice: "irb" } });
+      await app.inject({
+        method: "POST", url: "/memory/search",
+        payload: { username: "alice", query: "q", conditions: { cell_line: ["A549"] }, strict: true },
+      });
+      expect(depsBag.repo.searchMemories).toHaveBeenCalledWith(expect.objectContaining({
+        conditions: { cell_line: ["A549"] }, strict: true, clearance: "irb",
+      }));
+    });
+
+    it("POST /memory/bundle encodes project_path and defaults clearance to internal", async () => {
+      const res = await app.inject({
+        method: "POST", url: "/memory/bundle",
+        payload: { username: "bob", project_path: "/workspace/pbmc3k", query: "q" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(depsBag.repo.buildBundle).toHaveBeenCalledWith(expect.objectContaining({
+        username: "bob", project_dir: "-workspace-pbmc3k", clearance: "internal",
+      }));
+    });
+
+    it("POST /memory/link maps repo reasons to status codes", async () => {
+      const body = { actor: "alice", src_id: A, dst_id: B, rel: "SUPPORTS" };
+      expect((await app.inject({ method: "POST", url: "/memory/link", payload: body })).statusCode).toBe(200);
+      depsBag.repo.linkMemories.mockResolvedValueOnce({ ok: false, reason: "forbidden" });
+      expect((await app.inject({ method: "POST", url: "/memory/link", payload: body })).statusCode).toBe(403);
+      depsBag.repo.linkMemories.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+      expect((await app.inject({ method: "POST", url: "/memory/link", payload: body })).statusCode).toBe(404);
+      const bad = await app.inject({ method: "POST", url: "/memory/link", payload: { ...body, rel: "LIKES" } });
+      expect(bad.statusCode).toBe(400);
+    });
+
+    it("POST /memory/consolidate is manager-only", async () => {
+      const no = await app.inject({ method: "POST", url: "/memory/consolidate", payload: { actor: "alice" } });
+      expect(no.statusCode).toBe(403);
+      const yes = await app.inject({ method: "POST", url: "/memory/consolidate", payload: { actor: "pi" } });
+      expect(yes.statusCode).toBe(200);
+      expect(depsBag.repo.consolidate).toHaveBeenCalledWith(expect.objectContaining({ actor: "pi", similarity: 0.9 }));
+    });
+
+    it("PUT /memory/:id returns 409 for an immutable claim", async () => {
+      depsBag.repo.updateMemory.mockResolvedValueOnce({ ok: false, reason: "immutable" });
+      const res = await app.inject({
+        method: "PUT", url: "/memory/m-1",
+        payload: { actor: "alice", name: "n", description: "d", body: "b", merge: true },
+      });
+      expect(res.statusCode).toBe(409);
+    });
+  });
+
   // ────────────────────────────── /memory/metrics ──────────────────────────
+
+  // ────────────────────────────── tiered recall ───────────────────────────────
+  describe("tiered recall", () => {
+    it("POST /memory/feedback validates and forwards", async () => {
+      const id = "00000000-0000-4000-8000-000000000001";
+      const ok = await app.inject({
+        method: "POST", url: "/memory/feedback",
+        payload: { username: "alice", memory_ids: [id], outcome: "success" },
+      });
+      expect(ok.statusCode).toBe(200);
+      expect(depsBag.repo.recordFeedback).toHaveBeenCalledWith(
+        expect.objectContaining({ username: "alice", memory_ids: [id], outcome: "success" }),
+      );
+      expect(depsBag.repo.proposeExperiences).toHaveBeenCalledWith(
+        expect.objectContaining({ managers: ["pi"], memory_ids: [id] }),
+      );
+      const bad = await app.inject({
+        method: "POST", url: "/memory/feedback",
+        payload: { username: "alice", memory_ids: [id], outcome: "meh" },
+      });
+      expect(bad.statusCode).toBe(400);
+    });
+
+    it("POST /memory/feedback does not propose on failure", async () => {
+      await app.inject({
+        method: "POST", url: "/memory/feedback",
+        payload: { username: "alice", memory_ids: ["00000000-0000-4000-8000-000000000001"], outcome: "failure" },
+      });
+      expect(depsBag.repo.proposeExperiences).not.toHaveBeenCalled();
+    });
+
+    it("POST /memory/search encodes project_path server-side", async () => {
+      await app.inject({
+        method: "POST", url: "/memory/search",
+        payload: { username: "alice", project_path: "/workspace/pbmc3k", query: "q" },
+      });
+      expect(depsBag.repo.searchMemories).toHaveBeenCalledWith(
+        expect.objectContaining({ project_dir: "-workspace-pbmc3k" }),
+      );
+    });
+  });
+
+  // ────────────────────────────── merge-on-write ──────────────────────────────
+  describe("merge-on-write", () => {
+    it("POST /memory/write passes force_new and the merge check", async () => {
+      await app.inject({
+        method: "POST", url: "/memory/write",
+        payload: { username: "alice", scope: "user", type: "user", name: "n", description: "d", body: "b", domain: "lab", force_new: true },
+      });
+      expect(depsBag.repo.writeUserMemory).toHaveBeenCalledWith(expect.objectContaining({
+        force_new: true,
+        merge: expect.objectContaining({ similarity: 0.9 }),
+      }));
+    });
+
+    it("POST /memory/distill returns held-back experiences", async () => {
+      depsBag.repo.writeDistillation.mockResolvedValueOnce({ ...EMPTY_OUTCOME, similar: [{ name: "qc", matches: [] }] });
+      const res = await app.inject({
+        method: "POST", url: "/memory/distill",
+        payload: { username: "alice", run: { subject: "s", statement: "b" } },
+      });
+      expect(res.json()).toMatchObject({ ok: true, similar: [{ name: "qc", matches: [] }] });
+    });
+
+    it("PUT /memory/:id forwards merge", async () => {
+      await app.inject({
+        method: "PUT", url: "/memory/m-1",
+        payload: { actor: "alice", name: "n", description: "d", body: "b", merge: true },
+      });
+      expect(depsBag.repo.updateMemory).toHaveBeenCalledWith(expect.objectContaining({ merge: true }));
+    });
+  });
+
+  // ────────────────────────────── directories ─────────────────────────────────
+  describe("memory directories", () => {
+    it("GET /memory/dirs passes owner through", async () => {
+      depsBag.repo.listDirs.mockResolvedValueOnce([{ dir_key: "user/notes" }]);
+      const res = await app.inject({ method: "GET", url: "/memory/dirs?username=alice&project_dir=-w-p" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual([{ dir_key: "user/notes" }]);
+      expect(depsBag.repo.listDirs).toHaveBeenCalledWith(
+        expect.objectContaining({ username: "alice", project_dir: "-w-p" }),
+      );
+    });
+
+    it("GET /memory/dirs/:dir_key decodes the key and 404s when absent", async () => {
+      const res = await app.inject({ method: "GET", url: "/memory/dirs/user%2Fnotes?username=alice&limit=5" });
+      expect(res.statusCode).toBe(404);
+      expect(depsBag.repo.getDir).toHaveBeenCalledWith(
+        expect.objectContaining({ dir_key: "user/notes", project_dir: null, limit: 5 }),
+      );
+    });
+
+    it("GET /memory/tree passes owner and limit through", async () => {
+      const res = await app.inject({ method: "GET", url: "/memory/tree?username=alice&limit=10" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ topics: [], thresholds: { memories: 3 } });
+      expect(depsBag.repo.memoryTree).toHaveBeenCalledWith(
+        expect.objectContaining({ username: "alice", limit: 10 }),
+      );
+    });
+
+    it("GET /memory/dirs requires username", async () => {
+      const res = await app.inject({ method: "GET", url: "/memory/dirs" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("POST /memory/write forwards dir and maps InvalidDirError to 400", async () => {
+      depsBag.repo.writeUserMemory.mockRejectedValueOnce(new InvalidDirError("project/decisions", "user"));
+      const res = await app.inject({
+        method: "POST", url: "/memory/write",
+        payload: { username: "alice", scope: "user", type: "user", name: "n", description: "d", body: "b", domain: "lab", dir: "project/decisions" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toMatch(/project\/decisions/);
+      expect(depsBag.repo.writeUserMemory).toHaveBeenCalledWith(expect.objectContaining({ dir: "project/decisions" }));
+    });
+  });
 
   describe("GET /memory/metrics", () => {
     it("returns metrics from repo.getMetrics", async () => {
@@ -728,6 +953,113 @@ describe("memory-api", () => {
       expect(res.json()).toEqual(mockMetrics);
       expect(depsBag.repo.getMetrics).toHaveBeenCalledTimes(1);
       expect(depsBag.repo.getMetrics).toHaveBeenCalledWith(depsBag.deps.pool);
+    });
+  });
+
+  // ────────────────────────────── outcome loop ──────────────────────────────
+
+  describe("outcome loop", () => {
+    const detail = { memory_id: "m1", name: "n" };
+
+    it("records a use only when the agent says it is using the memory", async () => {
+      depsBag.repo.getMemory.mockResolvedValue(detail);
+      await app.inject({ method: "GET", url: "/memory/m1?username=alice" });
+      expect(depsBag.repo.recordUse).not.toHaveBeenCalled();
+      await app.inject({ method: "GET", url: "/memory/m1?username=alice&use=true" });
+      expect(depsBag.repo.recordUse).toHaveBeenCalledWith(expect.objectContaining({ username: "alice", memoryId: "m1" }));
+    });
+
+    it("credits a step outcome to the memories used since the step began", async () => {
+      depsBag.repo.usedSince.mockResolvedValueOnce(["m1", "m2"]);
+      depsBag.repo.recordFeedback.mockResolvedValueOnce({ updated: 2 });
+      depsBag.repo.proposeExperiences.mockResolvedValueOnce({ proposed: ["m2"] });
+      const since = "2026-10-20T10:00:00.000Z";
+      const res = await app.inject({ method: "POST", url: "/memory/outcome", payload: { username: "alice", outcome: "success", since } });
+      expect(res.json()).toEqual({ memory_ids: ["m1", "m2"], updated: 2, proposed_for_org: ["m2"] });
+      expect(depsBag.repo.usedSince).toHaveBeenCalledWith(expect.objectContaining({ username: "alice", since: new Date(since) }));
+      expect(depsBag.repo.recordFeedback).toHaveBeenCalledWith(expect.objectContaining({ memory_ids: ["m1", "m2"], outcome: "success" }));
+    });
+
+    it("does nothing when no memory was used", async () => {
+      const res = await app.inject({ method: "POST", url: "/memory/outcome", payload: { username: "alice", outcome: "failure", since: "2026-10-20T10:00:00.000Z" } });
+      expect(res.json()).toEqual({ memory_ids: [], updated: 0, proposed_for_org: [] });
+      expect(depsBag.repo.recordFeedback).not.toHaveBeenCalled();
+    });
+  });
+  describe("GET /memory/graph", () => {
+    it("forwards username, include_deleted and the workspaces root", async () => {
+      const res = await app.inject({ method: "GET", url: "/memory/graph?username=alice&include_deleted=true" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ nodes: [], edges: [], dropped: { memory: 0, skill: 0, resource: 0, topic: 0 } });
+      expect(depsBag.repo.memoryGraph.mock.calls[0]![0]).toMatchObject({
+        username: "alice", include_deleted: true, workspacesRoot: "/ws",
+      });
+    });
+
+    it("400 for a username that is not a plain path segment", async () => {
+      for (const u of ["", "..", "a%2Fb", ".hidden"]) {
+        const res = await app.inject({ method: "GET", url: `/memory/graph?username=${u}` });
+        expect(res.statusCode).toBe(400);
+      }
+      expect(depsBag.repo.memoryGraph).not.toHaveBeenCalled();
+    });
+  });
+  describe("memory builder routes", () => {
+    const ENTRY = {
+      category: "data_record", name: "Order 20643R", description: "d", body: "order_id: 20643R",
+      origin_kind: "file", origin: "local_projects/ngs/orders.csv", origin_sha256: "ab".repeat(32),
+    };
+    const JOB = "00000000-0000-4000-8000-000000000009";
+
+    it("POST /memory/import validates entries and forwards them with the caller's username", async () => {
+      const res = await app.inject({ method: "POST", url: "/memory/import", payload: {
+        username: "alice", project_dir: "-workspace-local_projects-ngs", builder_version: 1, entries: [ENTRY],
+      } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ created: 1, duplicates: 0, memory_ids: ["m-1"] });
+      expect(depsBag.repo.importEntries).toHaveBeenCalledWith(expect.objectContaining({
+        pool: depsBag.deps.pool, username: "alice", project_dir: "-workspace-local_projects-ngs",
+        builder_version: 1, entries: [ENTRY],
+      }));
+    });
+
+    it("POST /memory/import rejects an unknown category and an over-long body", async () => {
+      for (const bad of [{ ...ENTRY, category: "gossip" }, { ...ENTRY, body: "x".repeat(1501) }]) {
+        const res = await app.inject({ method: "POST", url: "/memory/import", payload: {
+          username: "alice", project_dir: null, builder_version: 1, entries: [bad],
+        } });
+        expect(res.statusCode).toBe(400);
+      }
+      expect(depsBag.repo.importEntries).not.toHaveBeenCalled();
+    });
+
+    it("POST /memory/import/seen reports the source files already imported in the scope", async () => {
+      const res = await app.inject({ method: "POST", url: "/memory/import/seen", payload: {
+        username: "alice", project_dir: null, origin_sha256s: ["ab".repeat(32), "cd".repeat(32)],
+      } });
+      expect(res.json()).toEqual({ seen: ["ab".repeat(32)] });
+      expect(depsBag.repo.importedFiles).toHaveBeenCalledWith({
+        pool: depsBag.deps.pool, username: "alice", project_dir: null, sha256s: ["ab".repeat(32), "cd".repeat(32)],
+      });
+    });
+
+    it("creates, updates and lists build jobs for the caller", async () => {
+      const created = await app.inject({ method: "POST", url: "/memory/build-jobs", payload: {
+        username: "alice", project_dir: null, origin_kind: "folder", origin: "local_projects/ngs",
+      } });
+      expect(created.json()).toEqual({ job_id: JOB });
+
+      const updated = await app.inject({ method: "PUT", url: `/memory/build-jobs/${JOB}`, payload: {
+        username: "alice", status: "done", entries_created: 3,
+      } });
+      expect(updated.json()).toEqual({ ok: true });
+      expect(depsBag.repo.updateBuildJob).toHaveBeenCalledWith(depsBag.deps.pool, expect.objectContaining({
+        username: "alice", job_id: JOB, status: "done", entries_created: 3,
+      }));
+
+      const listed = await app.inject({ method: "GET", url: "/memory/build-jobs?username=alice&limit=5" });
+      expect(listed.statusCode).toBe(200);
+      expect(depsBag.repo.listBuildJobs).toHaveBeenCalledWith(depsBag.deps.pool, { username: "alice", limit: 5 });
     });
   });
 });

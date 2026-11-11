@@ -1,21 +1,35 @@
 #!/usr/bin/env bash
 # UserPromptSubmit hook. Two independent responsibilities:
 #
-#   1. Drain ~/.claude/.chpc_pending if non-empty — emit any CHPC job
-#      terminal-state notifications as additional context so the agent
-#      sees them prepended to the user's prompt this turn. Always runs,
-#      regardless of harness state or whether the prompt is a slash command:
-#      the agent should never miss a job-status event.
+#   1. Drain ~/.claude/.chpc_pending if non-empty: emit any CHPC job
+#      terminal-state notifications as additional context so the agent sees
+#      them prepended to the user's prompt this turn. Runs for every prompt,
+#      slash commands included: the agent should never miss a job-status event.
 #
-#   2. When self-driving (tick) mode is on AND the user typed a normal
-#      message (not a slash command), inject a directive that routes the
-#      turn into the /tick orchestrator.
+#   2. Memory recall: for task-like prompts (not slash commands, not short
+#      chat), search memory and inject the top hits' one-line summaries.
+#
+# Auto mode does not route through here: the adapter starts auto turns as
+# /tick and drives them (adapter/src/auto-mode.ts), and /tick is a slash
+# command, so recall skips it.
 set -uo pipefail
 
 LOG="$HOME/.claude/.harness_active.log"
 log() { printf '%s userprompt_route %s\n' "$(date -Iseconds)" "$*" >> "$LOG"; }
 
 INBOX="${CHPC_INBOX:-$HOME/.claude/.chpc_pending}"
+
+# Read the JSON envelope from stdin once; extract the prompt and the session's
+# cwd (the adapter pins CLAUDE_PROJECT_DIR to /workspace even when a chat runs
+# in a project dir).
+INPUT="$(cat)"
+field() { printf '%s' "$INPUT" | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get(sys.argv[1],""), end="")
+except Exception:
+    pass' "$1" 2>/dev/null || true; }
+PROMPT="$(field prompt)"
+CWD="$(field cwd)"
 
 # ── 1. Drain CHPC notifications ──────────────────────────────────────
 # Atomic rotate: move to a tmpfile so a watcher writing right now doesn't
@@ -56,36 +70,38 @@ PY
   fi
 fi
 
-# ── 2. Optional: tick-harness routing ────────────────────────────────
-# Harness toggle: stay quiet unless self-driving mode is enabled. The marker
-# file is written/removed by the Mode panel in the frontend.
-[[ -f "$HOME/.claude/.harness_active" ]] || { log "noop: marker absent"; exit 0; }
-
-# Read the JSON envelope from stdin; extract the prompt field.
-INPUT="$(cat)"
-PROMPT="$(printf '%s' "$INPUT" | python3 -c 'import json,sys
+# ── 2. Memory recall ─────────────────────────────────────────────────
+# Slash commands and short chat ("ok", "thanks", "继续") don't need memory.
+# Anything else gets the top hits' L0 lines; the agent reads more with
+# memory_get. Never blocks or fails the prompt.
+if [[ "${MEMORY_ENABLED:-1}" = "1" && -n "${MEMORY_API_URL:-}" && "$PROMPT" != /* ]]; then
+  python3 - "$PROMPT" "${CWD:-${CLAUDE_PROJECT_DIR:-/workspace}}" <<'PY' || true
+import json, os, sys, urllib.request
+prompt = sys.argv[1].strip()
+if len(prompt) < 12:
+    sys.exit(0)
+body = json.dumps({
+    "username": os.environ.get("USERNAME", ""),
+    "project_path": sys.argv[2],
+    "query": prompt[:500],
+    "limit": 3,
+}).encode()
+req = urllib.request.Request(
+    os.environ["MEMORY_API_URL"] + "/memory/search", data=body,
+    headers={"content-type": "application/json",
+             **({"authorization": "Bearer " + os.environ["SERVICE_ID"]} if os.environ.get("SERVICE_ID") else {})},
+)
 try:
-    d = json.load(sys.stdin)
-    print(d.get("prompt",""), end="")
+    hits = json.load(urllib.request.urlopen(req, timeout=2))
 except Exception:
-    pass' 2>/dev/null || true)"
+    sys.exit(0)
+if not hits:
+    sys.exit(0)
+print("[Memory recall — possibly relevant; read with memory_get(id) if useful]")
+for h in hits:
+    print(f"- [{h['dir_key']}] {h['name']}: {h['description']} ({h['memory_id']})")
+print()
+PY
+fi
 
-# User-initiated slash commands pass through untouched (drain above still ran).
-case "$PROMPT" in
-  /*) log "passthrough: slash command (${PROMPT:0:60})"; exit 0 ;;
-esac
-
-log "inject: routing to /tick (prompt=${PROMPT:0:80})"
-
-# Inject orchestration context. Claude Code appends this stdout as additional
-# context to the user prompt, so the agent sees the directive alongside the
-# original message.
-cat <<'EOF'
-[Self-driving mode is ON. The harness gate marker ~/.claude/.harness_active is present.]
-
-Your ONLY action for this turn: invoke the /tick slash command via the SlashCommand tool. The orchestrator will read the user's latest message and:
-  - if no progress.md exists in cwd, dispatch tick-bootstrap (scaffolds a new project from the instruction),
-  - otherwise dispatch the next subagent in the priority chain (planner / executor / reviewer).
-
-Do not answer the user's request directly. Do not run other tools first. The Stop hook will keep re-prompting /tick after each turn until ## Status: complete is written or the user pauses (touch ~/.claude/.tick_paused) or toggles self-driving Off.
-EOF
+exit 0

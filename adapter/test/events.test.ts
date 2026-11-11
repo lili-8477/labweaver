@@ -17,6 +17,13 @@ describe("EventTranslator.textDelta", () => {
       chat_id: CHAT,
     });
   });
+
+  it("separates text blocks with a paragraph break, but not before the first", () => {
+    const t = new EventTranslator();
+    expect(t.textBlockStart(CHAT)).toBeNull();
+    t.textDelta("done.", CHAT);
+    expect(t.textBlockStart(CHAT)).toMatchObject({ chunk: { text: "\n\n" } });
+  });
 });
 
 describe("EventTranslator.assistantToolCalls", () => {

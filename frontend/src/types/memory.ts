@@ -1,40 +1,31 @@
-// LabWeaver Memory Types — MIT License
+// Memory shapes as the UI receives them, from the memory contract
+// (hub/indexer/src/memory-contract.ts). Type-only: nothing of the contract
+// reaches the bundle.
 
-export type MemoryType = 'user' | 'feedback' | 'project' | 'reference' | 'session_summary' | 'observation'
-export type MemorySource = 'user' | 'distilled'
-export type ScopeTier = 'org' | 'user' | 'project'
+import type {
+  AuditRow, DirSummary, ListItem, MemoryDetail as DetailRow, MemoryInput, Scope, SearchHit,
+  MemoryTree as TreeShape, TreeMemory, TreeTopic, MemoryGraph as GraphShape, GraphNode, GraphEdge,
+} from '@memory-contract'
 
-export interface MemoryListItem {
-  memory_id: string
-  type: MemoryType
-  source: MemorySource
-  scope_tier: ScopeTier
-  name: string
-  description: string
-  created_at: string
-  updated_at: string
-  hit_count: number
-  last_hit_at: string | null
-  deleted_at: string | null
-}
+export type ScopeTier = Scope
+export type MemorySource = ListItem['source']
+/** Known memory types; the API reports any string. */
+export type MemoryType = 'user' | 'feedback' | 'project' | 'reference' | 'session_summary' | 'observation' | 'claim' | 'experience'
 
-export interface MemoryDetail extends MemoryListItem {
-  body: string
-  facets: Record<string, string[]>
-  source_session_id: string | null
-}
+export type MemoryListItem = ListItem
+export type MemoryDetail = DetailRow
+export type MemoryAuditEntry = AuditRow
+export type MemorySearchHit = SearchHit
+export type MemoryDirSummary = DirSummary
+export type MemoryTreeLeaf = TreeMemory
+export type MemoryTopic = TreeTopic
+export type MemoryTree = TreeShape
+// v1's context graph (hub/indexer/src/memory-graph.ts): memories, skills and resources.
+export type MemoryGraph = GraphShape
+export type MemoryGraphNode = GraphNode
+export type MemoryGraphNodeKind = GraphNode['kind']
+export type MemoryGraphEdge = GraphEdge
 
-export interface MemoryAuditEntry {
-  audit_id: number
-  action: 'write' | 'update' | 'forget' | 'restore'
-  actor: string
-  before: unknown
-  after: unknown
-  created_at: string
-}
-
-// Search hit with snippet and relevance score
-export interface MemorySearchHit extends MemoryListItem {
-  snippet: string
-  score: number
-}
+export type MemoryListQuery = MemoryInput<'memory_list'>
+export type MemorySearchQuery = MemoryInput<'memory_search'>
+export type MemoryUpdate = MemoryInput<'memory_update'>

@@ -88,13 +88,11 @@ export class KernelBridge {
   private inFlight = 0;
   private cullTimer: ReturnType<typeof setInterval> | null = null;
   /**
-   * Per-cell-id stdout collectors. When `executeAndCollect` runs an
-   * introspection snippet, it registers a buffer here so the iopub
-   * handler appends stream-stdout text for that cell id. Used to
-   * capture structured output (e.g. JSON from a list-vars snippet)
-   * without parsing the full iopub stream.
+   * Per-cell-id IOPub collectors. While `executeAndCollect` runs a cell,
+   * every IOPub message tagged with that cell id is also appended here,
+   * so callers get the run's outputs without subscribing to the stream.
    */
-  private outputCollectors = new Map<string, string[]>();
+  private outputCollectors = new Map<string, IOPubEvent[]>();
 
   constructor(private deps: KernelDeps) {}
 
@@ -238,14 +236,7 @@ export class KernelBridge {
         const state = iopub.content.execution_state as string | undefined;
         if (state === "busy" || state === "idle") this.status_ = state;
       }
-      // Per-cell stdout collector (for executeAndCollect callers)
-      if (iopub.msg_type === "stream" && iopub.cell_id) {
-        const c = iopub.content as { name?: string; text?: string };
-        if (c.name === "stdout") {
-          const buf = this.outputCollectors.get(iopub.cell_id);
-          if (buf) buf.push(String(c.text ?? ""));
-        }
-      }
+      if (iopub.cell_id) this.outputCollectors.get(iopub.cell_id)?.push(iopub);
       this.deps.onIopub(this.deps.sessionId, iopub);
       return;
     }
@@ -300,21 +291,24 @@ export class KernelBridge {
   }
 
   /**
-   * Run `code` in the kernel and return BOTH the execute reply and the
-   * collected stdout stream for that run. Used for introspection (e.g.
-   * listing variables) where the caller wants structured output rather
-   * than the full iopub stream.
+   * Run `code` in the kernel and return the execute reply, the run's
+   * IOPub messages and its stdout text. The messages still go out on the
+   * IOPub stream too, so an open notebook shows the run live.
    */
   async executeAndCollect(
     cellId: string,
     code: string,
     kernelspec = "python3",
-  ): Promise<{ reply: ExecuteReply; stdout: string }> {
-    const buf: string[] = [];
-    this.outputCollectors.set(cellId, buf);
+  ): Promise<{ reply: ExecuteReply; events: IOPubEvent[]; stdout: string }> {
+    const events: IOPubEvent[] = [];
+    this.outputCollectors.set(cellId, events);
     try {
       const reply = await this.execute(cellId, code, kernelspec);
-      return { reply, stdout: buf.join("") };
+      const stdout = events
+        .filter((e) => e.msg_type === "stream" && e.content.name === "stdout")
+        .map((e) => String(e.content.text ?? ""))
+        .join("");
+      return { reply, events, stdout };
     } finally {
       this.outputCollectors.delete(cellId);
     }

@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import type { SessionUpsert, TokenUsageRow } from "./session-projector.js";
+import { withTx } from "./tx.js";
 
 export interface OffsetWrite {
   username: string;
@@ -69,9 +70,7 @@ ON CONFLICT (username, jsonl_path) DO UPDATE SET
 `;
 
 export async function commitPass(pool: Pool, input: CommitPassInput): Promise<void> {
-  const c = await pool.connect();
-  try {
-    await c.query("BEGIN");
+  await withTx(pool, async (c) => {
     if (input.resetSessionIds && input.resetSessionIds.length > 0) {
       await c.query(
         "DELETE FROM sessions WHERE session_id = ANY($1::uuid[])",
@@ -85,13 +84,7 @@ export async function commitPass(pool: Pool, input: CommitPassInput): Promise<vo
       await insertToken(c, r);
     }
     await upsertOffset(c, input.offset);
-    await c.query("COMMIT");
-  } catch (e) {
-    await c.query("ROLLBACK").catch(() => undefined);
-    throw e;
-  } finally {
-    c.release();
-  }
+  });
 }
 
 async function upsertSession(c: PoolClient, s: SessionUpsert): Promise<void> {

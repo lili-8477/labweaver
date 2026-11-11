@@ -19,9 +19,11 @@ export interface LegacyMessage {
   _metadata?: Record<string, unknown>;
 }
 
-function sessionPathCandidates(home: string, cwd: string, chatId: string): string[] {
-  // Claude Code encodes cwd into the projects dir as "-absolute-path-with-dashes".
-  const encoded = cwd.replace(/\//g, "-");
+export function sessionPathCandidates(home: string, cwd: string, chatId: string): string[] {
+  // Claude Code names the projects dir after cwd with every character other
+  // than [a-zA-Z0-9] replaced by "-": /workspace/local_projects/foo →
+  // -workspace-local-projects-foo.
+  const encoded = cwd.replace(/[^a-zA-Z0-9]/g, "-");
   return [
     path.join(home, ".claude", "projects", encoded, `${chatId}.jsonl`),
     path.join(home, ".claude", "projects", encoded.replace(/^-/, ""), `${chatId}.jsonl`),

@@ -1,69 +1,52 @@
 import { describe, it, expect } from "vitest";
-import {
-  PROMPT_VERSION,
-  buildDistillationPrompt,
-  DistillationResult,
-} from "../src/distiller-prompts.js";
+import { PROMPT_VERSION, DistillationResult } from "../src/distiller-prompts.js";
 
-describe("distiller-prompts", () => {
-  it("PROMPT_VERSION is a positive integer", () => {
-    expect(Number.isInteger(PROMPT_VERSION)).toBe(true);
-    expect(PROMPT_VERSION).toBeGreaterThan(0);
+const run = { subject: "PBMC3k QC", statement: "filtered to 2638 cells" };
+
+describe("distillation payload v2", () => {
+  it("PROMPT_VERSION is 2", () => {
+    expect(PROMPT_VERSION).toBe(2);
   });
 
-  it("buildDistillationPrompt embeds the transcript and version", () => {
-    const out = buildDistillationPrompt({ transcript: "TRANSCRIPT_MARKER" });
-    expect(out.system).toContain("distill");
-    expect(out.system).toContain("strict JSON");
-    expect(out.user).toContain("TRANSCRIPT_MARKER");
+  it("a run alone is valid and gets defaults", () => {
+    const r = DistillationResult.parse({ run });
+    expect(r.claims).toEqual([]);
+    expect(r.experiences).toEqual([]);
+    expect(r.run).toMatchObject({ conditions: {}, inputs: [], parameters: {}, outputs: [], evidence: [] });
   });
 
-  it("schema accepts a minimal valid result (empty observations)", () => {
-    const valid = {
-      summary: { name: "n", description: "d", body: "b" },
-      observations: [],
-    };
-    expect(() => DistillationResult.parse(valid)).not.toThrow();
+  it("requires a run", () => {
+    expect(() => DistillationResult.parse({ claims: [] })).toThrow();
   });
 
-  it("schema accepts a result with one observation of each known type", () => {
-    const valid = {
-      summary: { name: "n", description: "d", body: "b" },
-      observations: [
-        { type: "decision",        name: "a", description: "x", body: "y", facets: {} },
-        { type: "finding",         name: "a", description: "x", body: "y", facets: { gene: ["TP53"] } },
-        { type: "file-touched",    name: "a", description: "x", body: "y", facets: { file: ["foo.py"] } },
-        { type: "command-result",  name: "a", description: "x", body: "y", facets: { tool: ["scanpy"] } },
-        { type: "user-preference", name: "a", description: "x", body: "y", facets: {} },
-      ],
-    };
-    expect(() => DistillationResult.parse(valid)).not.toThrow();
+  it("accepts known condition keys and rejects unknown ones", () => {
+    expect(() => DistillationResult.parse({ run: { ...run, conditions: { cell_line: ["A549"], reagent_lot: ["L-1"] } } })).not.toThrow();
+    expect(() => DistillationResult.parse({ run: { ...run, conditions: { mood: ["good"] } } })).toThrow();
   });
 
-  it("schema rejects unknown observation type", () => {
-    expect(() =>
-      DistillationResult.parse({
-        summary: { name: "n", description: "d", body: "b" },
-        observations: [
-          { type: "rumor", name: "a", description: "x", body: "y", facets: {} },
-        ],
-      }),
-    ).toThrow();
+  it("evidence must be a URI with a scheme", () => {
+    expect(() => DistillationResult.parse({ run: { ...run, evidence: [{ uri: "file:///w/a.csv" }] } })).not.toThrow();
+    expect(() => DistillationResult.parse({ run: { ...run, evidence: [{ uri: "/w/a.csv" }] } })).toThrow();
   });
 
-  it("schema enforces ≤8 observations", () => {
-    const obs = Array.from({ length: 9 }, () => ({
-      type: "decision" as const,
-      name: "a",
-      description: "x",
-      body: "y",
-      facets: {},
-    }));
-    expect(() =>
-      DistillationResult.parse({
-        summary: { name: "n", description: "d", body: "b" },
-        observations: obs,
-      }),
-    ).toThrow();
+  it("an experience must name a boundary condition or a failure mode", () => {
+    const e = { task: "t", solution: "s", domain: "lab", applicability: ["10x v3 data"] };
+    expect(() => DistillationResult.parse({ run, experiences: [e] })).toThrow(/boundary condition or failure mode/);
+    expect(() => DistillationResult.parse({ run, experiences: [{ ...e, failure_modes: ["fails on v2"] }] })).not.toThrow();
+    expect(() => DistillationResult.parse({ run, experiences: [{ ...e, applicability: [], failure_modes: ["x"] }] })).toThrow();
+  });
+
+  it("experience.source must point at the run or an existing claim", () => {
+    const e = { task: "t", solution: "s", domain: "lab", applicability: ["a"], failure_modes: ["f"] };
+    const claim = { claim_kind: "result", subject: "s", statement: "x" };
+    expect(() => DistillationResult.parse({ run, claims: [claim], experiences: [{ ...e, source: 0 }] })).not.toThrow();
+    expect(() => DistillationResult.parse({ run, claims: [claim], experiences: [{ ...e, source: 1 }] })).toThrow();
+  });
+
+  it("caps claims at 5 and experiences at 3", () => {
+    const claim = { claim_kind: "result", subject: "s", statement: "x" };
+    expect(() => DistillationResult.parse({ run, claims: Array(6).fill(claim) })).toThrow();
+    const e = { task: "t", solution: "s", domain: "lab", applicability: ["a"], failure_modes: ["f"] };
+    expect(() => DistillationResult.parse({ run, experiences: Array(4).fill(e) })).toThrow();
   });
 });

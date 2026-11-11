@@ -1,8 +1,9 @@
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NotebookManager } from "../src/notebook-rpc.js";
+import type { KernelBridge } from "../src/kernel.js";
 
 describe("NotebookManager", () => {
   let root: string;
@@ -88,5 +89,100 @@ describe("NotebookManager", () => {
 
   it("rejects paths that escape the workspace root", async () => {
     await expect(nm.readNotebook("../etc/passwd")).rejects.toThrow();
+  });
+
+  it("overlapping edits to one notebook all land", async () => {
+    await nm.createNotebook("c.ipynb", "python");
+    const a = (await nm.addCell("c.ipynb", "code", "a", undefined)) as { cell_id: string };
+    await Promise.all([
+      nm.updateCell("c.ipynb", a.cell_id, "a2"),
+      nm.addCell("c.ipynb", "code", "b", a.cell_id),
+      nm.addCell("c.ipynb", "code", "c", undefined),
+    ]);
+    const res = (await nm.readNotebook("c.ipynb")) as { notebook: { cells: Array<{ source: string }> } };
+    expect(res.notebook.cells.map((c) => c.source)).toEqual(["a2", "b", "c"]);
+  });
+
+  it("replies carry the mtime stat_notebook reports until someone else writes", async () => {
+    await nm.createNotebook("m.ipynb", "python");
+    const a = (await nm.addCell("m.ipynb", "code", "1", undefined)) as { cell_id: string };
+    const own = (await nm.updateCell("m.ipynb", a.cell_id, "2")) as { mtime: number };
+    expect((await nm.dispatch("stat_notebook", { notebook_path: "m.ipynb" })) as { mtime: number })
+      .toEqual({ success: true, mtime: own.mtime });
+
+    const abs = path.join(root, "m.ipynb");
+    const later = new Date(own.mtime + 5000);
+    await fs.writeFile(abs, await fs.readFile(abs, "utf8"));
+    await fs.utimes(abs, later, later);
+    const after = (await nm.dispatch("stat_notebook", { notebook_path: "m.ipynb" })) as { mtime: number };
+    expect(after.mtime).not.toBe(own.mtime);
+  });
+
+  it("update_cell replies without the notebook body", async () => {
+    await nm.createNotebook("u.ipynb", "python");
+    const a = (await nm.addCell("u.ipynb", "code", "x", undefined)) as { cell_id: string };
+    const res = (await nm.updateCell("u.ipynb", a.cell_id, "y")) as Record<string, unknown>;
+    expect(res.success).toBe(true);
+    expect(res).not.toHaveProperty("notebook");
+  });
+
+  it("a finished run saves its outputs and keeps edits made while it was running", async () => {
+    let finish!: () => void;
+    const stream = (text: string) => ({ msg_type: "stream", content: { name: "stdout", text }, cell_id: "c", parent_msg_id: null });
+    const kernel = {
+      sessionId: "k1",
+      executeAndCollect: vi.fn(() => new Promise((resolve) => {
+        finish = () => resolve({ reply: { status: "ok", execution_count: 7 }, events: [stream("a"), stream("b\n")], stdout: "ab\n" });
+      })),
+    } as unknown as KernelBridge;
+    const knm = new NotebookManager(root, () => kernel);
+    await knm.createNotebook("r.ipynb", "python");
+    const a = (await knm.addCell("r.ipynb", "code", "slow()", undefined)) as { cell_id: string };
+    const run = knm.executeCell("r.ipynb", a.cell_id);
+    await vi.waitFor(() => expect(kernel.executeAndCollect).toHaveBeenCalled());
+    await knm.addCell("r.ipynb", "code", "added during run", a.cell_id);
+    await knm.updateCell("r.ipynb", a.cell_id, "slow(edited)");
+    finish();
+    const reply = (await run) as { outputs: unknown[] };
+    const merged = [{ output_type: "stream", name: "stdout", text: "ab\n" }];
+    expect(reply.outputs).toEqual(merged);
+    const res = (await knm.readNotebook("r.ipynb")) as {
+      notebook: { cells: Array<{ source: string; execution_count: number | null; outputs: unknown[] }> };
+    };
+    expect(res.notebook.cells.map((c) => c.source)).toEqual(["slow(edited)", "added during run"]);
+    expect(res.notebook.cells[0]!.execution_count).toBe(7);
+    expect(res.notebook.cells[0]!.outputs).toEqual(merged);
+  });
+
+  describe("variables", () => {
+    function fakeKernel(stdout: string) {
+      const executeAndCollect = vi.fn(async () => ({ reply: { status: "ok" }, stdout }));
+      const kernel = { restart: vi.fn(), executeAndCollect } as unknown as KernelBridge;
+      return { kernel, executeAndCollect };
+    }
+
+    it("runs R introspection in an R notebook's own kernel", async () => {
+      const { kernel, executeAndCollect } = fakeKernel('{"x":{"type":"integer","repr":"int 1","shape":null}}');
+      const rnm = new NotebookManager(root, () => kernel);
+      await rnm.createNotebook("r.ipynb", "r");
+      await rnm.manageKernel("r.ipynb", "restart");
+      const res = (await rnm.manageKernel("r.ipynb", "variables")) as { variables: Record<string, unknown> };
+      // Passing "python3" here would make the bridge replace the R kernel.
+      const [, code, spec] = executeAndCollect.mock.calls[0] as unknown as [string, string, string];
+      expect(spec).toBe("ir");
+      expect(code).toContain("globalenv()");
+      expect(res.variables).toEqual({ x: { type: "integer", repr: "int 1", shape: null } });
+    });
+
+    it("runs Python introspection in a Python notebook", async () => {
+      const { kernel, executeAndCollect } = fakeKernel("{}");
+      const pnm = new NotebookManager(root, () => kernel);
+      await pnm.createNotebook("p.ipynb", "python");
+      await pnm.manageKernel("p.ipynb", "restart");
+      await pnm.manageKernel("p.ipynb", "variables");
+      const [, code, spec] = executeAndCollect.mock.calls[0] as unknown as [string, string, string];
+      expect(spec).toBe("python3");
+      expect(code).toContain("globals()");
+    });
   });
 });

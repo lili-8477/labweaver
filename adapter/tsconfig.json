@@ -14,8 +14,7 @@
     "types": ["node"],
     "outDir": "dist",
     "declaration": false,
-    "sourceMap": true,
-    "rootDir": "."
+    "sourceMap": true
   },
   "include": ["src/**/*", "test/**/*"]
 }
