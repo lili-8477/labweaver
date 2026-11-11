@@ -11,6 +11,7 @@ hub/users.md
 hub/service-map.conf
 hub/postgres-data/
 hub/recordings/
+hub/memory-mirror/
 hub/.env
 .worktrees/
 

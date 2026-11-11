@@ -65,8 +65,23 @@ describe("importEntries", () => {
 
     const audit = await pool.query(`SELECT actor, action FROM memory_audit_log`);
     expect(audit.rows).toEqual([{ actor: "alice", action: "write" }, { actor: "alice", action: "write" }]);
-    const queued = await pool.query(`SELECT count(*)::int AS n FROM embedder_queue`);
-    expect(queued.rows[0].n).toBe(2);
+    // Only the protocol is embedded: a data record is IDs and fields, found by keywords.
+    const queued = await pool.query(
+      `SELECT m.name FROM embedder_queue q JOIN memory_chunks c USING (chunk_id) JOIN memories m USING (memory_id)`);
+    expect(queued.rows.map((r) => r.name)).toEqual(["RNA extraction SOP"]);
+  });
+
+  it("embeds protocols, pipelines and references, not inventory or data records", async () => {
+    await importEntries({ pool, username: "alice", project_dir: null, builder_version: 2, entries: [
+      entry({ category: "inventory", name: "TRIzol", body: "Reagent: TRIzol\nLot: L123" }),
+      entry({ category: "data_record" }),
+      entry({ category: "protocol", name: "SOP", body: "1. Lyse" }),
+      entry({ category: "pipeline", name: "QC", body: "fastqc then multiqc" }),
+      entry({ category: "reference", name: "Core page", body: "Prices" }),
+    ] });
+    const queued = await pool.query(
+      `SELECT m.name FROM embedder_queue q JOIN memory_chunks c USING (chunk_id) JOIN memories m USING (memory_id) ORDER BY 1`);
+    expect(queued.rows.map((r) => r.name)).toEqual(["Core page", "QC", "SOP"]);
   });
 
   it("is idempotent: the same entries again create nothing", async () => {

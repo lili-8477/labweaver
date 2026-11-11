@@ -129,8 +129,11 @@ services:
       RECORDINGS_ROOT: /recordings
       # Which service ID is whose (caller-check.ts): the map nginx routes by.
       CALLER_MAP_FILE: /etc/bioflow/service-map.conf
+      # The read-only markdown copy of memory (memory-mirror.ts).
+      MEMORY_MIRROR_ROOT: /memory-mirror
     volumes:
       - ./workspaces:/workspaces
+      - ./memory-mirror:/memory-mirror
       - ./service-map.conf:/etc/bioflow/service-map.conf:ro
       # Glasses recordings (/api/glasses/). Kept outside workspaces so the
       # agent in a user's container cannot edit or delete the source media.

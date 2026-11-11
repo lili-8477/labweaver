@@ -27,6 +27,8 @@ export interface Config {
   shareAutoCloseIdleDays:       number;
   shareAutoCloseIntervalHours:  number;
   recordingsRoot:     string;
+  // Where the read-only markdown copy of memory is written (memory-mirror.ts); null turns it off.
+  memoryMirrorRoot:     string | null;
   glassesMaxChunkBytes: number;
   glassesMuxIntervalMs: number;
   glassesProxySecret:   string;
@@ -118,6 +120,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     shareAutoCloseIdleDays,
     shareAutoCloseIntervalHours,
     recordingsRoot:       env.RECORDINGS_ROOT ?? "/recordings",
+    memoryMirrorRoot:     env.MEMORY_MIRROR_ROOT || null,
     glassesMaxChunkBytes: parseIntVar(env, "GLASSES_MAX_CHUNK_BYTES", 64 * 1024 * 1024),
     glassesMuxIntervalMs: parseIntVar(env, "GLASSES_MUX_INTERVAL_MS", 10_000),
     glassesProxySecret:   env.GLASSES_PROXY_SECRET ?? "",

@@ -80,8 +80,11 @@ services:
       MAX_CONCURRENT_FILES: "4"
       LOG_LEVEL: debug
       CALLER_MAP_FILE: /etc/bioflow/service-map.conf
+      # The read-only markdown copy of memory (memory-mirror.ts).
+      MEMORY_MIRROR_ROOT: /memory-mirror
     volumes:
       - ./hub/workspaces:/workspaces:ro
+      - ./hub/memory-mirror:/memory-mirror
       - ./hub/service-map.conf:/etc/bioflow/service-map.conf:ro
     depends_on:
       postgres:

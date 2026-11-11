@@ -36,6 +36,7 @@ const PROTECTED_MOUNT_POINTS = new Set<string>([
   'CLAUDE.md',
   'local_projects',
   'shared',
+  'memory',
 ])
 
 function isProtectedMountPoint(path: string): boolean {

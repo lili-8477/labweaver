@@ -43,6 +43,9 @@ export interface InsertMemoryRowArgs {
   // Embedding already computed for the merge check: stored on the chunk
   // directly instead of going through embedder_queue.
   embedding?:         number[];
+  // false: no embedding at all, the memory is found by keywords and facets
+  // only (an imported inventory row or data record). Default true.
+  embed?:             boolean;
   // Scientific-memory columns (migration 0020); omitted for plain memories.
   science?:           ScienceColumns;
 }
@@ -97,7 +100,7 @@ export async function insertMemoryRow(
      VALUES ($1, 0, $2, $3::vector) RETURNING chunk_id`,
     [writtenId, args.body, args.embedding ? vectorLiteral(args.embedding) : null],
   );
-  if (!args.embedding) {
+  if (!args.embedding && args.embed !== false) {
     await client.query(
       `INSERT INTO embedder_queue (chunk_id) VALUES ($1) ON CONFLICT DO NOTHING`,
       [chunk.rows[0]!.chunk_id],

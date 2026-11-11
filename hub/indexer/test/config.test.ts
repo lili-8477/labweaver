@@ -31,6 +31,11 @@ describe("loadConfig", () => {
     expect(cfg.pgStartupMaxWaitSec).toBe(10);
   });
 
+  it("turns the markdown copy of memory on only when MEMORY_MIRROR_ROOT is set", () => {
+    expect(loadConfig({ PG_URL: "postgres://x" }).memoryMirrorRoot).toBeNull();
+    expect(loadConfig({ PG_URL: "postgres://x", MEMORY_MIRROR_ROOT: "/memory-mirror" }).memoryMirrorRoot).toBe("/memory-mirror");
+  });
+
   it("throws without PG_URL", () => {
     expect(() => loadConfig({})).toThrow(/PG_URL/);
   });

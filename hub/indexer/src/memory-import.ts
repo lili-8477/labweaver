@@ -14,6 +14,11 @@ import { withTx } from "./tx.js";
 
 export type { ImportCategory, ImportEntry };
 
+/** Categories found by keywords and exact IDs only: they are mostly IDs and
+ *  table rows, where meaning search adds little and would surface them in
+ *  unrelated searches. Every other category is embedded. */
+export const KEYWORD_ONLY: ReadonlySet<ImportCategory> = new Set(["inventory", "data_record"]);
+
 const CATEGORY_DIRS: Record<Exclude<ImportCategory, "reference">, string> = {
   protocol: "protocols", inventory: "inventories", data_record: "data-records", pipeline: "pipelines",
 };
@@ -48,7 +53,7 @@ export async function importEntries(args: {
           origin_sha256: [e.origin_sha256], imported_at: [imported_at],
           builder_version: [String(args.builder_version)],
         },
-        content_hash, dir_key, domain: "lab",
+        content_hash, dir_key, domain: "lab", embed: !KEYWORD_ONLY.has(e.category),
       });
       if (memory_id === null) continue;
       memory_ids.push(memory_id);

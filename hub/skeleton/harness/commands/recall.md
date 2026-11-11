@@ -7,6 +7,9 @@ Force a memory lookup before answering anything else.
 1. Call the MCP tool `memory_search` (server: `bioflow-memory`) with `query = $ARGUMENTS`.
 2. Take the top 5 results (the server already ranks by hybrid score).
 3. Print each result on its own line as `- [<memory_id>] <name> — <description>`. Keep the list compact; no extra prose between entries.
-4. If zero results come back, say "no matching memories" and stop.
+4. If zero results come back and the query holds an exact ID (an order, sample, catalog or lot number), also
+   `grep -ril` it in `/workspace/memory`: every memory is a read-only markdown file there
+   (`user/`, `project/<name>/`, `org/`), so an ID the search missed can still turn up. Then say
+   "no matching memories" if nothing did, and stop.
 
 This command is the user's "look at memory before responding" lever. Do not skip the tool call even if you think you already know the answer.

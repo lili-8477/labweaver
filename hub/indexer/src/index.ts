@@ -31,6 +31,7 @@ import {
 import { memoryGraph } from "./memory-graph.js";
 import { writeDistillation } from "./distiller-repo.js";
 import { importedFiles, importEntries } from "./memory-import.js";
+import { startMirror } from "./memory-mirror.js";
 import { createBuildJob, listBuildJobs, updateBuildJob } from "./memory-build-jobs.js";
 import { proposeExperiences } from "./experience-promotion.js";
 import { linkMemories } from "./lineage-repo.js";
@@ -108,6 +109,14 @@ async function main(): Promise<void> {
   };
 
   startEmbedderLoop();
+
+  // The read-only markdown copy of memory, mounted into each user container.
+  if (cfg.memoryMirrorRoot) {
+    startMirror({
+      pool, root: cfg.memoryMirrorRoot,
+      log: (msg, err) => (err ? logger.warn({ err }, msg) : logger.info(msg)),
+    });
+  }
 
   const startCleanupLoop = (): void => {
     const intervalMs = cfg.shareCleanupIntervalHours * 60 * 60 * 1000;
