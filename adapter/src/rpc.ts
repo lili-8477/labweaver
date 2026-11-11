@@ -29,6 +29,7 @@ import { teamBoardServer } from "./team-board.js";
 import { MemoryBuilder } from "./memory-builder.js";
 import { memoryBuildToolsServer } from "./memory-build-tools.js";
 import { modelSegmenter, sdkComplete } from "./memory-segmenter.js";
+import type { FetchedPage } from "./web-fetch.js";
 import { readChatStats } from "./chat-stats.js";
 import type { StreamEvent } from "./types.js";
 
@@ -57,6 +58,8 @@ export interface RpcDeps {
   fleet?: FleetMonitor | null;
   /** Command that runs memory-builder.py; omit to turn the memory builder off. */
   memoryBuilder?: string[];
+  /** Fetches links for website builds; defaults to web-fetch.ts (tests pass a stand-in). */
+  fetchPage?: (url: string) => Promise<FetchedPage>;
 }
 
 export class RpcRouter {
@@ -78,7 +81,7 @@ export class RpcRouter {
     // Documents are segmented on the agent's own login, with the chat model.
     this.builder = deps.memory && deps.memoryBuilder
       ? new MemoryBuilder({
-          helper: deps.memoryBuilder, workspaceRoot: deps.workspaceRoot, memory: deps.memory,
+          helper: deps.memoryBuilder, workspaceRoot: deps.workspaceRoot, memory: deps.memory, fetchPage: deps.fetchPage,
           segment: modelSegmenter(sdkComplete({ model: async () => (await this.readSettings()).model as string | undefined })),
         })
       : null;
@@ -319,6 +322,24 @@ export class RpcRouter {
           throw new Error("scope must be project or user; the lab scope goes through review");
         }
         return { success: true, job_id: await this.memoryBuilder().start({ path: String(params.path ?? ""), scope: params.scope }) };
+      }
+
+      case "memory_build_url_preview":
+        return { success: true, ...(await this.memoryBuilder().previewWebsite(String(params.url ?? ""))) };
+
+      case "memory_build_url": {
+        if (params.scope !== "project" && params.scope !== "user") {
+          throw new Error("scope must be project or user; the lab scope goes through review");
+        }
+        const request = String(params.request ?? "").trim().slice(0, 500);
+        if (!request) throw new Error("say what to extract from the page");
+        return {
+          success: true,
+          job_id: await this.memoryBuilder().startWebsite({
+            url: String(params.url ?? ""), request, scope: params.scope,
+            ...(typeof params.project === "string" ? { project: params.project } : {}),
+          }),
+        };
       }
 
       case "delete_chat": {

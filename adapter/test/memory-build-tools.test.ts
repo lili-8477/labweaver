@@ -9,7 +9,9 @@ const JOB = {
 };
 
 describe("memory builder tools", () => {
-  const builder = { start: vi.fn(async () => "job-1"), jobs: vi.fn(async () => [JOB]) } as unknown as MemoryBuilder;
+  const builder = {
+    start: vi.fn(async () => "job-1"), startWebsite: vi.fn(async () => "job-2"), jobs: vi.fn(async () => [JOB]),
+  } as unknown as MemoryBuilder;
   const tools = memoryBuildHandlers(builder);
 
   it("memory_build starts a job", async () => {
@@ -17,6 +19,13 @@ describe("memory builder tools", () => {
     expect(builder.start).toHaveBeenCalledWith({ path: "/workspace/local_projects/ngs", scope: "project" });
     expect(r.content[0]!.text).toMatch(/job-1/);
     expect(r.isError).toBe(false);
+  });
+
+  it("memory_build_from_link starts extracting from a link", async () => {
+    const args = { url: "https://core.example.edu/services", request: "sequencing prices", scope: "project" as const, project: "local_projects/ngs" };
+    const r = await tools.memory_build_from_link(args);
+    expect(builder.startWebsite).toHaveBeenCalledWith(args);
+    expect(r.content[0]!.text).toMatch(/job-2/);
   });
 
   it("memory_build reports a refusal as a tool error", async () => {

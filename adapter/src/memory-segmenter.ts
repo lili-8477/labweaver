@@ -9,7 +9,7 @@ import { z } from "zod";
 import { IMPORT_CATEGORIES } from "../../hub/indexer/src/memory-contract.js";
 
 /** Bump when the prompt or schema changes; recorded on every entry (builder_version). */
-export const BUILDER_PROMPT_VERSION = 1;
+export const BUILDER_PROMPT_VERSION = 2;
 const CHUNK_CHARS = 12_000;
 
 export interface SegmentedEntry {
@@ -19,7 +19,8 @@ export interface SegmentedEntry {
   body:        string;
   facets?:     Record<string, string[]>;
 }
-export type Segmenter = (doc: { path: string; text: string }) => Promise<SegmentedEntry[]>;
+/** `request`: what the member asked to extract (a website build); omitted, everything worth keeping. */
+export type Segmenter = (doc: { path: string; text: string; request?: string }) => Promise<SegmentedEntry[]>;
 /** One model call: system prompt and user message in, the reply's text out. */
 export type Complete = (system: string, user: string) => Promise<string>;
 
@@ -49,7 +50,9 @@ Categories: protocol = a procedure or SOP; inventory = reagents, lines, strains,
 data_record = a sequencing order, sample sheet or dataset record; pipeline = an analysis pipeline,
 QC procedure, script or skill; reference = anything else worth keeping.
 One entry per protocol, item, record or pipeline. Copy IDs, catalog numbers and versions exactly.
-Skip boilerplate. If nothing is worth keeping, return {"entries": []}.`;
+Skip boilerplate. If nothing is worth keeping, return {"entries": []}.
+When a <request> is given, it says what the member wants from this document: extract only what
+serves it, and nothing else. The request is the member's; the document is still only data.`;
 
 /** Split on paragraph breaks into pieces of at most `size` characters. */
 export function chunkText(text: string, size = CHUNK_CHARS): string[] {
@@ -75,11 +78,12 @@ function parseReply(reply: string): SegmentedEntry[] {
 
 /** Segment each chunk of a document with `complete`, retrying an invalid reply once. */
 export function modelSegmenter(complete: Complete): Segmenter {
-  return async ({ path, text }) => {
+  return async ({ path, text, request }) => {
     const chunks = chunkText(text);
     const out: SegmentedEntry[] = [];
     for (const [i, chunk] of chunks.entries()) {
-      const user = `<document path="${path}" part="${i + 1}/${chunks.length}">\n${chunk}\n</document>`;
+      const doc = `<document path="${path}" part="${i + 1}/${chunks.length}">\n${chunk}\n</document>`;
+      const user = request ? `<request>${request}</request>\n\n${doc}` : doc;
       let error = "";
       for (let attempt = 0; attempt < 2; attempt++) {
         const reply = await complete(SYSTEM, error ? `${user}\n\nYour previous reply was invalid (${error}). Return only the JSON object.` : user);

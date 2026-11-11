@@ -34,4 +34,9 @@ export const memoryBuilder = {
   preview: (path: string) => natsService.invoke('memory_build_preview', { path }) as Promise<ScanResult>,
   start:   (path: string, scope: 'project' | 'user') =>
     natsService.invoke('memory_build', { path, scope }) as Promise<{ job_id: string }>,
+  previewUrl: (url: string) => natsService.invoke('memory_build_url_preview', { url }) as Promise<{
+    url: string; kind: string; bytes: number; title: string | null
+  }>,
+  startUrl:   (p: { url: string; request: string; scope: 'project' | 'user'; project?: string }) =>
+    natsService.invoke('memory_build_url', p) as Promise<{ job_id: string }>,
 }

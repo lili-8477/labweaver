@@ -28,6 +28,17 @@ describe("modelSegmenter", () => {
     expect(user).toContain("<document path=\"local_projects/p/sop.pdf\"");
   });
 
+  it("passes the member's request, so only what they asked for is extracted", async () => {
+    const complete = vi.fn(async () => JSON.stringify({ entries: [ENTRY] }));
+    await modelSegmenter(complete)({ path: "https://core.example.edu/services", text: "page", request: "sequencing prices" });
+    const [system, user] = complete.mock.calls[0] as unknown as [string, string];
+    expect(system).toMatch(/request/i);
+    expect(user).toContain("<request>sequencing prices</request>");
+    // Without a request there is no request block.
+    await modelSegmenter(complete)({ path: "a.md", text: "t" });
+    expect((complete.mock.calls[1] as unknown as [string, string])[1]).not.toContain("<request>");
+  });
+
   it("retries once on an invalid reply, then gives up with the reason", async () => {
     const complete = vi.fn()
       .mockResolvedValueOnce("not json")

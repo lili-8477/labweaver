@@ -11,6 +11,9 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const recent = computed(() => store.jobs.filter((j) => Date.now() - Date.parse(j.created_at) < DAY_MS).slice(0, 5))
 const skippedOf = (report: Record<string, unknown>) =>
   (report.skipped ?? []) as Array<{ path: string; reason: string }>
+// A file or folder by its name; a link by its host and path.
+const originLabel = (j: { origin_kind: string; origin: string }) =>
+  j.origin_kind === 'website' ? j.origin.replace(/^https?:\/\//, '').replace(/\/$/, '') : j.origin.split('/').pop()
 const unchangedOf = (report: Record<string, unknown>) => ((report.unchanged ?? []) as string[]).length
 
 onMounted(() => void store.loadJobs())
@@ -21,7 +24,7 @@ onMounted(() => void store.loadJobs())
     <details v-for="j in recent" :key="j.job_id" class="job" :class="j.status">
       <summary>
         <span class="job-status">{{ j.status === 'running' || j.status === 'queued' ? 'Importing' : j.status === 'done' ? 'Imported' : 'Failed' }}</span>
-        <span class="job-origin" :title="j.origin">{{ j.origin.split('/').pop() }}</span>
+        <span class="job-origin" :title="j.origin">{{ originLabel(j) }}</span>
         <span class="job-counts">
           <template v-if="j.status === 'failed'">{{ j.error }}</template>
           <template v-else>

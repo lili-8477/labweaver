@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { MemoryForwarder } from "../src/memory-rpc.js";
 import { RpcRouter, type RpcDeps } from "../src/rpc.js";
 
-function setup(reply: unknown = { ok: true }, memoryBuilder?: string[]) {
+function setup(reply: unknown = { ok: true }, memoryBuilder?: string[], fetchPage?: RpcDeps["fetchPage"]) {
   const requests: Array<{ url: URL; method: string; body: unknown }> = [];
   const fetchImpl = (async (input: URL | string, init?: RequestInit) => {
     requests.push({
@@ -33,6 +33,7 @@ function setup(reply: unknown = { ok: true }, memoryBuilder?: string[]) {
     memory: new MemoryForwarder({ baseUrl: "http://indexer:8400", user: "alice", fetch: fetchImpl }),
     share: null,
     memoryBuilder,
+    fetchPage,
   };
   return { router: new RpcRouter(deps), requests };
 }
@@ -103,5 +104,21 @@ describe("memory builder RPCs", () => {
   it("memory_build refuses a scope other than project or user", async () => {
     const { router } = setup({ job_id: "job-1" }, await helper());
     await expect(router.dispatch("memory_build", { path: "local_projects/p", scope: "org" })).rejects.toThrow(/scope/);
+  });
+
+  it("memory_build_url_preview and memory_build_url extract from a link as this user", async () => {
+    const page = { url: "https://core.example.edu/", ext: ".html", body: Buffer.from("<title>Core</title>") };
+    const { router, requests } = setup({ job_id: "job-2" }, await helper(), async () => page);
+    expect(await router.dispatch("memory_build_url_preview", { url: "https://core.example.edu" }))
+      .toEqual({ success: true, url: page.url, kind: "html", bytes: page.body.length, title: "Core" });
+    expect(await router.dispatch("memory_build_url", { url: "https://core.example.edu", request: "prices", scope: "user" }))
+      .toEqual({ success: true, job_id: "job-2" });
+    expect(requests[0]).toMatchObject({ body: { username: "alice", origin_kind: "website", origin: "https://core.example.edu" } });
+  });
+
+  it("memory_build_url needs a request and a project or user scope", async () => {
+    const { router } = setup({ job_id: "job-2" }, await helper(), async () => { throw new Error("no fetch in this test"); });
+    await expect(router.dispatch("memory_build_url", { url: "https://x.org", request: " ", scope: "user" })).rejects.toThrow(/what to extract/);
+    await expect(router.dispatch("memory_build_url", { url: "https://x.org", request: "x", scope: "org" })).rejects.toThrow(/scope/);
   });
 });

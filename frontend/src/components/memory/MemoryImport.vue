@@ -1,15 +1,18 @@
 <script setup lang="ts">
 // Import into memory (docs/superpowers/specs/2026-11-09-memory-builder-plugin-design.md §6):
-// pick a workspace file or folder, preview what the builder would read, choose
-// the scope and start a build. The build runs in the background; the Memory
-// panel's jobs tray (MemoryBuildJobs.vue) shows its progress.
+// pick a workspace file or folder, or give a link and say what to extract from
+// it; preview, choose the scope and start a build. The build runs in the
+// background; the Memory panel's jobs tray (MemoryBuildJobs.vue) shows its progress.
 import { computed, ref, watch } from 'vue'
 import { useMemoryStore } from '@/stores/memory'
+import { useChatStore } from '@/stores/chat'
 import { memoryBuilder, type ScanResult } from '@/services/memory'
 import { formatFileSize } from '@/utils/format'
 import DirPickerModal from '@/components/files/DirPickerModal.vue'
 
 const store = useMemoryStore()
+const chat = useChatStore()
+const tab = ref<'files' | 'link'>('files')
 const path = ref(store.importPath ?? '')
 const picking = ref(false)
 const preview = ref<ScanResult | null>(null)
@@ -17,13 +20,38 @@ const previewing = ref(false)
 const starting = ref(false)
 const error = ref<string | null>(null)
 
-// A path inside local_projects/<name> can go to that project's memory.
-const project = computed(() => /^local_projects\/([^/._][^/]*)/.exec(path.value.replace(/^\/workspace\//, ''))?.[1] ?? null)
+// Link: the page, what the member wants from it, and what the page turned out to be.
+const url = ref('')
+const request = ref('')
+const linkPreview = ref<{ url: string; kind: string; bytes: number; title: string | null } | null>(null)
+
+// Files go to the project their path is in; a link goes to the open chat's project.
+const chatProject = computed(() => chat.activeChat?.project_dir || null)
+const project = computed(() => tab.value === 'link'
+  ? chatProject.value?.split('/').pop() ?? null
+  : /^local_projects\/([^/._][^/]*)/.exec(path.value.replace(/^\/workspace\//, ''))?.[1] ?? null)
 const scope = ref<'project' | 'user'>(project.value ? 'project' : 'user')
-watch(project, (p) => { if (!p) scope.value = 'user' })
+watch(project, (p) => { scope.value = p ? 'project' : 'user' })
+
+const canBuild = computed(() => tab.value === 'link'
+  ? !!url.value.trim() && !!request.value.trim()
+  : !!preview.value && toRead.value.length > 0)
 
 const toRead = computed(() => preview.value?.files.filter((f) => f.action === 'parse') ?? [])
 const skipped = computed(() => preview.value?.files.filter((f) => f.action === 'skip') ?? [])
+
+async function runLinkPreview() {
+  error.value = null
+  linkPreview.value = null
+  previewing.value = true
+  try {
+    linkPreview.value = await memoryBuilder.previewUrl(url.value.trim())
+  } catch (e) {
+    error.value = (e as Error).message
+  } finally {
+    previewing.value = false
+  }
+}
 
 async function runPreview() {
   error.value = null
@@ -42,7 +70,14 @@ async function start() {
   error.value = null
   starting.value = true
   try {
-    await memoryBuilder.start(path.value.trim(), scope.value)
+    if (tab.value === 'link') {
+      await memoryBuilder.startUrl({
+        url: url.value.trim(), request: request.value.trim(), scope: scope.value,
+        ...(scope.value === 'project' && chatProject.value ? { project: chatProject.value } : {}),
+      })
+    } else {
+      await memoryBuilder.start(path.value.trim(), scope.value)
+    }
     void store.loadJobs()
     close()
   } catch (e) {
@@ -57,6 +92,7 @@ function close() {
 }
 
 watch(path, () => { preview.value = null })
+watch(url, () => { linkPreview.value = null })
 if (path.value) void runPreview()
 </script>
 
@@ -65,7 +101,40 @@ if (path.value) void runPreview()
     <div class="modal-backdrop" @click.self="close">
       <div class="modal" role="dialog" aria-label="Import into memory">
         <div class="modal-header">Import into memory</div>
+        <div class="tabs" role="tablist">
+          <button class="tab" :class="{ active: tab === 'files' }" role="tab" @click="tab = 'files'">Files &amp; folders</button>
+          <button class="tab" :class="{ active: tab === 'link' }" role="tab" @click="tab = 'link'">Link</button>
+        </div>
         <div class="modal-body">
+          <template v-if="tab === 'link'">
+          <label class="field">
+            <span class="field-label">Link</span>
+            <span class="path-row">
+              <input v-model="url" class="path-input" placeholder="https://core.example.edu/genomics/services" @keyup.enter="runLinkPreview" />
+              <button class="btn" :disabled="!url.trim() || previewing" @click="runLinkPreview">Check</button>
+            </span>
+          </label>
+          <label class="field">
+            <span class="field-label">What to extract</span>
+            <textarea
+              v-model="request"
+              class="path-input request-input"
+              rows="3"
+              placeholder="e.g. sequencing services with prices and turnaround times"
+            ></textarea>
+          </label>
+          <p class="hint">
+            The page is read once and only what you ask for is saved, with the link as its source. Web pages, PDFs,
+            CSV and Excel links work; the page itself is not kept. Your current model does the extraction.
+          </p>
+          <div v-if="previewing" class="muted">Opening the link…</div>
+          <div v-else-if="linkPreview" class="preview">
+            <div class="preview-summary">{{ linkPreview.title || linkPreview.url }}</div>
+            <div class="muted">{{ linkPreview.kind.toUpperCase() }} · {{ formatFileSize(linkPreview.bytes) }} · {{ linkPreview.url }}</div>
+          </div>
+          </template>
+
+          <template v-else>
           <label class="field">
             <span class="field-label">File or folder</span>
             <span class="path-row">
@@ -107,6 +176,7 @@ if (path.value) void runPreview()
               Documents are split into entries by your current model, so they use your model quota.
             </p>
           </div>
+          </template>
 
           <div class="field">
             <span class="field-label">Save to</span>
@@ -124,7 +194,7 @@ if (path.value) void runPreview()
         </div>
         <div class="modal-footer">
           <button class="btn" @click="close">Cancel</button>
-          <button class="btn btn-primary" :disabled="!preview || !toRead.length || starting" @click="start">
+          <button class="btn btn-primary" :disabled="!canBuild || starting" @click="start">
             Build memory
           </button>
         </div>
@@ -153,6 +223,13 @@ if (path.value) void runPreview()
   font-size: 0.9em;
 }
 .modal-header { padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 600; }
+.tabs { display: flex; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid var(--border); }
+.tab {
+  padding: 4px 10px; background: transparent; border: none; border-bottom: 2px solid transparent;
+  color: var(--text-secondary); cursor: pointer; font-size: 0.9em;
+}
+.tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+.request-input { resize: vertical; font-family: inherit; }
 .modal-body { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
 .field { display: flex; flex-direction: column; gap: 4px; }

@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryBuilder, type BuilderDeps } from "../src/memory-builder.js";
+import { BUILDER_PROMPT_VERSION } from "../src/memory-segmenter.js";
 
 const SHA = "ab".repeat(32);
 const ROW = (name: string) => ({
@@ -66,7 +67,7 @@ describe("MemoryBuilder", () => {
     expect(imported.map((e) => e.name)).toEqual(["20643R", "20701R", "RNA SOP"]);
     expect(imported[2]).toMatchObject({ origin_kind: "folder", origin: "local_projects/ngs/sop.pdf", origin_sha256: SHA });
     expect(imported[0]).not.toHaveProperty("type");
-    expect(calls.find((c) => c.op === "memory_import")!.params).toMatchObject({ project_dir: "-workspace-local_projects-ngs", builder_version: 1 });
+    expect(calls.find((c) => c.op === "memory_import")!.params).toMatchObject({ project_dir: "-workspace-local_projects-ngs", builder_version: BUILDER_PROMPT_VERSION });
     expect(segment).toHaveBeenCalledWith({ path: "local_projects/ngs/sop.pdf", text: "Lyse cells." });
 
     const last = calls.filter((c) => c.op === "memory_build_job_update").at(-1)!.params;
@@ -128,5 +129,58 @@ describe("MemoryBuilder", () => {
     const scan = { files: [{ path: "local_projects/p/a.csv", size: 3, action: "parse", kind: "table" }], estimate: { table_rows: 2, documents: 0 } };
     const { d } = deps(await fakeHelper([], { scan }));
     expect(await new MemoryBuilder(d).preview("local_projects/p")).toEqual(scan);
+  });
+
+  describe("websites", () => {
+    const URL_ = "https://core.example.edu/services";
+    const page = { url: "https://core.example.edu/services/", ext: ".html", body: Buffer.from("<title>Genomics Core</title><p>NovaSeq X lane $2,400</p>") };
+
+    it("fetches the link, extracts what was asked for, and keeps the link and request as provenance", async () => {
+      const helper = await fakeHelper([{ type: "document", path: "page.html", sha256: SHA, text: "NovaSeq X lane $2,400", truncated: false }]);
+      const segment = vi.fn(async () => [{ category: "reference" as const, name: "NovaSeq X lane price", description: "d", body: "$2,400 per lane" }]);
+      const { d, calls } = deps(helper, segment, [SHA]);
+      const fetchPage = vi.fn(async () => page);
+      const builder = new MemoryBuilder({ ...d, fetchPage });
+
+      expect(await builder.startWebsite({ url: URL_, request: "sequencing prices", scope: "project", project: "local_projects/ngs" })).toBe("job-1");
+      await builder.idle();
+
+      expect(calls[0]).toEqual({ op: "memory_build_job_create", params: {
+        project_dir: "-workspace-local_projects-ngs", origin_kind: "website", origin: URL_,
+      } });
+      expect(fetchPage).toHaveBeenCalledWith(URL_);
+      expect(segment).toHaveBeenCalledWith({ path: page.url, text: "NovaSeq X lane $2,400", request: "sequencing prices" });
+      // A website is re-extracted every time: the request decides what is wanted.
+      expect(calls.some((c) => c.op === "memory_import_seen")).toBe(false);
+      const [entry] = calls.find((c) => c.op === "memory_import")!.params.entries as Array<Record<string, unknown>>;
+      expect(entry).toMatchObject({ origin_kind: "website", origin: page.url, origin_sha256: SHA,
+        facets: { extract_request: ["sequencing prices"] } });
+      expect(calls.filter((c) => c.op === "memory_build_job_update").at(-1)!.params)
+        .toMatchObject({ status: "done", files_seen: 1, files_parsed: 1 });
+    });
+
+    it("fails the job when the page cannot be fetched", async () => {
+      const { d, calls } = deps(await fakeHelper([]));
+      const builder = new MemoryBuilder({ ...d, fetchPage: async () => { throw new Error("internal address"); } });
+      await builder.startWebsite({ url: URL_, request: "x", scope: "user" });
+      await builder.idle();
+      expect(calls.filter((c) => c.op === "memory_build_job_update").at(-1)!.params)
+        .toMatchObject({ status: "failed", error: expect.stringMatching(/internal address/) });
+    });
+
+    it("needs a project for project scope", async () => {
+      const { d } = deps(await fakeHelper([]));
+      const builder = new MemoryBuilder({ ...d, fetchPage: async () => page });
+      await expect(builder.startWebsite({ url: URL_, request: "x", scope: "project" })).rejects.toThrow(/project/);
+      await expect(builder.startWebsite({ url: URL_, request: "x", scope: "project", project: "shared/x" })).rejects.toThrow(/project/);
+    });
+
+    it("previews a link: where it ends up, its type, size and title", async () => {
+      const { d } = deps(await fakeHelper([]));
+      const builder = new MemoryBuilder({ ...d, fetchPage: async () => page });
+      expect(await builder.previewWebsite(URL_)).toEqual({
+        url: page.url, kind: "html", bytes: page.body.length, title: "Genomics Core",
+      });
+    });
   });
 });

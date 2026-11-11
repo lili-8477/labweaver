@@ -75,9 +75,14 @@ panel is `frontend/src/components/memory/*` with `services/memory.ts` and `store
    and the existing `/download/` route serves it. Import is the reverse: upload the zip with the
    existing upload, the helper validates and unpacks it, and the adapter posts the entries with
    `plugin_id`. No zip library is added to Node.
-6. **Websites are fetched in the container** and saved as a snapshot
-   (`<project>/sources/web/<host>-<date>.html`), so provenance points at a file that stays. The
-   snapshot then goes through the same parse path as an uploaded HTML file.
+6. **Links, not snapshots** (revised 2026-11-11). The member gives a link and says what to extract
+   from it ("sequencing services with prices"). The member's container fetches the page once
+   (`web-fetch.ts`: public http(s) addresses only, every redirect hop checked, 5 MB, 20 s), the
+   helper turns it into text (HTML, PDF) or rows (CSV, Excel), and the model extracts only what
+   the request asks for (`BUILDER_PROMPT_VERSION` 2). Nothing of the page is kept: provenance is
+   the URL (`origin`), the content hash, and the request (`extract_request` facet). A link is
+   extracted again on every build, since the request decides what is wanted; identical entries
+   still dedupe.
 7. **Lab scope only through review.** Building or importing at lab scope creates one share request
    (new `artifact_kind='plugin'` for plugins; builder output goes in as `memory` share requests in
    one batch). Skills inside a plugin become `skill` share requests and are never auto-enabled.
@@ -167,7 +172,7 @@ panel is `frontend/src/components/memory/*` with `services/memory.ts` and `store
 
 1. Builder: migrations 0029–0030, helper, `memory_import`, jobs, the agent tool, the Import tab
    for files and folders.
-2. Website snapshots.
+2. Links: extract what the member asks for from a web page (decision 6).
 3. Export: format doc, redaction, manager UI.
 4. Import: plugins table, `visibleSql` filter, Plugins tab, the lab-scope review path.
 

@@ -137,5 +137,22 @@ class TestParse(Fixture):
         self.assertEqual(len([l for l in out.splitlines() if '"entry"' in l]), 2)
 
 
+class TestWebPage(unittest.TestCase):
+    def test_html_keeps_the_text_and_drops_scripts_and_navigation(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "page.html"), "w") as f:
+                f.write("<html><head><title>Core</title><script>track()</script></head><body>"
+                        "<nav>Home | About</nav><main><h1>Sequencing</h1><p>NovaSeq X lane: $2,400</p></main>"
+                        "<footer>(c) 2026</footer></body></html>")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(mb.main(["parse", root, "page.html"]), 0)
+            [doc] = [json.loads(l) for l in out.getvalue().splitlines()]
+            self.assertEqual(doc["type"], "document")
+            self.assertIn("NovaSeq X lane: $2,400", doc["text"])
+            for gone in ("track()", "Home | About", "(c) 2026"):
+                self.assertNotIn(gone, doc["text"])
+
+
 if __name__ == "__main__":
     unittest.main()
